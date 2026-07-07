@@ -445,6 +445,12 @@ static bool ContinuousQueryCallback(int32_t shape, void* userContext)
     {
         return true; // bullet versus bullet: skip (documented)
     }
+    if (world->shapeType[shape] == (uint8_t)m3_meshShape)
+    {
+        // Mesh TOI arrives with 2b-9b; until then bullets rely on the
+        // speculative margin against meshes (documented staged gap).
+        return true;
+    }
     if (world->types[body] == (uint8_t)m3_dynamicBody && world->bulletFlags[ctx->fastBody] == 0)
     {
         return true; // only bullets sweep against dynamics

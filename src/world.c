@@ -37,6 +37,7 @@ m3WorldDef m3DefaultWorldDef(void)
     def.gravity = (m3Vec3){0.0f, -10.0f, 0.0f};
     def.bodyCapacity = 1024;
     def.shapeCapacity = 2048;
+    def.meshCapacity = 4;
     def.workerCount = 1;
     def.internalValue = M3_WORLD_COOKIE;
     return def;
@@ -46,7 +47,7 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
 {
     m3WorldId nullId = {0, 0};
     if (def == NULL || def->internalValue != M3_WORLD_COOKIE || def->bodyCapacity <= 0 ||
-        def->shapeCapacity <= 0 || def->workerCount <= 0)
+        def->shapeCapacity <= 0 || def->meshCapacity <= 0 || def->workerCount <= 0)
     {
         // User-input validation is contract, not invariant: the API
         // promises a null id for a bad def (tests exercise this), so
@@ -74,6 +75,7 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     world->gravity = def->gravity;
     world->bodyCapacity = cap;
     world->shapeCapacity = def->shapeCapacity;
+    world->meshCapacity = def->meshCapacity;
     world->workerCount = def->workerCount;
     world->generation = s_worldGenerations[slot];
     world->worldIndex0 = (uint16_t)slot;
@@ -124,6 +126,14 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     world->hullPool = m3IdPoolCreate(shapeCap);
     M3_ALLOC(world->hullData, shapeCap, m3HullData);
     M3_ALLOC(world->hullRefCounts, shapeCap, int32_t);
+    world->meshPool = m3IdPoolCreate(def->meshCapacity);
+    M3_ALLOC(world->meshData, def->meshCapacity, m3MeshData);
+    M3_ALLOC(world->meshRefCounts, def->meshCapacity, int32_t);
+    M3_ALLOC(world->shapeMeshIndex, shapeCap, int32_t);
+    for (int32_t i = 0; i < shapeCap; ++i)
+    {
+        world->shapeMeshIndex[i] = -1;
+    }
 
     world->tree = m3TreeCreate(2 * shapeCap);
     M3_ALLOC(world->proxyIds, shapeCap, int32_t);
@@ -186,6 +196,10 @@ void m3DestroyWorld(m3WorldId worldId)
     m3IdPoolDestroy(&world->hullPool);
     m3Free(world->hullData);
     m3Free(world->hullRefCounts);
+    m3IdPoolDestroy(&world->meshPool);
+    m3Free(world->meshData);
+    m3Free(world->meshRefCounts);
+    m3Free(world->shapeMeshIndex);
     m3TreeDestroy(&world->tree);
     m3Free(world->proxyIds);
     m3Free(world->pairKeys);
@@ -405,11 +419,58 @@ bool m3World_JournalReplay(m3WorldId worldId, const void* data, int32_t size)
                 return false;
             }
             int32_t index = m3CreateShapeInternal(world, bodyIndex, record.type, &record.geom,
-                                                  &record.def, NULL);
+                                                  &record.def, NULL, NULL);
             if (index < 0 || index + 1 != record.expected.index1 ||
                 world->shapePool.generations[index] != record.expected.generation)
             {
                 return false; // id determinism holds for shapes too
+            }
+            break;
+        }
+        case m3_opCreateMeshShape:
+        {
+            m3CreateMeshShapeOp record;
+            if (bytes < (int32_t)sizeof(record))
+            {
+                return false;
+            }
+            memcpy(&record, payload, sizeof(record));
+            if (record.vertexCount < 3 || record.vertexCount > M3_MESH_MAX_VERTS ||
+                record.triangleCount < 1 || record.triangleCount > M3_MESH_MAX_TRIS)
+            {
+                return false;
+            }
+            int32_t vertexBytes = record.vertexCount * (int32_t)sizeof(m3Vec3);
+            int32_t indexBytes = 3 * record.triangleCount * (int32_t)sizeof(uint16_t);
+            if (bytes != (int32_t)sizeof(record) + vertexBytes + indexBytes)
+            {
+                return false;
+            }
+            record.body.world0 = world->worldIndex0;
+            int32_t bodyIndex = m3BodySlot(world, record.body);
+            if (bodyIndex < 0)
+            {
+                return false;
+            }
+            m3MeshData* mesh = (m3MeshData*)m3AllocZeroed((int32_t)sizeof(m3MeshData));
+            if (mesh == NULL)
+            {
+                return false;
+            }
+            mesh->vertexCount = record.vertexCount;
+            mesh->triangleCount = record.triangleCount;
+            memcpy(mesh->vertices, (const uint8_t*)payload + sizeof(record), (size_t)vertexBytes);
+            memcpy(mesh->indices, (const uint8_t*)payload + sizeof(record) + vertexBytes,
+                   (size_t)indexBytes);
+            m3ShapeGeom geom;
+            memset(&geom, 0, sizeof(geom));
+            int32_t index = m3CreateShapeInternal(world, bodyIndex, (uint8_t)m3_meshShape, &geom,
+                                                  &record.def, NULL, mesh);
+            m3Free(mesh);
+            if (index < 0 || index + 1 != record.expected.index1 ||
+                world->shapePool.generations[index] != record.expected.generation)
+            {
+                return false; // id determinism holds for mesh shapes too
             }
             break;
         }
@@ -435,7 +496,7 @@ bool m3World_JournalReplay(m3WorldId worldId, const void* data, int32_t size)
             m3ShapeGeom geom;
             memset(&geom, 0, sizeof(geom));
             int32_t index = m3CreateShapeInternal(world, bodyIndex, (uint8_t)m3_hullShape, &geom,
-                                                  &record.def, &rebuilt);
+                                                  &record.def, &rebuilt, NULL);
             if (index < 0 || index + 1 != record.expected.index1 ||
                 world->shapePool.generations[index] != record.expected.generation)
             {

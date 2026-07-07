@@ -18,7 +18,8 @@ extern "C"
         m3Vec3 gravity;
         int32_t bodyCapacity;
         int32_t shapeCapacity;
-        int32_t workerCount; // twin worlds with different counts must hash equal
+        int32_t meshCapacity; // static triangle-mesh slots (24 KB each)
+        int32_t workerCount;  // twin worlds with different counts must hash equal
         int32_t internalValue;
     } m3WorldDef;
 

@@ -17,6 +17,7 @@ extern "C"
         m3_planeShape = 1,   // static bodies only: an infinite half-space
         m3_hullShape = 2,    // convex hull (boxes in 2b-3; point clouds later)
         m3_capsuleShape = 3, // a segment with a radius
+        m3_meshShape = 4,    // static triangle soup (2b-9)
     } m3ShapeType;
 
     typedef struct m3Sphere
@@ -85,6 +86,16 @@ extern "C"
     /// the 24-vertex budget return the null id, loudly.
     M3_API m3ShapeId m3CreateHullShape(m3BodyId bodyId, const m3ShapeDef* def, const m3Vec3* points,
                                        int32_t count);
+
+    /// A static triangle mesh (level geometry, voxel chunk surfaces).
+    /// Static bodies only; up to 1024 vertices and 2048 triangles per
+    /// mesh (three indices each, counter-clockwise seen from outside:
+    /// contacts cull the back side). Ghost collisions on shared edges
+    /// are filtered by feature welding. Refused loudly on a dynamic
+    /// body, out-of-cap counts, or out-of-range indices.
+    M3_API m3ShapeId m3CreateMeshShape(m3BodyId bodyId, const m3ShapeDef* def,
+                                       const m3Vec3* vertices, int32_t vertexCount,
+                                       const uint16_t* indices, int32_t triangleCount);
 
     M3_API bool m3Shape_IsValid(m3ShapeId shapeId);
 

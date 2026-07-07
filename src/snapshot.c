@@ -22,7 +22,7 @@
 #endif
 
 #define M3_SNAPSHOT_MAGIC   0x4D33534Eu // 'M3SN'
-#define M3_SNAPSHOT_VERSION 10u         // v10: bullet flags and extents
+#define M3_SNAPSHOT_VERSION 11u         // v11: static mesh slots
 
 // The math types are canonical field data only because they are
 // provably padding-free; a change here is a format version bump.
@@ -55,10 +55,16 @@ typedef struct m3SnapshotHeader
     int32_t hullFreeHead;
     int32_t hullFreeCount;
     int32_t hullRetiredCount;
+    int32_t meshCapacity;
+    int32_t meshMaxIndex;
+    int32_t meshFreeHead;
+    int32_t meshFreeCount;
+    int32_t meshRetiredCount;
+    int32_t reserved; // keeps the 8-byte-aligned header padding-free
     m3Vec3 gravity;
 } m3SnapshotHeader;
 
-_Static_assert(sizeof(m3SnapshotHeader) == 104, "snapshot header must be padding-free");
+_Static_assert(sizeof(m3SnapshotHeader) == 128, "snapshot header must be padding-free");
 
 static uint64_t ConfigHash(void)
 {
@@ -156,6 +162,12 @@ static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3Wal
     M3_BLOCK(world->hullPool.generations, shapeCap * (int32_t)sizeof(uint16_t));
     M3_BLOCK(world->hullPool.alive, shapeCap * (int32_t)sizeof(uint8_t));
     M3_BLOCK(world->hullPool.freeQueue, shapeCap * (int32_t)sizeof(int32_t));
+    M3_BLOCK(world->shapeMeshIndex, shapeCap * (int32_t)sizeof(int32_t));
+    M3_BLOCK(world->meshData, world->meshCapacity * (int32_t)sizeof(m3MeshData));
+    M3_BLOCK(world->meshRefCounts, world->meshCapacity * (int32_t)sizeof(int32_t));
+    M3_BLOCK(world->meshPool.generations, world->meshCapacity * (int32_t)sizeof(uint16_t));
+    M3_BLOCK(world->meshPool.alive, world->meshCapacity * (int32_t)sizeof(uint8_t));
+    M3_BLOCK(world->meshPool.freeQueue, world->meshCapacity * (int32_t)sizeof(int32_t));
     M3_BLOCK(world->manifolds, world->pairCapacity * (int32_t)sizeof(m3Manifold));
 
 #undef M3_BLOCK
@@ -209,6 +221,12 @@ int32_t m3World_Snapshot(m3WorldId worldId, void* out, int32_t capacity)
     header.hullFreeHead = world->hullPool.freeHead;
     header.hullFreeCount = world->hullPool.freeCount;
     header.hullRetiredCount = world->hullPool.retiredCount;
+    header.reserved = 0;
+    header.meshCapacity = world->meshCapacity;
+    header.meshMaxIndex = world->meshPool.maxIndex;
+    header.meshFreeHead = world->meshPool.freeHead;
+    header.meshFreeCount = world->meshPool.freeCount;
+    header.meshRetiredCount = world->meshPool.retiredCount;
     header.gravity = world->gravity;
 
     uint8_t* bytes = (uint8_t*)out;
@@ -228,7 +246,7 @@ bool m3World_Restore(m3WorldId worldId, const void* data, int32_t size)
     memcpy(&header, data, sizeof(header));
     if (header.magic != M3_SNAPSHOT_MAGIC || header.formatVersion != M3_SNAPSHOT_VERSION ||
         header.configHash != ConfigHash() || header.bodyCapacity != world->bodyCapacity ||
-        header.shapeCapacity != world->shapeCapacity)
+        header.shapeCapacity != world->shapeCapacity || header.meshCapacity != world->meshCapacity)
     {
         // Wrong world shape or wrong build semantics: refuse loudly,
         // never a partial restore.
@@ -254,6 +272,10 @@ bool m3World_Restore(m3WorldId worldId, const void* data, int32_t size)
     world->pairCount = header.pairCount;
     world->tree.root = header.treeRoot;
     world->tree.freeList = header.treeFreeList;
+    world->meshPool.maxIndex = header.meshMaxIndex;
+    world->meshPool.freeHead = header.meshFreeHead;
+    world->meshPool.freeCount = header.meshFreeCount;
+    world->meshPool.retiredCount = header.meshRetiredCount;
     world->hullPool.maxIndex = header.hullMaxIndex;
     world->hullPool.freeHead = header.hullFreeHead;
     world->hullPool.freeCount = header.hullFreeCount;
@@ -310,6 +332,7 @@ uint64_t m3World_Hash(m3WorldId worldId)
         h = m3Hash64(h, &world->shapeFriction[i], 4);
         h = m3Hash64(h, &world->shapeRestitution[i], 4);
         h = m3Hash64(h, &world->shapeHullIndex[i], 4);
+        h = m3Hash64(h, &world->shapeMeshIndex[i], 4);
     }
     // Pairs and manifolds: warm-start impulses are simulation state
     // (they steer the next solve), so they are part of what the world

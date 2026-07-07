@@ -760,6 +760,176 @@ static void TestCcdDeterminism(void)
     CHECK(hashes[0] == hashes[1], "the ccd scene is bit-deterministic");
 }
 
+// Build a flat triangulated strip: x in [-4, 4], z in [-1, 1], one
+// meter quads, each split into two CCW-from-above triangles. The
+// interior edges and vertices are exactly what the welding filter
+// must silence.
+static m3ShapeId AddMeshFloor(m3WorldId world)
+{
+    enum
+    {
+        NX = 9,
+        NZ = 3
+    };
+    m3Vec3 verts[NX * NZ];
+    for (int32_t iz = 0; iz < NZ; ++iz)
+    {
+        for (int32_t ix = 0; ix < NX; ++ix)
+        {
+            verts[iz * NX + ix] = (m3Vec3){-4.0f + (m3real)ix, 0.0f, -1.0f + (m3real)iz};
+        }
+    }
+    uint16_t tris[3 * 2 * (NX - 1) * (NZ - 1)];
+    int32_t n = 0;
+    for (int32_t iz = 0; iz < NZ - 1; ++iz)
+    {
+        for (int32_t ix = 0; ix < NX - 1; ++ix)
+        {
+            uint16_t v00 = (uint16_t)(iz * NX + ix);
+            uint16_t v10 = (uint16_t)(iz * NX + ix + 1);
+            uint16_t v01 = (uint16_t)((iz + 1) * NX + ix);
+            uint16_t v11 = (uint16_t)((iz + 1) * NX + ix + 1);
+            tris[n++] = v00;
+            tris[n++] = v11;
+            tris[n++] = v10;
+            tris[n++] = v00;
+            tris[n++] = v01;
+            tris[n++] = v11;
+        }
+    }
+    m3BodyDef bd = m3DefaultBodyDef();
+    m3BodyId ground = m3CreateBody(world, &bd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    sd.friction = 0.0f; // pure slide: any vertical kick is a ghost
+    return m3CreateMeshShape(ground, &sd, verts, NX * NZ, tris, n / 3);
+}
+
+static void TestSphereSlidesAcrossMeshFloor(void)
+{
+    // THE internal-edge proof: a sphere slides across six interior
+    // edges and a row of interior vertices of a flat triangulated
+    // floor. Without feature welding the neighbor triangles' edge
+    // contacts point their ghost normals sideways and kick the
+    // sphere; with it the ride must stay flat to millimeters.
+    m3WorldDef def = m3DefaultWorldDef();
+    def.bodyCapacity = 8;
+    def.shapeCapacity = 8;
+    m3WorldId world = m3CreateWorld(&def);
+    CHECK(m3Shape_IsValid(AddMeshFloor(world)), "the mesh floor builds");
+
+    m3BodyDef bd = m3DefaultBodyDef();
+    bd.type = m3_dynamicBody;
+    bd.position = (m3Pos3){-3.5, 0.5, 0.0};
+    bd.linearVelocity = (m3Vec3){1.2f, 0.0f, 0.0f};
+    m3BodyId ball = m3CreateBody(world, &bd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    sd.friction = 0.0f;
+    m3Sphere sphere = {{0.0f, 0.0f, 0.0f}, 0.5f};
+    m3CreateSphereShape(ball, &sd, &sphere);
+
+    // Settle onto the floor first, then measure the ride.
+    StepN(world, 60);
+    double yMin = 1.0e30;
+    double yMax = -1.0e30;
+    double zMax = 0.0;
+    for (int32_t i = 0; i < 240; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+        m3Pos3 p = m3Body_GetPosition(ball);
+        yMin = p.y < yMin ? p.y : yMin;
+        yMax = p.y > yMax ? p.y : yMax;
+        double az = p.z < 0.0 ? -p.z : p.z;
+        zMax = az > zMax ? az : zMax;
+    }
+    m3Pos3 end = m3Body_GetPosition(ball);
+    CHECK(end.x > 0.0, "the sphere crossed the interior edges");
+    CHECK(yMin > 0.46 && yMax < 0.54, "the ride stays flat: no ghost bumps");
+    CHECK(zMax < 0.05, "no sideways ghost kicks");
+    m3DestroyWorld(world);
+}
+
+static void TestMeshContractsAndGaps(void)
+{
+    m3WorldDef def = m3DefaultWorldDef();
+    def.bodyCapacity = 8;
+    def.shapeCapacity = 8;
+    m3WorldId world = m3CreateWorld(&def);
+    CHECK(m3Shape_IsValid(AddMeshFloor(world)), "the mesh floor builds");
+
+    // Contracts: a mesh on a dynamic body and bad indices are refused.
+    m3BodyDef bd = m3DefaultBodyDef();
+    bd.type = m3_dynamicBody;
+    bd.position = (m3Pos3){0.0, 2.0, 0.0};
+    m3BodyId mover = m3CreateBody(world, &bd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    m3Vec3 tri[3] = {{0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 1.0f}};
+    uint16_t idx[3] = {0, 1, 2};
+    CHECK(!m3Shape_IsValid(m3CreateMeshShape(mover, &sd, tri, 3, idx, 1)),
+          "a mesh on a dynamic body is refused");
+    uint16_t bad[3] = {0, 1, 9};
+    m3BodyDef gd = m3DefaultBodyDef();
+    m3BodyId ground2 = m3CreateBody(world, &gd);
+    CHECK(!m3Shape_IsValid(m3CreateMeshShape(ground2, &sd, tri, 3, bad, 1)),
+          "an out-of-range index is refused");
+
+    // Staged gap (2b-9b): capsule and hull versus mesh carry no
+    // manifold yet; both fall THROUGH the mesh floor. This test
+    // flips into resting assertions when 2b-9b lands.
+    m3Capsule capsule = {{-0.4f, 0.0f, 0.0f}, {0.4f, 0.0f, 0.0f}, 0.3f};
+    m3CreateCapsuleShape(mover, &sd, &capsule);
+    bd.position = (m3Pos3){1.5, 2.0, 0.0};
+    m3BodyId boxBody = m3CreateBody(world, &bd);
+    m3CreateBoxShape(boxBody, &sd, (m3Vec3){0.3f, 0.3f, 0.3f});
+    StepN(world, 240);
+    CHECK(m3Body_GetPosition(mover).y < -1.0, "capsule-mesh is the documented gap");
+    CHECK(m3Body_GetPosition(boxBody).y < -1.0, "hull-mesh is the documented gap");
+    m3DestroyWorld(world);
+}
+
+static void TestMeshJournalAndRollback(void)
+{
+    // The mesh rides every determinism spine: a journaled session
+    // (mesh floor + sphere drop) replays bit for bit, and a snapshot
+    // taken mid-flight restores and reruns bit for bit.
+    uint8_t journal[65536];
+    m3WorldDef def = m3DefaultWorldDef();
+    def.bodyCapacity = 8;
+    def.shapeCapacity = 8;
+    m3WorldId world = m3CreateWorld(&def);
+    CHECK(m3World_JournalBegin(world, journal, (int32_t)sizeof(journal)), "journal arms");
+    CHECK(m3Shape_IsValid(AddMeshFloor(world)), "the mesh floor builds");
+
+    m3BodyDef bd = m3DefaultBodyDef();
+    bd.type = m3_dynamicBody;
+    bd.position = (m3Pos3){0.3, 2.0, 0.2};
+    m3BodyId ball = m3CreateBody(world, &bd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    m3Sphere sphere = {{0.0f, 0.0f, 0.0f}, 0.4f};
+    m3CreateSphereShape(ball, &sd, &sphere);
+
+    StepN(world, 120);
+    uint64_t h1 = m3World_Hash(world);
+    int32_t bytes = m3World_JournalEnd(world);
+    CHECK(bytes > 0, "the mesh session recorded");
+
+    m3WorldId twin = m3CreateWorld(&def);
+    CHECK(m3World_JournalReplay(twin, journal, bytes), "the mesh session replays");
+    CHECK(m3World_Hash(twin) == h1, "the replay is bit-identical");
+
+    // Rollback: snapshot the twin, run on, restore, rerun.
+    int32_t snapBytes = m3World_SnapshotSize(twin);
+    void* snap = malloc((size_t)snapBytes);
+    CHECK(m3World_Snapshot(twin, snap, snapBytes) == snapBytes, "snapshot writes");
+    StepN(twin, 60);
+    uint64_t after = m3World_Hash(twin);
+    CHECK(m3World_Restore(twin, snap, snapBytes), "snapshot restores");
+    StepN(twin, 60);
+    CHECK(m3World_Hash(twin) == after, "mesh scenes roll back bit-exact");
+    free(snap);
+    m3DestroyWorld(twin);
+    m3DestroyWorld(world);
+}
+
 static void TestSolverHashGate(void)
 {
     // The fixed solver scene for the CI gate: a plane, a three-sphere
@@ -797,6 +967,9 @@ int main(void)
     TestBulletStopsAtWall();
     TestBulletVsDynamicTarget();
     TestCcdDeterminism();
+    TestSphereSlidesAcrossMeshFloor();
+    TestMeshContractsAndGaps();
+    TestMeshJournalAndRollback();
     TestSolverHashGate();
     if (s_failures == 0)
     {

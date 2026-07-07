@@ -22,7 +22,7 @@
 // integration order, constants). Part of the snapshot config hash, so
 // a snapshot from a different behavior revision is refused loudly
 // instead of silently diverging (the Jolt friction-model lesson).
-#define M3_SOLVER_REV 7 // rev 7: continuous collision (TOI pull-back)
+#define M3_SOLVER_REV 8 // rev 8: mesh statics, sphere path
 
 // Def cookies: a def that did not come from its m3Default*Def factory
 // is rejected loudly (the Maul2D pattern).
@@ -46,6 +46,7 @@ typedef enum m3Op
     m3_opSetAngularVelocity = 5,
     m3_opCreateShape = 6,
     m3_opCreateHullShape = 7, // carries the input points (the recipe)
+    m3_opCreateMeshShape = 8, // header + exact-size vertex/index payload
 } m3Op;
 
 // Immutable interned hull data (lifetime 3): vertices, face planes,
@@ -91,6 +92,25 @@ typedef struct m3HullData
 } m3HullData;
 
 _Static_assert(sizeof(m3HullData) == 1820, "hull data must be padding-free");
+
+// Static triangle mesh content (lifetime 3): fixed caps keep it one
+// snapshot block per slot, so the snapshot law stays uniform (no
+// variable-size special case; a deliberate deviation from the
+// reference's variable allocations, argued in the 2b-9 slice). The
+// midphase in 2b-9a is a bounded per-triangle scan; the static BVH
+// arrives in 2b-9b behind the same query contract.
+#define M3_MESH_MAX_VERTS 1024
+#define M3_MESH_MAX_TRIS  2048
+
+typedef struct m3MeshData
+{
+    int32_t vertexCount;
+    int32_t triangleCount;
+    m3Vec3 vertices[M3_MESH_MAX_VERTS];
+    uint16_t indices[3 * M3_MESH_MAX_TRIS]; // CCW from outside
+} m3MeshData;
+
+_Static_assert(sizeof(m3MeshData) == 24584, "mesh data must be padding-free");
 
 // Geometry is one padding-free 32-byte record per shape, interpreted
 // by type: sphere {v=center, s=radius}, plane {v=normal, s=offset},
@@ -152,6 +172,18 @@ typedef struct m3CreateShapeOp
 // Journal payload for general hull shapes: the raw input points are
 // the recipe; replay rebuilds through the same QuickHull, so the
 // derived hull data never has to ride the journal.
+// Journal header for mesh creation; the exact-size vertex and index
+// arrays follow it in the payload (a full-cap struct would bloat the
+// journal by 24 KB per mesh).
+typedef struct m3CreateMeshShapeOp
+{
+    m3ShapeDef def;
+    m3BodyId body;
+    m3ShapeId expected;
+    int32_t vertexCount;
+    int32_t triangleCount;
+} m3CreateMeshShapeOp;
+
 typedef struct m3CreateHullShapeOp
 {
     m3ShapeDef def;
@@ -205,11 +237,19 @@ typedef struct m3World
     uint64_t* shapeUserData;
     int32_t* shapeNext;      // next shape on the same body, -1 end
     int32_t* shapeHullIndex; // interned hull slot, -1 for non-hulls
+    int32_t* shapeMeshIndex; // mesh slot, -1 for non-meshes
 
     // The interned hull pool (immutable content, refcounted).
     m3IdPool hullPool;
     m3HullData* hullData;
     int32_t* hullRefCounts;
+
+    // Static mesh slots (immutable content, refcounted, no content
+    // dedupe: meshes are big and user-authored).
+    int32_t meshCapacity;
+    m3IdPool meshPool;
+    m3MeshData* meshData;
+    int32_t* meshRefCounts;
 
     // Broadphase: the fat-AABB tree (spheres only; infinite planes
     // stay out and take a dedicated pass), per-shape proxy ids, both
@@ -279,7 +319,7 @@ int32_t m3InternHull(m3World* world, const m3HullData* data); // -1 = pool exhau
 void m3ReleaseHull(m3World* world, int32_t hullIndex);
 int32_t m3CreateShapeInternal(m3World* world, int32_t bodyIndex, uint8_t type,
                               const m3ShapeGeom* geom, const m3ShapeDef* def,
-                              const m3HullData* prebuilt);
+                              const m3HullData* prebuilt, const m3MeshData* meshPrebuilt);
 void m3DestroyShapeInternal(m3World* world, int32_t index);
 void m3RecomputeMass(m3World* world, int32_t bodyIndex);
 

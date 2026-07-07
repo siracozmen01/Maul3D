@@ -241,7 +241,7 @@ void m3RecomputeMass(m3World* world, int32_t bodyIndex)
 
 int32_t m3CreateShapeInternal(m3World* world, int32_t bodyIndex, uint8_t type,
                               const m3ShapeGeom* geom, const m3ShapeDef* def,
-                              const m3HullData* prebuilt)
+                              const m3HullData* prebuilt, const m3MeshData* meshPrebuilt)
 {
     int32_t index = m3IdPoolAlloc(&world->shapePool);
     if (index < 0)
@@ -279,6 +279,24 @@ int32_t m3CreateShapeInternal(m3World* world, int32_t bodyIndex, uint8_t type,
             m3IdPoolFree(&world->shapePool, index);
             return -1;
         }
+    }
+    world->shapeMeshIndex[index] = -1;
+    if (type == (uint8_t)m3_meshShape)
+    {
+        // No content dedupe: meshes are big and user-authored; each
+        // create claims a fresh slot.
+        int32_t meshIndex = m3IdPoolAlloc(&world->meshPool);
+        if (meshIndex < 0)
+        {
+            world->bodyShapeHead[bodyIndex] = world->shapeNext[index];
+            world->shapeNext[index] = -1;
+            world->shapeBody[index] = -1;
+            m3IdPoolFree(&world->shapePool, index);
+            return -1; // mesh slots exhausted: loud at the caller
+        }
+        world->meshData[meshIndex] = *meshPrebuilt;
+        world->meshRefCounts[meshIndex] = 1;
+        world->shapeMeshIndex[index] = meshIndex;
     }
     // Spheres and hulls enter the broadphase tree; infinite planes
     // stay out and take the dedicated pair pass.
@@ -338,6 +356,17 @@ void m3DestroyShapeInternal(m3World* world, int32_t index)
     }
     m3ReleaseHull(world, world->shapeHullIndex[index]);
     world->shapeHullIndex[index] = -1;
+    if (world->shapeMeshIndex[index] >= 0)
+    {
+        int32_t meshIndex = world->shapeMeshIndex[index];
+        world->meshRefCounts[meshIndex] -= 1;
+        if (world->meshRefCounts[meshIndex] == 0)
+        {
+            memset(&world->meshData[meshIndex], 0, sizeof(m3MeshData));
+            m3IdPoolFree(&world->meshPool, meshIndex);
+        }
+        world->shapeMeshIndex[index] = -1;
+    }
     m3IdPoolFree(&world->shapePool, index);
     m3RecomputeMass(world, bodyIndex);
 }
@@ -352,7 +381,7 @@ static m3ShapeId CreateShapeCommon(m3BodyId bodyId, const m3ShapeDef* def, uint8
         // Contract, not invariant: bad input returns the null id.
         return m3_nullShapeId;
     }
-    int32_t index = m3CreateShapeInternal(world, bodyIndex, type, geom, def, NULL);
+    int32_t index = m3CreateShapeInternal(world, bodyIndex, type, geom, def, NULL, NULL);
     if (index < 0)
     {
         return m3_nullShapeId;
@@ -447,7 +476,7 @@ m3ShapeId m3CreateHullShape(m3BodyId bodyId, const m3ShapeDef* def, const m3Vec3
     m3ShapeGeom geom;
     memset(&geom, 0, sizeof(geom));
     int32_t index =
-        m3CreateShapeInternal(world, bodyIndex, (uint8_t)m3_hullShape, &geom, def, &data);
+        m3CreateShapeInternal(world, bodyIndex, (uint8_t)m3_hullShape, &geom, def, &data, NULL);
     if (index < 0)
     {
         return m3_nullShapeId;
@@ -463,6 +492,76 @@ m3ShapeId m3CreateHullShape(m3BodyId bodyId, const m3ShapeDef* def, const m3Vec3
         record.count = count;
         memcpy(record.points, points, (size_t)count * sizeof(m3Vec3));
         m3JournalRecord(world, m3_opCreateHullShape, &record, (int32_t)sizeof(record));
+    }
+    return id;
+}
+
+m3ShapeId m3CreateMeshShape(m3BodyId bodyId, const m3ShapeDef* def, const m3Vec3* vertices,
+                            int32_t vertexCount, const uint16_t* indices, int32_t triangleCount)
+{
+    m3World* world = m3WorldFromIndex0(bodyId.world0);
+    int32_t bodyIndex = world != NULL ? m3BodySlot(world, bodyId) : -1;
+    if (bodyIndex < 0 || def == NULL || def->internalValue != M3_SHAPE_COOKIE ||
+        world->types[bodyIndex] != (uint8_t)m3_staticBody)
+    {
+        // Meshes are static world geometry: a dynamic mesh body is
+        // refused loudly (no mass model for triangle soup).
+        return m3_nullShapeId;
+    }
+    if (vertices == NULL || indices == NULL || vertexCount < 3 || vertexCount > M3_MESH_MAX_VERTS ||
+        triangleCount < 1 || triangleCount > M3_MESH_MAX_TRIS)
+    {
+        return m3_nullShapeId;
+    }
+    for (int32_t i = 0; i < 3 * triangleCount; ++i)
+    {
+        if (indices[i] >= (uint16_t)vertexCount)
+        {
+            return m3_nullShapeId; // out-of-range index: contract
+        }
+    }
+    m3MeshData* mesh = (m3MeshData*)m3AllocZeroed((int32_t)sizeof(m3MeshData));
+    if (mesh == NULL)
+    {
+        return m3_nullShapeId;
+    }
+    mesh->vertexCount = vertexCount;
+    mesh->triangleCount = triangleCount;
+    memcpy(mesh->vertices, vertices, (size_t)vertexCount * sizeof(m3Vec3));
+    memcpy(mesh->indices, indices, (size_t)(3 * triangleCount) * sizeof(uint16_t));
+    m3ShapeGeom geom;
+    memset(&geom, 0, sizeof(geom));
+    int32_t index =
+        m3CreateShapeInternal(world, bodyIndex, (uint8_t)m3_meshShape, &geom, def, NULL, mesh);
+    m3Free(mesh);
+    if (index < 0)
+    {
+        return m3_nullShapeId;
+    }
+    m3ShapeId id = {index + 1, world->worldIndex0, world->shapePool.generations[index]};
+    if (world->journalActive != 0)
+    {
+        // Exact-size payload: header, then the raw vertex and index
+        // arrays (the recipe; replay rebuilds and verifies the id).
+        int32_t vertexBytes = vertexCount * (int32_t)sizeof(m3Vec3);
+        int32_t indexBytes = 3 * triangleCount * (int32_t)sizeof(uint16_t);
+        int32_t payloadBytes = (int32_t)sizeof(m3CreateMeshShapeOp) + vertexBytes + indexBytes;
+        uint8_t* payload = (uint8_t*)m3AllocZeroed(payloadBytes);
+        if (payload != NULL)
+        {
+            m3CreateMeshShapeOp record;
+            memset(&record, 0, sizeof(record));
+            record.def = *def;
+            record.body = bodyId;
+            record.expected = id;
+            record.vertexCount = vertexCount;
+            record.triangleCount = triangleCount;
+            memcpy(payload, &record, sizeof(record));
+            memcpy(payload + sizeof(record), vertices, (size_t)vertexBytes);
+            memcpy(payload + sizeof(record) + vertexBytes, indices, (size_t)indexBytes);
+            m3JournalRecord(world, m3_opCreateMeshShape, payload, payloadBytes);
+            m3Free(payload);
+        }
     }
     return id;
 }

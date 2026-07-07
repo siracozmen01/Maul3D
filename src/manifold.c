@@ -9,6 +9,7 @@
 
 #include "world_internal.h"
 
+#include <float.h>
 #include <string.h>
 
 // Contacts exist slightly before touch so the solver can catch
@@ -665,6 +666,357 @@ static m3Manifold CollideSegmentHull(const m3HullData* hull, m3Vec3 p1, m3Vec3 p
     return manifold;
 }
 
+// ---------------------------------------------------------------
+// Mesh versus sphere (2b-9a), the reference mesh_contact.c recipe on
+// the simplest witness. Feature = the closest-point voronoi region
+// encoded as a vertex bitmask (1|2|4; 7 = face). Face contacts are
+// accepted immediately and CLAIM their triangle's edges and
+// vertices; edge and vertex contacts are tentative, sorted by
+// distance, and accepted only if their feature is still unclaimed.
+// That filter is the internal-edge mitigation: the neighbor
+// triangle's ghost edge contact dies because the face triangle
+// already owns the edge. One winner manifold per pair in 2b-9a (the
+// deepest accepted); the multi-normal valley case joins 2b-9b.
+// ---------------------------------------------------------------
+
+typedef struct m3TriPoint
+{
+    m3Vec3 point;
+    int32_t feature; // vertex bitmask, 7 = face interior
+} m3TriPoint;
+
+// Closest point on a triangle with its voronoi feature (the
+// reference math_functions.c routine, byte for byte in structure).
+static m3TriPoint ClosestPointOnTriangle(m3Vec3 a, m3Vec3 b, m3Vec3 c, m3Vec3 q)
+{
+    m3Vec3 ab = m3Sub3(b, a);
+    m3Vec3 ac = m3Sub3(c, a);
+    m3Vec3 aq = m3Sub3(q, a);
+    m3real d1 = m3Dot3(ab, aq);
+    m3real d2 = m3Dot3(ac, aq);
+    if (d1 <= 0.0f && d2 <= 0.0f)
+    {
+        return (m3TriPoint){a, 1};
+    }
+    m3Vec3 bq = m3Sub3(q, b);
+    m3real d3 = m3Dot3(ab, bq);
+    m3real d4 = m3Dot3(ac, bq);
+    if (d3 > 0.0f && d4 <= d3)
+    {
+        return (m3TriPoint){b, 2};
+    }
+    m3real vc = d1 * d4 - d3 * d2;
+    if (vc <= 0.0f && d1 >= 0.0f && d3 <= 0.0f)
+    {
+        m3real t = d1 / (d1 - d3);
+        return (m3TriPoint){m3Add3(a, m3MulSV3(t, ab)), 1 | 2};
+    }
+    m3Vec3 cq = m3Sub3(q, c);
+    m3real d5 = m3Dot3(ab, cq);
+    m3real d6 = m3Dot3(ac, cq);
+    if (d6 >= 0.0f && d5 <= d6)
+    {
+        return (m3TriPoint){c, 4};
+    }
+    m3real vb = d5 * d2 - d1 * d6;
+    if (vb <= 0.0f && d2 >= 0.0f && d6 <= 0.0f)
+    {
+        m3real t = d2 / (d2 - d6);
+        return (m3TriPoint){m3Add3(a, m3MulSV3(t, ac)), 1 | 4};
+    }
+    m3real va = d3 * d6 - d5 * d4;
+    if (va <= 0.0f && d4 >= d3 && d5 >= d6)
+    {
+        m3real t = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+        return (m3TriPoint){m3Add3(b, m3MulSV3(t, m3Sub3(c, b))), 2 | 4};
+    }
+    m3real t1 = vb / (va + vb + vc);
+    m3real t2 = vc / (va + vb + vc);
+    m3Vec3 p = m3Add3(a, m3Add3(m3MulSV3(t1, ab), m3MulSV3(t2, ac)));
+    return (m3TriPoint){p, 7};
+}
+
+#define M3_MESH_CANDIDATE_CAP 64
+
+typedef struct m3MeshCandidate
+{
+    m3real dist2;
+    m3real separation;
+    int32_t triIndex;
+    int32_t feature; // bitmask
+    m3Vec3 normal;   // mesh frame, mesh toward sphere
+    m3Vec3 onTri;    // mesh frame
+} m3MeshCandidate;
+
+typedef struct m3FeatureSet
+{
+    int32_t edges[3 * M3_MESH_CANDIDATE_CAP]; // packed lo*65536+hi
+    int32_t edgeCount;
+    int32_t verts[3 * M3_MESH_CANDIDATE_CAP];
+    int32_t vertCount;
+} m3FeatureSet;
+
+// Returns 1 when the edge or vertex was NEW (unclaimed until now).
+static int ClaimEdge(m3FeatureSet* set, int32_t v1, int32_t v2)
+{
+    int32_t lo = v1 < v2 ? v1 : v2;
+    int32_t hi = v1 < v2 ? v2 : v1;
+    int32_t key = lo * 65536 + hi;
+    for (int32_t i = 0; i < set->edgeCount; ++i)
+    {
+        if (set->edges[i] == key)
+        {
+            return 0;
+        }
+    }
+    if (set->edgeCount < 3 * M3_MESH_CANDIDATE_CAP)
+    {
+        set->edges[set->edgeCount++] = key;
+    }
+    return 1;
+}
+
+static int ClaimVertex(m3FeatureSet* set, int32_t v)
+{
+    for (int32_t i = 0; i < set->vertCount; ++i)
+    {
+        if (set->verts[i] == v)
+        {
+            return 0;
+        }
+    }
+    if (set->vertCount < 3 * M3_MESH_CANDIDATE_CAP)
+    {
+        set->verts[set->vertCount++] = v;
+    }
+    return 1;
+}
+
+static void CollideMeshSphere(m3World* world, m3Manifold* fresh, int32_t meshShape,
+                              int32_t sphereShape, int meshIsA)
+{
+    const m3MeshData* mesh = &world->meshData[world->shapeMeshIndex[meshShape]];
+    int32_t meshBody = world->shapeBody[meshShape];
+    int32_t ballBody = world->shapeBody[sphereShape];
+    const m3Transform* xfM = &world->transforms[meshBody];
+    m3real radius = world->shapeGeom[sphereShape].s;
+
+    // Sphere center into the mesh frame (doubles localized here).
+    double scx;
+    double scy;
+    double scz;
+    {
+        const m3Transform* xfS = &world->transforms[ballBody];
+        m3Vec3 r = m3RotateVec3(xfS->q, world->shapeGeom[sphereShape].v);
+        scx = xfS->p.x + (double)r.x;
+        scy = xfS->p.y + (double)r.y;
+        scz = xfS->p.z + (double)r.z;
+    }
+    m3Vec3 center =
+        m3InvRotateVec3(xfM->q, (m3Vec3){(m3real)(scx - xfM->p.x), (m3real)(scy - xfM->p.y),
+                                         (m3real)(scz - xfM->p.z)});
+    m3real reach = radius + M3_SPECULATIVE_DISTANCE;
+
+    // Bounded midphase: ascending triangle order, cheap AABB reject.
+    // The static BVH replaces this scan in 2b-9b behind the same
+    // contract; overflow keeps the FIRST candidates (ascending order
+    // makes that deterministic) and a sphere touches only a handful.
+    m3MeshCandidate faceAccepted[M3_MESH_CANDIDATE_CAP];
+    int32_t faceCount = 0;
+    m3MeshCandidate tentative[M3_MESH_CANDIDATE_CAP];
+    int32_t tentativeCount = 0;
+
+    for (int32_t t = 0; t < mesh->triangleCount; ++t)
+    {
+        if (faceCount + tentativeCount >= M3_MESH_CANDIDATE_CAP)
+        {
+            break;
+        }
+        int32_t i1 = mesh->indices[3 * t + 0];
+        int32_t i2 = mesh->indices[3 * t + 1];
+        int32_t i3 = mesh->indices[3 * t + 2];
+        m3Vec3 v1 = mesh->vertices[i1];
+        m3Vec3 v2 = mesh->vertices[i2];
+        m3Vec3 v3 = mesh->vertices[i3];
+
+        m3real lox = m3MinF(v1.x, m3MinF(v2.x, v3.x)) - reach;
+        m3real hix = m3MaxF(v1.x, m3MaxF(v2.x, v3.x)) + reach;
+        m3real loy = m3MinF(v1.y, m3MinF(v2.y, v3.y)) - reach;
+        m3real hiy = m3MaxF(v1.y, m3MaxF(v2.y, v3.y)) + reach;
+        m3real loz = m3MinF(v1.z, m3MinF(v2.z, v3.z)) - reach;
+        m3real hiz = m3MaxF(v1.z, m3MaxF(v2.z, v3.z)) + reach;
+        if (center.x < lox || center.x > hix || center.y < loy || center.y > hiy ||
+            center.z < loz || center.z > hiz)
+        {
+            continue;
+        }
+
+        // Back side cull (CCW winding, outward normal convention).
+        m3Vec3 triN = m3Cross3(m3Sub3(v2, v1), m3Sub3(v3, v1));
+        if (m3Dot3(triN, m3Sub3(center, v1)) < 0.0f)
+        {
+            continue;
+        }
+
+        m3TriPoint closest = ClosestPointOnTriangle(v1, v2, v3, center);
+        m3Vec3 d = m3Sub3(center, closest.point);
+        m3real dist2 = m3Dot3(d, d);
+        if (dist2 > reach * reach)
+        {
+            continue;
+        }
+        m3real dist = sqrtf(dist2);
+        m3Vec3 normal;
+        if (dist2 > 1000.0f * FLT_MIN)
+        {
+            normal = m3MulSV3(1.0f / dist, d);
+        }
+        else
+        {
+            normal = m3Normalize3(triN);
+        }
+
+        m3MeshCandidate cand;
+        cand.dist2 = dist2;
+        cand.separation = dist - radius;
+        cand.triIndex = t;
+        cand.feature = closest.feature;
+        cand.normal = normal;
+        cand.onTri = closest.point;
+        if (closest.feature == 7)
+        {
+            faceAccepted[faceCount] = cand;
+            faceAccepted[faceCount].triIndex = t;
+            faceCount += 1;
+        }
+        else
+        {
+            tentative[tentativeCount] = cand;
+            tentativeCount += 1;
+        }
+    }
+
+    m3FeatureSet set;
+    set.edgeCount = 0;
+    set.vertCount = 0;
+    for (int32_t k = 0; k < faceCount; ++k)
+    {
+        int32_t t = faceAccepted[k].triIndex;
+        int32_t i1 = mesh->indices[3 * t + 0];
+        int32_t i2 = mesh->indices[3 * t + 1];
+        int32_t i3 = mesh->indices[3 * t + 2];
+        (void)ClaimEdge(&set, i1, i2);
+        (void)ClaimEdge(&set, i2, i3);
+        (void)ClaimEdge(&set, i3, i1);
+        (void)ClaimVertex(&set, i1);
+        (void)ClaimVertex(&set, i2);
+        (void)ClaimVertex(&set, i3);
+    }
+
+    // Tentative contacts in ascending distance (ties to the lower
+    // triangle index): closest first, exactly the reference order.
+    for (int32_t a = 0; a < tentativeCount; ++a)
+    {
+        int32_t best = a;
+        for (int32_t b = a + 1; b < tentativeCount; ++b)
+        {
+            if (tentative[b].dist2 < tentative[best].dist2 ||
+                (tentative[b].dist2 == tentative[best].dist2 &&
+                 tentative[b].triIndex < tentative[best].triIndex))
+            {
+                best = b;
+            }
+        }
+        m3MeshCandidate tmp = tentative[a];
+        tentative[a] = tentative[best];
+        tentative[best] = tmp;
+    }
+
+    // Winner selection: deepest accepted manifold (face or surviving
+    // tentative) carries the pair this step.
+    int haveWinner = 0;
+    m3MeshCandidate winner;
+    winner.separation = 3.4e38f;
+    winner.triIndex = -1;
+    for (int32_t k = 0; k < faceCount; ++k)
+    {
+        if (!haveWinner || faceAccepted[k].separation < winner.separation ||
+            (faceAccepted[k].separation == winner.separation &&
+             faceAccepted[k].triIndex < winner.triIndex))
+        {
+            winner = faceAccepted[k];
+            haveWinner = 1;
+        }
+    }
+    for (int32_t k = 0; k < tentativeCount; ++k)
+    {
+        int32_t t = tentative[k].triIndex;
+        int32_t i1 = mesh->indices[3 * t + 0];
+        int32_t i2 = mesh->indices[3 * t + 1];
+        int32_t i3 = mesh->indices[3 * t + 2];
+        int newEdge1 = ClaimEdge(&set, i1, i2);
+        int newEdge2 = ClaimEdge(&set, i2, i3);
+        int newEdge3 = ClaimEdge(&set, i3, i1);
+        int newVert1 = ClaimVertex(&set, i1);
+        int newVert2 = ClaimVertex(&set, i2);
+        int newVert3 = ClaimVertex(&set, i3);
+        int shouldCollide = 0;
+        switch (tentative[k].feature)
+        {
+        case 1 | 2:
+            shouldCollide = newEdge1;
+            break;
+        case 2 | 4:
+            shouldCollide = newEdge2;
+            break;
+        case 1 | 4:
+            shouldCollide = newEdge3;
+            break;
+        case 1:
+            shouldCollide = newVert1;
+            break;
+        case 2:
+            shouldCollide = newVert2;
+            break;
+        case 4:
+            shouldCollide = newVert3;
+            break;
+        default:
+            break;
+        }
+        if (shouldCollide && (!haveWinner || tentative[k].separation < winner.separation ||
+                              (tentative[k].separation == winner.separation &&
+                               tentative[k].triIndex < winner.triIndex)))
+        {
+            winner = tentative[k];
+            haveWinner = 1;
+        }
+    }
+
+    if (!haveWinner)
+    {
+        return;
+    }
+
+    // Emit: normal and anchors out of the mesh frame, COM-relative,
+    // A-to-B convention (flip when the mesh is shape B).
+    m3Vec3 nWorld = m3RotateVec3(xfM->q, winner.normal); // mesh -> sphere
+    m3Vec3 onTriWorldRel = m3RotateVec3(xfM->q, winner.onTri);
+    double px = xfM->p.x + (double)onTriWorldRel.x;
+    double py = xfM->p.y + (double)onTriWorldRel.y;
+    double pz = xfM->p.z + (double)onTriWorldRel.z;
+    m3Vec3 anchorMesh = FromCom(world, meshBody, px, py, pz);
+    m3Vec3 anchorBall =
+        FromCom(world, ballBody, scx - (double)(nWorld.x * radius),
+                scy - (double)(nWorld.y * radius), scz - (double)(nWorld.z * radius));
+    fresh->normal = meshIsA ? nWorld : m3Neg3(nWorld);
+    fresh->pointCount = 1;
+    fresh->points[0].anchorA = meshIsA ? anchorMesh : anchorBall;
+    fresh->points[0].anchorB = meshIsA ? anchorBall : anchorMesh;
+    fresh->points[0].separation = winner.separation;
+    fresh->points[0].id = (uint16_t)winner.triIndex;
+}
+
 m3Result m3UpdateContacts(m3World* world, const uint64_t* oldKeys, const m3Manifold* oldManifolds,
                           int32_t oldCount)
 {
@@ -680,10 +1032,24 @@ m3Result m3UpdateContacts(m3World* world, const uint64_t* oldKeys, const m3Manif
         uint8_t typeB = world->shapeType[shapeB];
 
         m3Manifold fresh;
+        int meshPair = typeA == (uint8_t)m3_meshShape || typeB == (uint8_t)m3_meshShape;
         int planePair = typeA == (uint8_t)m3_planeShape || typeB == (uint8_t)m3_planeShape;
         int hullPair = typeA == (uint8_t)m3_hullShape || typeB == (uint8_t)m3_hullShape;
         int capsulePair = typeA == (uint8_t)m3_capsuleShape || typeB == (uint8_t)m3_capsuleShape;
-        if (planePair && hullPair)
+        if (meshPair)
+        {
+            memset(&fresh, 0, sizeof(fresh));
+            int32_t meshShape = typeA == (uint8_t)m3_meshShape ? shapeA : shapeB;
+            int32_t otherShape = meshShape == shapeA ? shapeB : shapeA;
+            if (world->shapeType[otherShape] == (uint8_t)m3_sphereShape)
+            {
+                CollideMeshSphere(world, &fresh, meshShape, otherShape, meshShape == shapeA);
+            }
+            // Capsule and hull versus mesh land with 2b-9b; until
+            // then those pairs carry no manifold (documented staged
+            // gap, guarded by a test).
+        }
+        else if (planePair && hullPair)
         {
             // Plane versus hull (2b-5a): every hull vertex below the
             // margin becomes a candidate; the four deepest survive
