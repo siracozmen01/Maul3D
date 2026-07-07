@@ -77,6 +77,36 @@ static int ShapeMassProps(const m3World* world, int32_t s, float* massOut, m3Vec
         inertiaOut->cz.z = ic;
         return 1;
     }
+    if (type == (uint8_t)m3_capsuleShape)
+    {
+        // Closed form: a cylinder of length L plus two hemispheres.
+        // About the COM (the segment midpoint), with u the unit axis:
+        //   I = Iperp * Identity + (Iaxial - Iperp) * (u outer u)
+        // because t1(x)t1 + t2(x)t2 = Identity - u(x)u for any
+        // orthonormal basis {t1, u, t2}. No basis matrix needed and
+        // the result is exactly symmetric.
+        m3Vec3 p1 = world->shapeGeom[s].v;
+        m3Vec3 p2 = world->shapeGeom[s].v2;
+        float r = world->shapeGeom[s].s;
+        m3Vec3 axis = m3Sub3(p2, p1);
+        float length = sqrtf(m3Dot3(axis, axis));
+        m3Vec3 u = m3MulSV3(1.0f / length, axis); // length > 0 by contract
+        float density = world->shapeDensity[s];
+        float mCyl = density * M3_PI * r * r * length;
+        float mSph = density * (4.0f / 3.0f) * M3_PI * r * r * r;
+        float axial = 0.5f * mCyl * r * r + 0.4f * mSph * r * r;
+        float perp = mCyl * (length * length / 12.0f + 0.25f * r * r) +
+                     mSph * (0.4f * r * r + 0.25f * length * length + 0.375f * length * r);
+        *massOut = mCyl + mSph;
+        *comOut = m3MulSV3(0.5f, m3Add3(p1, p2));
+        m3Mat3 ic2 = m3MakeZeroMat3();
+        float d = axial - perp;
+        ic2.cx = (m3Vec3){perp + d * u.x * u.x, d * u.x * u.y, d * u.x * u.z};
+        ic2.cy = (m3Vec3){d * u.x * u.y, perp + d * u.y * u.y, d * u.y * u.z};
+        ic2.cz = (m3Vec3){d * u.x * u.z, d * u.y * u.z, perp + d * u.z * u.z};
+        *inertiaOut = ic2;
+        return 1;
+    }
     if (type == (uint8_t)m3_hullShape)
     {
         const m3HullData* hull = &world->hullData[world->shapeHullIndex[s]];
@@ -99,6 +129,7 @@ void m3RecomputeMass(m3World* world, int32_t bodyIndex)
     {
         world->invMass[bodyIndex] = 0.0f;
         world->invInertiaLocal[bodyIndex] = m3MakeZeroMat3();
+        world->inertiaLocal[bodyIndex] = m3MakeZeroMat3();
         world->localCenters[bodyIndex] = (m3Vec3){0.0f, 0.0f, 0.0f};
         return;
     }
@@ -126,6 +157,7 @@ void m3RecomputeMass(m3World* world, int32_t bodyIndex)
         // reference convention).
         world->invMass[bodyIndex] = 1.0f;
         world->invInertiaLocal[bodyIndex] = m3MakeZeroMat3();
+        world->inertiaLocal[bodyIndex] = m3MakeZeroMat3();
         world->localCenters[bodyIndex] = (m3Vec3){0.0f, 0.0f, 0.0f};
         return;
     }
@@ -156,6 +188,7 @@ void m3RecomputeMass(m3World* world, int32_t bodyIndex)
         inertia.cy.z += ic.cy.z - m * d.y * d.z;
     }
     world->invMass[bodyIndex] = 1.0f / mass;
+    world->inertiaLocal[bodyIndex] = inertia; // the gyroscopic solve reads it
     world->invInertiaLocal[bodyIndex] = InvertSymmetric(inertia);
     world->localCenters[bodyIndex] = center;
 }
@@ -241,7 +274,7 @@ void m3DestroyShapeInternal(m3World* world, int32_t index)
     }
     world->shapeBody[index] = -1;
     world->shapeType[index] = 0;
-    world->shapeGeom[index] = (m3ShapeGeom){{0.0f, 0.0f, 0.0f}, 0.0f};
+    world->shapeGeom[index] = (m3ShapeGeom){{0.0f, 0.0f, 0.0f}, 0.0f, {0.0f, 0.0f, 0.0f}, 0.0f};
     world->shapeDensity[index] = 0.0f;
     world->shapeFriction[index] = 0.0f;
     world->shapeRestitution[index] = 0.0f;
@@ -302,7 +335,7 @@ m3ShapeId m3CreateSphereShape(m3BodyId bodyId, const m3ShapeDef* def, const m3Sp
     }
     // The 2a off-origin refusal is gone: the full inertia tensor and
     // center-of-mass bookkeeping (2b-1) make offset spheres exact.
-    m3ShapeGeom geom = {sphere->center, sphere->radius};
+    m3ShapeGeom geom = {sphere->center, sphere->radius, {0.0f, 0.0f, 0.0f}, 0.0f};
     return CreateShapeCommon(bodyId, def, (uint8_t)m3_sphereShape, &geom);
 }
 
@@ -320,8 +353,29 @@ m3ShapeId m3CreatePlaneShape(m3BodyId bodyId, const m3ShapeDef* def, const m3Pla
         // shape has no mass.
         return m3_nullShapeId;
     }
-    m3ShapeGeom geom = {m3Normalize3(plane->normal), plane->offset};
+    m3ShapeGeom geom = {m3Normalize3(plane->normal), plane->offset, {0.0f, 0.0f, 0.0f}, 0.0f};
     return CreateShapeCommon(bodyId, def, (uint8_t)m3_planeShape, &geom);
+}
+
+m3ShapeId m3CreateCapsuleShape(m3BodyId bodyId, const m3ShapeDef* def, const m3Capsule* capsule)
+{
+    if (capsule == NULL || !(capsule->radius > 0.0f))
+    {
+        return m3_nullShapeId;
+    }
+    m3Vec3 axis = m3Sub3(capsule->point2, capsule->point1);
+    if (!(m3Dot3(axis, axis) > 0.0f))
+    {
+        // A zero-length capsule is a sphere; asking for one is a
+        // contract violation, refused loudly (use m3CreateSphereShape).
+        return m3_nullShapeId;
+    }
+    m3ShapeGeom geom;
+    geom.v = capsule->point1;
+    geom.s = capsule->radius;
+    geom.v2 = capsule->point2;
+    geom.s2 = 0.0f;
+    return CreateShapeCommon(bodyId, def, (uint8_t)m3_capsuleShape, &geom);
 }
 
 m3ShapeId m3CreateBoxShape(m3BodyId bodyId, const m3ShapeDef* def, m3Vec3 halfExtents)
@@ -330,7 +384,7 @@ m3ShapeId m3CreateBoxShape(m3BodyId bodyId, const m3ShapeDef* def, m3Vec3 halfEx
     {
         return m3_nullShapeId; // contract: bad extents return null
     }
-    m3ShapeGeom geom = {halfExtents, 0.0f};
+    m3ShapeGeom geom = {halfExtents, 0.0f, {0.0f, 0.0f, 0.0f}, 0.0f};
     return CreateShapeCommon(bodyId, def, (uint8_t)m3_hullShape, &geom);
 }
 

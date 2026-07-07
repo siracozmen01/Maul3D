@@ -22,7 +22,7 @@
 // integration order, constants). Part of the snapshot config hash, so
 // a snapshot from a different behavior revision is refused loudly
 // instead of silently diverging (the Jolt friction-model lesson).
-#define M3_SOLVER_REV 3 // rev 3: multi-point manifolds and hull contacts
+#define M3_SOLVER_REV 4 // rev 4: capsules and the gyroscopic term
 
 // Def cookies: a def that did not come from its m3Default*Def factory
 // is rejected loudly (the Maul2D pattern).
@@ -87,14 +87,19 @@ typedef struct m3HullData
 
 _Static_assert(sizeof(m3HullData) == 912, "hull data must be padding-free");
 
-// Geometry is one padding-free 16-byte record per shape, interpreted
+// Geometry is one padding-free 32-byte record per shape, interpreted
 // by type: sphere {v=center, s=radius}, plane {v=normal, s=offset},
-// hull {v=box half extents for the journaled rebuild, s unused}.
+// hull {v=box half extents for the journaled rebuild, s unused},
+// capsule {v=point1, v2=point2, s=radius}.
 typedef struct m3ShapeGeom
 {
-    m3Vec3 v;
-    m3real s;
+    m3Vec3 v;  // sphere center | plane normal | box half extents | capsule p1
+    m3real s;  // radius | offset | unused | radius
+    m3Vec3 v2; // capsule p2
+    m3real s2; // reserved
 } m3ShapeGeom;
+
+_Static_assert(sizeof(m3ShapeGeom) == 32, "shape geom must be padding-free");
 
 // One contact point: anchors are measured from each body's center in
 // world orientation (float is exact enough near contact), impulses are
@@ -160,6 +165,7 @@ typedef struct m3World
     m3Vec3* angularVelocities;
     m3real* invMass;
     m3Mat3* invInertiaLocal; // inverse inertia about the COM, body frame
+    m3Mat3* inertiaLocal;    // forward tensor (the gyroscopic solve reads it)
     m3Vec3* localCenters;    // center of mass in the body frame
     m3real* gravityScales;
     m3real* linearDamping;

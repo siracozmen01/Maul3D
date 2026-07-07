@@ -247,6 +247,152 @@ static void TestBoxRests(void)
     CHECK(h1 != 0, "the scene hashes");
 }
 
+static void TestCapsuleRestsFlat(void)
+{
+    // The 2b-6 milestone, part one: a capsule dropped lying flat
+    // lands on the two-cap manifold, rests at its radius, and does
+    // not roll away or pitch up.
+    m3WorldId world = MakeWorld();
+    AddGroundPlane(world, 0.6f);
+
+    m3BodyDef bd = m3DefaultBodyDef();
+    bd.type = m3_dynamicBody;
+    bd.position = (m3Pos3){0.0, 1.0, 0.0};
+    m3BodyId body = m3CreateBody(world, &bd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    m3Capsule capsule = {{-0.5f, 0.0f, 0.0f}, {0.5f, 0.0f, 0.0f}, 0.3f};
+    m3ShapeId shape = m3CreateCapsuleShape(body, &sd, &capsule);
+    CHECK(m3Shape_IsValid(shape), "the capsule creates");
+
+    // Contract checks while the world is warm: zero length and zero
+    // radius are refused with the null id, no shape half-created.
+    m3Capsule degenerate = {{0.1f, 0.0f, 0.0f}, {0.1f, 0.0f, 0.0f}, 0.3f};
+    CHECK(!m3Shape_IsValid(m3CreateCapsuleShape(body, &sd, &degenerate)),
+          "a zero-length capsule is refused");
+    m3Capsule flat = {{-0.5f, 0.0f, 0.0f}, {0.5f, 0.0f, 0.0f}, 0.0f};
+    CHECK(!m3Shape_IsValid(m3CreateCapsuleShape(body, &sd, &flat)),
+          "a zero-radius capsule is refused");
+
+    StepN(world, 480);
+
+    m3Pos3 p = m3Body_GetPosition(body);
+    CHECK(p.y > 0.27 && p.y < 0.33, "the capsule rests at its radius");
+    CHECK(p.x > -0.05 && p.x < 0.05, "the capsule does not wander");
+    m3Quat q = m3Body_GetRotation(body);
+    CHECK(q.w > 0.999f || q.w < -0.999f, "the capsule stays level");
+    m3DestroyWorld(world);
+}
+
+static void TestSphereRestsOnBox(void)
+{
+    // Part two: the hull-sphere staged gap closes. A sphere dropped
+    // onto a static unit box takes the generic GJK contact and rests
+    // on the top face.
+    m3WorldDef def = m3DefaultWorldDef();
+    def.bodyCapacity = 8;
+    def.shapeCapacity = 8;
+    m3WorldId world = m3CreateWorld(&def);
+
+    m3BodyDef bd = m3DefaultBodyDef();
+    bd.position = (m3Pos3){0.0, 0.5, 0.0};
+    m3BodyId block = m3CreateBody(world, &bd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    m3CreateBoxShape(block, &sd, (m3Vec3){0.5f, 0.5f, 0.5f});
+
+    bd.type = m3_dynamicBody;
+    bd.position = (m3Pos3){0.0, 2.0, 0.0};
+    m3BodyId ball = m3CreateBody(world, &bd);
+    m3Sphere sphere = {{0.0f, 0.0f, 0.0f}, 0.4f};
+    m3CreateSphereShape(ball, &sd, &sphere);
+
+    StepN(world, 480);
+
+    m3Pos3 p = m3Body_GetPosition(ball);
+    CHECK(p.y > 1.36 && p.y < 1.44, "the sphere rests on the box top");
+    CHECK(p.x > -0.02 && p.x < 0.02, "the sphere stays centered");
+    m3DestroyWorld(world);
+}
+
+static void TestSphereRestsOnCapsule(void)
+{
+    // Part three: capsule-sphere through the same generic pair. The
+    // sphere balances on the lying capsule's midsection; a centered
+    // drop is symmetric, so determinism keeps it centered.
+    m3WorldId world = MakeWorld();
+    AddGroundPlane(world, 0.6f);
+
+    m3BodyDef bd = m3DefaultBodyDef();
+    bd.type = m3_dynamicBody;
+    bd.position = (m3Pos3){0.0, 0.3, 0.0};
+    m3BodyId cap = m3CreateBody(world, &bd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    m3Capsule capsule = {{-0.6f, 0.0f, 0.0f}, {0.6f, 0.0f, 0.0f}, 0.3f};
+    m3CreateCapsuleShape(cap, &sd, &capsule);
+
+    bd.position = (m3Pos3){0.0, 1.2, 0.0};
+    m3BodyId ball = m3CreateBody(world, &bd);
+    m3Sphere sphere = {{0.0f, 0.0f, 0.0f}, 0.25f};
+    m3CreateSphereShape(ball, &sd, &sphere);
+
+    StepN(world, 360);
+
+    m3Pos3 p = m3Body_GetPosition(ball);
+    CHECK(p.y > 0.80 && p.y < 0.90, "the sphere rests on the capsule crown");
+    m3Pos3 cp = m3Body_GetPosition(cap);
+    CHECK(cp.y > 0.27 && cp.y < 0.33, "the capsule carries the load at its radius");
+    m3DestroyWorld(world);
+}
+
+static void TestGyroscopicTumble(void)
+{
+    // Part four: the implicit gyroscopic term. A long flat box spun
+    // about its intermediate axis must tumble (the Dzhanibekov flip
+    // needs the cross(w, I*w) torque) while the implicit Newton form
+    // keeps the energy bounded: |w| may legitimately grow as rotation
+    // shifts toward the low-inertia axis, but only up to the inertia
+    // ratio, never past it.
+    m3WorldDef def = m3DefaultWorldDef();
+    def.gravity = (m3Vec3){0.0f, 0.0f, 0.0f};
+    def.bodyCapacity = 4;
+    def.shapeCapacity = 4;
+    m3WorldId world = m3CreateWorld(&def);
+
+    m3BodyDef bd = m3DefaultBodyDef();
+    bd.type = m3_dynamicBody;
+    bd.position = (m3Pos3){0.0, 0.0, 0.0};
+    m3BodyId body = m3CreateBody(world, &bd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    // Half extents 1.0 x 0.4 x 0.05: three distinct principal
+    // moments, y is the intermediate axis.
+    m3CreateBoxShape(body, &sd, (m3Vec3){1.0f, 0.4f, 0.05f});
+    m3Body_SetAngularVelocity(body, (m3Vec3){0.01f, 5.0f, 0.01f});
+
+    int tumbled = 0;
+    float wMax = 0.0f;
+    for (int32_t i = 0; i < 600; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+        m3Vec3 w = m3Body_GetAngularVelocity(body);
+        float mag2 = w.x * w.x + w.y * w.y + w.z * w.z;
+        if (mag2 > wMax)
+        {
+            wMax = mag2;
+        }
+        if (w.x > 1.0f || w.x < -1.0f || w.z > 1.0f || w.z < -1.0f)
+        {
+            tumbled = 1;
+        }
+    }
+    CHECK(tumbled, "the intermediate-axis spin tumbles (the term is alive)");
+    // Energy bound: E = w·(I w)/2 is conserved or dissipated, so
+    // |w|^2 <= (Imax/Imin) |w0|^2 = (about 6.3) * 25.
+    CHECK(wMax < 170.0f, "the tumble never gains energy");
+    m3Quat q = m3Body_GetRotation(body);
+    float norm2 = q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w;
+    CHECK(norm2 > 0.99f && norm2 < 1.01f, "the rotation stays normalized");
+    m3DestroyWorld(world);
+}
+
 static void TestSolverHashGate(void)
 {
     // The fixed solver scene for the CI gate: a plane, a three-sphere
@@ -272,6 +418,10 @@ int main(void)
     TestFrictionSlows();
     TestReplayEquality();
     TestBoxRests();
+    TestCapsuleRestsFlat();
+    TestSphereRestsOnBox();
+    TestSphereRestsOnCapsule();
+    TestGyroscopicTumble();
     TestSolverHashGate();
     if (s_failures == 0)
     {

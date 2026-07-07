@@ -432,6 +432,50 @@ static m3Vec3 FromCom(const m3World* world, int32_t body, double px, double py, 
                     (m3real)(pz - xf->p.z - (double)rlc.z)};
 }
 
+// Build the GJK proxy for one shape in its own local frame. Spheres
+// and capsules park their point(s) in the caller's scratch (the proxy
+// only borrows the pointer); hulls point straight at the interned
+// vertex array.
+static m3DistanceProxy ShapeProxy(const m3World* world, int32_t shape, m3Vec3 scratch[2])
+{
+    m3DistanceProxy proxy;
+    uint8_t type = world->shapeType[shape];
+    if (type == (uint8_t)m3_hullShape)
+    {
+        const m3HullData* hull = &world->hullData[world->shapeHullIndex[shape]];
+        proxy.points = hull->vertices;
+        proxy.count = hull->vertexCount;
+        proxy.radius = 0.0f;
+        return proxy;
+    }
+    if (type == (uint8_t)m3_capsuleShape)
+    {
+        scratch[0] = world->shapeGeom[shape].v;
+        scratch[1] = world->shapeGeom[shape].v2;
+        proxy.points = scratch;
+        proxy.count = 2;
+        proxy.radius = world->shapeGeom[shape].s;
+        return proxy;
+    }
+    // Sphere (planes never reach the GJK path).
+    scratch[0] = world->shapeGeom[shape].v;
+    proxy.points = scratch;
+    proxy.count = 1;
+    proxy.radius = world->shapeGeom[shape].s;
+    return proxy;
+}
+
+// Mean of the proxy points, the deep-overlap fallback direction seed.
+static m3Vec3 ProxyCentroid(const m3DistanceProxy* proxy)
+{
+    m3Vec3 c = {0.0f, 0.0f, 0.0f};
+    for (int32_t i = 0; i < proxy->count; ++i)
+    {
+        c = m3Add3(c, proxy->points[i]);
+    }
+    return m3MulSV3(1.0f / (m3real)proxy->count, c);
+}
+
 m3Result m3UpdateContacts(m3World* world, const uint64_t* oldKeys, const m3Manifold* oldManifolds,
                           int32_t oldCount)
 {
@@ -449,6 +493,7 @@ m3Result m3UpdateContacts(m3World* world, const uint64_t* oldKeys, const m3Manif
         m3Manifold fresh;
         int planePair = typeA == (uint8_t)m3_planeShape || typeB == (uint8_t)m3_planeShape;
         int hullPair = typeA == (uint8_t)m3_hullShape || typeB == (uint8_t)m3_hullShape;
+        int capsulePair = typeA == (uint8_t)m3_capsuleShape || typeB == (uint8_t)m3_capsuleShape;
         if (planePair && hullPair)
         {
             // Plane versus hull (2b-5a): every hull vertex below the
@@ -590,12 +635,130 @@ m3Result m3UpdateContacts(m3World* world, const uint64_t* oldKeys, const m3Manif
                 }
             }
         }
-        else if (hullPair)
+        else if (planePair && capsulePair)
         {
-            // Hull versus sphere lands with the capsule slice; until
-            // then this pair carries no manifold (the one documented
-            // staged gap).
+            // Plane versus capsule: the two cap centers are the only
+            // candidates. Both inside the margin means the capsule
+            // lies flat and gets the two-point manifold that keeps it
+            // from rocking. Feature id = cap index (0 or 1), emitted
+            // in cap order (canonical).
             memset(&fresh, 0, sizeof(fresh));
+            int32_t planeShape = typeA == (uint8_t)m3_planeShape ? shapeA : shapeB;
+            int32_t capShape = planeShape == shapeA ? shapeB : shapeA;
+            int32_t planeBody = world->shapeBody[planeShape];
+            int32_t capBody = world->shapeBody[capShape];
+            const m3Transform* xf = &world->transforms[capBody];
+            m3Vec3 n = world->shapeGeom[planeShape].v;
+            m3real offset = world->shapeGeom[planeShape].s;
+            m3real radius = world->shapeGeom[capShape].s;
+            m3Vec3 caps[2] = {world->shapeGeom[capShape].v, world->shapeGeom[capShape].v2};
+            int32_t count = 0;
+            for (int32_t k = 0; k < 2; ++k)
+            {
+                m3Vec3 r = m3RotateVec3(xf->q, caps[k]);
+                double wx = xf->p.x + (double)r.x;
+                double wy = xf->p.y + (double)r.y;
+                double wz = xf->p.z + (double)r.z;
+                double centerDist =
+                    (double)n.x * wx + (double)n.y * wy + (double)n.z * wz - (double)offset;
+                m3real sep = (m3real)centerDist - radius;
+                if (sep > M3_SPECULATIVE_DISTANCE)
+                {
+                    continue;
+                }
+                // anchorA: the cap center projected onto the plane.
+                // anchorB: the deepest point of that cap sphere.
+                double px = wx - (double)n.x * centerDist;
+                double py = wy - (double)n.y * centerDist;
+                double pz = wz - (double)n.z * centerDist;
+                fresh.points[count].anchorA = FromCom(world, planeBody, px, py, pz);
+                fresh.points[count].anchorB =
+                    FromCom(world, capBody, wx - (double)(n.x * radius),
+                            wy - (double)(n.y * radius), wz - (double)(n.z * radius));
+                fresh.points[count].separation = sep;
+                fresh.points[count].id = (uint16_t)k;
+                count += 1;
+            }
+            fresh.normal = n;
+            fresh.pointCount = count;
+            if (count > 0 && planeShape != shapeA)
+            {
+                fresh.normal = m3Neg3(fresh.normal);
+                for (int32_t k = 0; k < count; ++k)
+                {
+                    m3Vec3 tmp = fresh.points[k].anchorA;
+                    fresh.points[k].anchorA = fresh.points[k].anchorB;
+                    fresh.points[k].anchorB = tmp;
+                }
+            }
+        }
+        else if (hullPair || capsulePair)
+        {
+            // The generic convex pair (hull-sphere, capsule-sphere,
+            // capsule-capsule, capsule-hull): GJK on the cores in A's
+            // frame, radii applied analytically. One contact point,
+            // feature id 0. Deep core overlap (GJK distance zero)
+            // takes a documented crude fallback until EPA lands in
+            // 2b-7: the center-to-center direction and a radius-sum
+            // bound; the solver's push clamp keeps it gentle.
+            memset(&fresh, 0, sizeof(fresh));
+            int32_t bodyA = world->shapeBody[shapeA];
+            int32_t bodyB = world->shapeBody[shapeB];
+            const m3Transform* xfA = &world->transforms[bodyA];
+            const m3Transform* xfB = &world->transforms[bodyB];
+            m3Quat conjA = {-xfA->q.x, -xfA->q.y, -xfA->q.z, xfA->q.w};
+            m3DistanceInput input;
+            memset(&input, 0, sizeof(input));
+            input.q = m3MulQuat(conjA, xfB->q);
+            m3Vec3 dp = {(m3real)(xfB->p.x - xfA->p.x), (m3real)(xfB->p.y - xfA->p.y),
+                         (m3real)(xfB->p.z - xfA->p.z)};
+            input.p = m3InvRotateVec3(xfA->q, dp);
+            m3Vec3 pointsA[2];
+            m3Vec3 pointsB[2];
+            input.proxyA = ShapeProxy(world, shapeA, pointsA);
+            input.proxyB = ShapeProxy(world, shapeB, pointsB);
+            input.useRadii = false;
+            m3SimplexCache cache;
+            cache.count = 0;
+            cache.metric = 0.0f;
+            m3DistanceOutput out = m3ShapeDistance(&input, &cache);
+            m3real rA = input.proxyA.radius;
+            m3real rB = input.proxyB.radius;
+            m3real sep = out.distance - rA - rB;
+            if (sep <= M3_SPECULATIVE_DISTANCE)
+            {
+                m3Vec3 nLocal;
+                m3Vec3 pALocal;
+                m3Vec3 pBLocal;
+                if (out.distance > 0.0f)
+                {
+                    nLocal = out.normal;
+                    pALocal = m3Add3(out.pointA, m3MulSV3(rA, nLocal));
+                    pBLocal = m3Sub3(out.pointB, m3MulSV3(rB, nLocal));
+                }
+                else
+                {
+                    // Deep overlap fallback (until EPA, 2b-7).
+                    m3Vec3 cA = ProxyCentroid(&input.proxyA);
+                    m3Vec3 cB =
+                        m3Add3(m3RotateVec3(input.q, ProxyCentroid(&input.proxyB)), input.p);
+                    nLocal = m3Normalize3(m3Sub3(cB, cA));
+                    m3Vec3 mid = m3MulSV3(0.5f, m3Add3(cA, cB));
+                    pALocal = mid;
+                    pBLocal = mid;
+                    sep = -(rA + rB) - M3_SPECULATIVE_DISTANCE;
+                }
+                fresh.normal = m3RotateVec3(xfA->q, nLocal);
+                m3Vec3 wA = m3RotateVec3(xfA->q, pALocal);
+                m3Vec3 wB = m3RotateVec3(xfA->q, pBLocal);
+                fresh.points[0].anchorA = FromCom(world, bodyA, xfA->p.x + (double)wA.x,
+                                                  xfA->p.y + (double)wA.y, xfA->p.z + (double)wA.z);
+                fresh.points[0].anchorB = FromCom(world, bodyB, xfA->p.x + (double)wB.x,
+                                                  xfA->p.y + (double)wB.y, xfA->p.z + (double)wB.z);
+                fresh.points[0].separation = sep;
+                fresh.points[0].id = 0;
+                fresh.pointCount = 1;
+            }
         }
         else if (typeA == (uint8_t)m3_planeShape || typeB == (uint8_t)m3_planeShape)
         {

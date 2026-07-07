@@ -22,7 +22,7 @@
 #endif
 
 #define M3_SNAPSHOT_MAGIC   0x4D33534Eu // 'M3SN'
-#define M3_SNAPSHOT_VERSION 7u          // v7: four-point manifolds
+#define M3_SNAPSHOT_VERSION 8u          // v8: capsules, forward inertia
 
 // The math types are canonical field data only because they are
 // provably padding-free; a change here is a format version bump.
@@ -115,6 +115,7 @@ static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3Wal
     M3_BLOCK(world->angularVelocities, cap * (int32_t)sizeof(m3Vec3));
     M3_BLOCK(world->invMass, cap * (int32_t)sizeof(m3real));
     M3_BLOCK(world->invInertiaLocal, cap * (int32_t)sizeof(m3Mat3));
+    M3_BLOCK(world->inertiaLocal, cap * (int32_t)sizeof(m3Mat3));
     M3_BLOCK(world->localCenters, cap * (int32_t)sizeof(m3Vec3));
     M3_BLOCK(world->gravityScales, cap * (int32_t)sizeof(m3real));
     M3_BLOCK(world->linearDamping, cap * (int32_t)sizeof(m3real));

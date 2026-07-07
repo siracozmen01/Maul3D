@@ -48,6 +48,24 @@ static m3Aabb3d SphereAabb(const m3World* world, int32_t shape)
         return box;
     }
 
+    if (world->shapeType[shape] == (uint8_t)m3_capsuleShape)
+    {
+        // Capsule bounds: the two cap-center spheres, min and max in
+        // double, same fattening as everything else.
+        m3Vec3 r1 = m3RotateVec3(xf->q, world->shapeGeom[shape].v);
+        m3Vec3 r2 = m3RotateVec3(xf->q, world->shapeGeom[shape].v2);
+        double c1[3] = {xf->p.x + (double)r1.x, xf->p.y + (double)r1.y, xf->p.z + (double)r1.z};
+        double c2[3] = {xf->p.x + (double)r2.x, xf->p.y + (double)r2.y, xf->p.z + (double)r2.z};
+        double fat = (double)(world->shapeGeom[shape].s + M3_AABB_MARGIN);
+        m3Aabb3d box;
+        for (int32_t k = 0; k < 3; ++k)
+        {
+            box.lo[k] = (c1[k] < c2[k] ? c1[k] : c2[k]) - fat;
+            box.hi[k] = (c1[k] > c2[k] ? c1[k] : c2[k]) + fat;
+        }
+        return box;
+    }
+
     m3Vec3 local = world->shapeGeom[shape].v;
     m3Vec3 r = m3RotateVec3(xf->q, local);
     double cx = xf->p.x + (double)r.x;

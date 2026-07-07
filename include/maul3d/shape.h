@@ -14,8 +14,9 @@ extern "C"
     typedef enum m3ShapeType
     {
         m3_sphereShape = 0,
-        m3_planeShape = 1, // static bodies only: an infinite half-space
-        m3_hullShape = 2,  // convex hull (boxes in 2b-3; point clouds later)
+        m3_planeShape = 1,   // static bodies only: an infinite half-space
+        m3_hullShape = 2,    // convex hull (boxes in 2b-3; point clouds later)
+        m3_capsuleShape = 3, // a segment with a radius
     } m3ShapeType;
 
     typedef struct m3Sphere
@@ -65,6 +66,18 @@ extern "C"
     /// center). Hull collision lands in the GJK and SAT slices; until
     /// then a box participates in the broadphase and in mass only.
     M3_API m3ShapeId m3CreateBoxShape(m3BodyId bodyId, const m3ShapeDef* def, m3Vec3 halfExtents);
+
+    /// A capsule: the segment p1-p2 swept by a radius. Mass is the
+    /// closed-form cylinder plus two hemispheres about the midpoint.
+    typedef struct m3Capsule
+    {
+        m3Vec3 point1;
+        m3Vec3 point2;
+        m3real radius;
+    } m3Capsule;
+
+    M3_API m3ShapeId m3CreateCapsuleShape(m3BodyId bodyId, const m3ShapeDef* def,
+                                          const m3Capsule* capsule);
 
     M3_API bool m3Shape_IsValid(m3ShapeId shapeId);
 

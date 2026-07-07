@@ -301,6 +301,78 @@ static void Restitution(m3World* world, m3ContactConstraint* constraints, int32_
         }
     }
 }
+// Solve J * x = b for a general 3x3 via Cramer's rule. A singular
+// Jacobian returns zero, which leaves omega unchanged (the safe step).
+static m3Vec3 Solve3(const m3Mat3* J, m3Vec3 b)
+{
+    m3Vec3 cxy = m3Cross3(J->cy, J->cz);
+    m3real det = m3Dot3(J->cx, cxy);
+    if (det == 0.0f)
+    {
+        return (m3Vec3){0.0f, 0.0f, 0.0f};
+    }
+    m3real inv = 1.0f / det;
+    m3Vec3 x;
+    x.x = inv * m3Dot3(b, cxy);
+    x.y = inv * m3Dot3(J->cx, m3Cross3(b, J->cz));
+    x.z = inv * m3Dot3(J->cx, m3Cross3(J->cy, b));
+    return x;
+}
+
+// Implicit gyroscopic torque (the reference's Newton-Raphson step on
+// I*(w2 - w1) + h * cross(w2, I*w2) = 0, solved in body coordinates
+// where the Jacobian is cheap). Long skinny bodies tumble correctly
+// and never gain energy; the implicit form is unconditionally stable.
+// Exactly isotropic tensors are gated out: cross(w, c*w) is zero in
+// real arithmetic but not bit-zero in float, and spheres must keep
+// their bit-identical trajectories. The gate compares are exact, so
+// the branch itself is deterministic.
+static m3Vec3 GyroscopicOmega(const m3World* world, int32_t body, m3Vec3 w, m3real h)
+{
+    const m3Mat3* inertia = &world->inertiaLocal[body];
+    const m3real i00 = inertia->cx.x;
+    const m3real i01 = inertia->cy.x;
+    const m3real i02 = inertia->cz.x;
+    const m3real i11 = inertia->cy.y;
+    const m3real i12 = inertia->cz.y;
+    const m3real i22 = inertia->cz.z;
+    if (i01 == 0.0f && i02 == 0.0f && i12 == 0.0f && i00 == i11 && i11 == i22)
+    {
+        return w; // isotropic (or massless): the term vanishes
+    }
+
+    m3Quat q = world->transforms[body].q;
+    m3Vec3 omega1 = m3InvRotateVec3(q, w);
+    m3Vec3 omega2 = omega1;
+
+    // One Newton iteration (the reference count): residual
+    // b = I*(w2 - w1) + h * (w2 x I*w2), Jacobian
+    // J = I + h * (skew(w2) * I - skew(I*w2)).
+    const m3real w1 = omega2.x;
+    const m3real w2 = omega2.y;
+    const m3real w3 = omega2.z;
+    const m3real Iw1 = i00 * w1 + i01 * w2 + i02 * w3;
+    const m3real Iw2 = i01 * w1 + i11 * w2 + i12 * w3;
+    const m3real Iw3 = i02 * w1 + i12 * w2 + i22 * w3;
+    // omega2 - omega1 is zero on the first (only) iteration, so the
+    // residual is just the gyroscopic term.
+    m3Vec3 b = {
+        h * (w2 * Iw3 - w3 * Iw2),
+        h * (w3 * Iw1 - w1 * Iw3),
+        h * (w1 * Iw2 - w2 * Iw1),
+    };
+    m3Mat3 J;
+    J.cx = (m3Vec3){i00 + h * (w2 * i02 - w3 * i01), i01 + h * (w3 * i00 - w1 * i02 - Iw3),
+                    i02 + h * (w1 * i01 - w2 * i00 + Iw2)};
+    J.cy = (m3Vec3){i01 + h * (w2 * i12 - w3 * i11 + Iw3), i11 + h * (w3 * i01 - w1 * i12),
+                    i12 + h * (w1 * i11 - w2 * i01 - Iw1)};
+    J.cz = (m3Vec3){i02 + h * (w2 * i22 - w3 * i12 - Iw2), i12 + h * (w3 * i02 - w1 * i22 + Iw1),
+                    i22 + h * (w1 * i12 - w2 * i02)};
+    omega2 = m3Sub3(omega2, Solve3(&J, b));
+
+    return m3RotateVec3(q, omega2);
+}
+
 static void StoreImpulses(m3World* world, m3ContactConstraint* constraints, int32_t count)
 {
     for (int32_t i = 0; i < count; ++i)
@@ -384,6 +456,7 @@ void m3StepInternal(m3World* world, float dt, int32_t substeps)
             v = m3Add3(v, m3MulSV3(h * world->gravityScales[i], world->gravity));
             v = m3MulSV3(1.0f / (1.0f + h * world->linearDamping[i]), v);
             w = m3MulSV3(1.0f / (1.0f + h * world->angularDamping[i]), w);
+            w = GyroscopicOmega(world, i, w, h);
             world->linearVelocities[i] = v;
             world->angularVelocities[i] = w;
         }
