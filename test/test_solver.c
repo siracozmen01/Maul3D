@@ -234,11 +234,10 @@ static void TestBoxRests(void)
     m3Quat q = m3Body_GetRotation(box);
     CHECK(q.w > 0.999f || q.w < -0.999f, "the box stays level (no tumbling)");
     m3Pos3 tp = m3Body_GetPosition(top);
-    // Hull-versus-hull contacts land in 2b-5b: TODAY the second box
-    // falls through the first and rests on the plane. This check
-    // documents the staged gap and FLIPS when the SAT lands (the
-    // expected stack height becomes about 1.4).
-    CHECK(tp.y > 0.37 && tp.y < 0.43, "staged gap: box-on-box passes through until 2b-5b");
+    // The SAT landed (2b-5b): the staged-gap check flips into the real
+    // assertion. The 0.4 half-height box rests on the unit box: about
+    // 1.0 + 0.4 = 1.4.
+    CHECK(tp.y > 1.32 && tp.y < 1.46, "the second box stacks on the first");
 
     // White-box peek: the resting box's plane manifold carries four
     // corner points with distinct feature ids.

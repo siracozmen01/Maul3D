@@ -54,6 +54,17 @@ typedef enum m3Op
 #define M3_HULL_MAX_VERTS        24
 #define M3_HULL_MAX_FACES        16
 #define M3_HULL_MAX_FACE_INDICES 64
+#define M3_HULL_MAX_HALF_EDGES   48
+
+// Half-edge adjacency (the Gauss-map edge query reads the two faces
+// flanking every edge). Twins sit at 2k and 2k+1 by construction.
+typedef struct m3HullHalfEdge
+{
+    uint8_t origin;
+    uint8_t twin;
+    uint8_t next;
+    uint8_t face;
+} m3HullHalfEdge;
 
 typedef struct m3HullData
 {
@@ -69,9 +80,12 @@ typedef struct m3HullData
     uint8_t faceVertCounts[M3_HULL_MAX_FACES];
     uint8_t faceVertStart[M3_HULL_MAX_FACES];
     uint8_t faceIndices[M3_HULL_MAX_FACE_INDICES];
+    int32_t edgeCount; // half-edge count (twice the undirected edges)
+    m3HullHalfEdge edges[M3_HULL_MAX_HALF_EDGES];
+    m3Vec3 center; // vertex centroid, orients the edge separation
 } m3HullData;
 
-_Static_assert(sizeof(m3HullData) == 704, "hull data must be padding-free");
+_Static_assert(sizeof(m3HullData) == 912, "hull data must be padding-free");
 
 // Geometry is one padding-free 16-byte record per shape, interpreted
 // by type: sphere {v=center, s=radius}, plane {v=normal, s=offset},
@@ -290,6 +304,12 @@ typedef struct m3DistanceOutput
 } m3DistanceOutput;
 
 m3DistanceOutput m3ShapeDistance(const m3DistanceInput* input, m3SimplexCache* cache);
+
+// Hull-versus-hull SAT (2b-5b): face queries both ways, the Gauss-map
+// edge query, face clipping or the edge closest-point contact. B is
+// given in A's frame; the manifold is in A's frame with the A-to-B
+// normal. Reduction reuses the deepest-four canonical rule.
+m3Manifold m3CollideHulls(const m3HullData* hullA, const m3HullData* hullB, m3Quat q, m3Vec3 p);
 
 // Pure collide kernels (world-independent, tested in isolation).
 // Normals point from A to B. d is the center offset B minus A in
