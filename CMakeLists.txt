@@ -14,6 +14,7 @@ add_library(maul3d STATIC
     src/math_functions.c
     src/shape.c
     src/snapshot.c
+    src/solver.c
     src/world.c
 )
 target_include_directories(maul3d PUBLIC include)
@@ -53,6 +54,11 @@ target_link_libraries(test_contacts PRIVATE maul3d)
 target_include_directories(test_contacts PRIVATE src)
 maul3d_apply_flags(test_contacts)
 add_test(NAME contacts COMMAND test_contacts)
+
+add_executable(test_solver test/test_solver.c)
+target_link_libraries(test_solver PRIVATE maul3d)
+maul3d_apply_flags(test_solver)
+add_test(NAME solver COMMAND test_solver)
 
 add_executable(test_journal test/test_journal.c)
 target_link_libraries(test_journal PRIVATE maul3d)

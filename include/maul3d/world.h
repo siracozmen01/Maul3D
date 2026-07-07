@@ -30,6 +30,11 @@ extern "C"
     M3_API void m3DestroyWorld(m3WorldId worldId);
     M3_API bool m3World_IsValid(m3WorldId worldId);
 
+    /// Advance the simulation: collide, then the Soft Step solver
+    /// with the given substep count. Deterministic: same inputs, same
+    /// bits, on every platform and backend. Journaled.
+    M3_API void m3World_Step(m3WorldId worldId, float dt, int32_t substeps);
+
     /// Snapshot and rollback, first-class from day one. The format is
     /// portable and versioned: field blocks in little-endian order with
     /// a header carrying a config hash (engine version, solver

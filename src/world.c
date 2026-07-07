@@ -339,6 +339,25 @@ bool m3World_JournalReplay(m3WorldId worldId, const void* data, int32_t size)
             m3SetAngularVelocityInternal(world, index, record.v);
             break;
         }
+        case m3_opStep:
+        {
+            struct
+            {
+                float dt;
+                int32_t substeps;
+            } record;
+            if (bytes != (int32_t)sizeof(record))
+            {
+                return false;
+            }
+            memcpy(&record, payload, sizeof(record));
+            if (!(record.dt > 0.0f) || record.substeps < 1)
+            {
+                return false;
+            }
+            m3StepInternal(world, record.dt, record.substeps);
+            break;
+        }
         case m3_opCreateShape:
         {
             m3CreateShapeOp record;

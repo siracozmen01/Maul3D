@@ -202,6 +202,9 @@ m3Manifold m3CollideSpheres(m3Vec3 d, m3real radiusA, m3real radiusB);
 // sphere center above the plane, computed in double by the caller.
 m3Manifold m3CollidePlaneSphere(m3Vec3 planeNormal, m3real dist, m3real radius);
 
+// The step body: the journal replays through this exact path.
+void m3StepInternal(m3World* world, float dt, int32_t substeps);
+
 void m3JournalRecord(m3World* world, int32_t op, const void* payload, int32_t bytes);
 
 #endif // MAUL3D_WORLD_INTERNAL_H

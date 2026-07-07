@@ -65,7 +65,7 @@ jobs:
         shell: bash
         run: |
           CELLS=6
-          EXPECTED_LINES=3
+          EXPECTED_LINES=4
           cat hashes/*.txt
           # Every distinct hash line must appear exactly once per cell:
           # a divergent cell or a silently missing line both fail.
