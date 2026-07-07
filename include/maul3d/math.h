@@ -59,6 +59,23 @@ extern "C"
         m3real c, s;
     } m3CosSin;
 
+    /// Column-major matrix times vector: cx*v.x + cy*v.y + cz*v.z.
+    static inline m3Vec3 m3MulMV3(m3Mat3 m, m3Vec3 v)
+    {
+        return (m3Vec3){m.cx.x * v.x + m.cy.x * v.y + m.cz.x * v.z,
+                        m.cx.y * v.x + m.cy.y * v.y + m.cz.y * v.z,
+                        m.cx.z * v.x + m.cy.z * v.y + m.cz.z * v.z};
+    }
+
+    static inline m3Mat3 m3MakeZeroMat3(void)
+    {
+        m3Mat3 m;
+        m.cx = (m3Vec3){0.0f, 0.0f, 0.0f};
+        m.cy = (m3Vec3){0.0f, 0.0f, 0.0f};
+        m.cz = (m3Vec3){0.0f, 0.0f, 0.0f};
+        return m;
+    }
+
     /// Pinned minimum: exactly (a < b ? a : b), in this operand order,
     /// on every platform. MSVC x64 lowers the ternary through MINSS
     /// which matches; see Maul2D's arm64 lesson for why this is spelled

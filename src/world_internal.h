@@ -21,7 +21,7 @@
 // integration order, constants). Part of the snapshot config hash, so
 // a snapshot from a different behavior revision is refused loudly
 // instead of silently diverging (the Jolt friction-model lesson).
-#define M3_SOLVER_REV 1
+#define M3_SOLVER_REV 2 // rev 2: full inertia tensor and center of mass
 
 // Def cookies: a def that did not come from its m3Default*Def factory
 // is rejected loudly (the Maul2D pattern).
@@ -114,7 +114,8 @@ typedef struct m3World
     m3Vec3* linearVelocities;
     m3Vec3* angularVelocities;
     m3real* invMass;
-    m3real* invInertia; // scalar: 2a bodies are spheres (isotropic)
+    m3Mat3* invInertiaLocal; // inverse inertia about the COM, body frame
+    m3Vec3* localCenters;    // center of mass in the body frame
     m3real* gravityScales;
     m3real* linearDamping;
     m3real* angularDamping;

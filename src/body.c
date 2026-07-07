@@ -57,7 +57,8 @@ int32_t m3CreateBodyInternal(m3World* world, const m3BodyDef* def)
     // A shapeless dynamic body has unit mass and zero inertia (the
     // reference convention); shape mass replaces this in task 7.
     world->invMass[index] = def->type == m3_dynamicBody ? 1.0f : 0.0f;
-    world->invInertia[index] = 0.0f;
+    world->invInertiaLocal[index] = m3MakeZeroMat3();
+    world->localCenters[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
     world->gravityScales[index] = def->gravityScale;
     world->linearDamping[index] = def->linearDamping;
     world->angularDamping[index] = def->angularDamping;
@@ -81,7 +82,8 @@ void m3DestroyBodyInternal(m3World* world, int32_t index)
     world->linearVelocities[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
     world->angularVelocities[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
     world->invMass[index] = 0.0f;
-    world->invInertia[index] = 0.0f;
+    world->invInertiaLocal[index] = m3MakeZeroMat3();
+    world->localCenters[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
     world->gravityScales[index] = 0.0f;
     world->linearDamping[index] = 0.0f;
     world->angularDamping[index] = 0.0f;

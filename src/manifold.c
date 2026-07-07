@@ -92,6 +92,17 @@ static void SphereWorldCenter(const m3World* world, int32_t shape, double* cx, d
     *cz = xf->p.z + (double)r.z;
 }
 
+// Offset from a body's world center of mass to a world point (float
+// is exact enough near contact). Anchors are COM-relative because
+// impulses and rotation act about the COM (2b-1).
+static m3Vec3 FromCom(const m3World* world, int32_t body, double px, double py, double pz)
+{
+    const m3Transform* xf = &world->transforms[body];
+    m3Vec3 rlc = m3RotateVec3(xf->q, world->localCenters[body]);
+    return (m3Vec3){(m3real)(px - xf->p.x - (double)rlc.x), (m3real)(py - xf->p.y - (double)rlc.y),
+                    (m3real)(pz - xf->p.z - (double)rlc.z)};
+}
+
 m3Result m3UpdateContacts(m3World* world, const uint64_t* oldKeys, const m3Manifold* oldManifolds,
                           int32_t oldCount)
 {
@@ -126,12 +137,13 @@ m3Result m3UpdateContacts(m3World* world, const uint64_t* oldKeys, const m3Manif
                 // anchorA: from the plane BODY's origin to the contact
                 // point (the sphere's deepest point projected).
                 int32_t planeBody = world->shapeBody[planeShape];
-                const m3Transform* xfA = &world->transforms[planeBody];
+                int32_t ballBody = world->shapeBody[sphereShape];
                 double px = cx - (double)(fresh.normal.x * (m3real)distD);
                 double py = cy - (double)(fresh.normal.y * (m3real)distD);
                 double pz = cz - (double)(fresh.normal.z * (m3real)distD);
-                fresh.points[0].anchorA = (m3Vec3){(m3real)(px - xfA->p.x), (m3real)(py - xfA->p.y),
-                                                   (m3real)(pz - xfA->p.z)};
+                fresh.points[0].anchorA = FromCom(world, planeBody, px, py, pz);
+                fresh.points[0].anchorB =
+                    m3Add3(FromCom(world, ballBody, cx, cy, cz), fresh.points[0].anchorB);
                 if (planeShape != shapeA)
                 {
                     // Flip to keep the manifold in key order (A = the
@@ -155,6 +167,15 @@ m3Result m3UpdateContacts(m3World* world, const uint64_t* oldKeys, const m3Manif
             SphereWorldCenter(world, shapeB, &bx, &by, &bz);
             m3Vec3 d = {(m3real)(bx - ax), (m3real)(by - ay), (m3real)(bz - az)};
             fresh = m3CollideSpheres(d, world->shapeGeom[shapeA].s, world->shapeGeom[shapeB].s);
+            if (fresh.pointCount > 0)
+            {
+                // Kernel anchors are from the sphere CENTERS; re-base
+                // them to each body's COM.
+                fresh.points[0].anchorA = m3Add3(
+                    FromCom(world, world->shapeBody[shapeA], ax, ay, az), fresh.points[0].anchorA);
+                fresh.points[0].anchorB = m3Add3(
+                    FromCom(world, world->shapeBody[shapeB], bx, by, bz), fresh.points[0].anchorB);
+            }
         }
 
         // Warm-start carry: find the old manifold for this key and

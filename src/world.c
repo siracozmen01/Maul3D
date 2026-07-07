@@ -83,7 +83,8 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     M3_ALLOC(world->linearVelocities, cap, m3Vec3);
     M3_ALLOC(world->angularVelocities, cap, m3Vec3);
     M3_ALLOC(world->invMass, cap, m3real);
-    M3_ALLOC(world->invInertia, cap, m3real);
+    M3_ALLOC(world->invInertiaLocal, cap, m3Mat3);
+    M3_ALLOC(world->localCenters, cap, m3Vec3);
     M3_ALLOC(world->gravityScales, cap, m3real);
     M3_ALLOC(world->linearDamping, cap, m3real);
     M3_ALLOC(world->angularDamping, cap, m3real);
@@ -140,7 +141,8 @@ void m3DestroyWorld(m3WorldId worldId)
     m3Free(world->linearVelocities);
     m3Free(world->angularVelocities);
     m3Free(world->invMass);
-    m3Free(world->invInertia);
+    m3Free(world->invInertiaLocal);
+    m3Free(world->localCenters);
     m3Free(world->gravityScales);
     m3Free(world->linearDamping);
     m3Free(world->angularDamping);

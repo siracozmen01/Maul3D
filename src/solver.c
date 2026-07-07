@@ -67,8 +67,8 @@ typedef struct m3ContactConstraint
     m3real tangentImpulse2;
     m3real invMassA;
     m3real invMassB;
-    m3real invIA;
-    m3real invIB;
+    m3Mat3 invIA; // world-space inverse inertia, frozen at prepare
+    m3Mat3 invIB;
     m3Softness softness;
 } m3ContactConstraint;
 
@@ -87,14 +87,14 @@ static void ApplyImpulse(m3World* world, const m3ContactConstraint* c, m3Vec3 im
         world->linearVelocities[c->bodyA] =
             m3Sub3(world->linearVelocities[c->bodyA], m3MulSV3(c->invMassA, impulse));
         world->angularVelocities[c->bodyA] =
-            m3Sub3(world->angularVelocities[c->bodyA], m3MulSV3(c->invIA, m3Cross3(rsA, impulse)));
+            m3Sub3(world->angularVelocities[c->bodyA], m3MulMV3(c->invIA, m3Cross3(rsA, impulse)));
     }
     if (world->types[c->bodyB] == (uint8_t)m3_dynamicBody)
     {
         world->linearVelocities[c->bodyB] =
             m3Add3(world->linearVelocities[c->bodyB], m3MulSV3(c->invMassB, impulse));
         world->angularVelocities[c->bodyB] =
-            m3Add3(world->angularVelocities[c->bodyB], m3MulSV3(c->invIB, m3Cross3(rsB, impulse)));
+            m3Add3(world->angularVelocities[c->bodyB], m3MulMV3(c->invIB, m3Cross3(rsB, impulse)));
     }
 }
 
@@ -103,9 +103,28 @@ static m3real EffectiveMass(const m3ContactConstraint* c, m3Vec3 dir)
 {
     m3Vec3 arm1 = m3Cross3(c->rA, dir);
     m3Vec3 arm2 = m3Cross3(c->rB, dir);
-    m3real k =
-        c->invMassA + c->invMassB + c->invIA * m3Dot3(arm1, arm1) + c->invIB * m3Dot3(arm2, arm2);
+    m3real k = c->invMassA + c->invMassB + m3Dot3(arm1, m3MulMV3(c->invIA, arm1)) +
+               m3Dot3(arm2, m3MulMV3(c->invIB, arm2));
     return k > 0.0f ? 1.0f / k : 0.0f;
+}
+
+// I_w^-1 = R I_l^-1 R^T, built by applying the operator to the world
+// basis vectors. Frozen at prepare like the anchors (reference
+// discipline); the per-substep refresh arrives with the gyroscopic
+// slice (2b-6).
+static m3Mat3 WorldInvInertia(const m3World* world, int32_t body)
+{
+    if (world->types[body] != (uint8_t)m3_dynamicBody)
+    {
+        return m3MakeZeroMat3();
+    }
+    m3Quat q = world->transforms[body].q;
+    m3Mat3 il = world->invInertiaLocal[body];
+    m3Mat3 r;
+    r.cx = m3RotateVec3(q, m3MulMV3(il, m3InvRotateVec3(q, (m3Vec3){1.0f, 0.0f, 0.0f})));
+    r.cy = m3RotateVec3(q, m3MulMV3(il, m3InvRotateVec3(q, (m3Vec3){0.0f, 1.0f, 0.0f})));
+    r.cz = m3RotateVec3(q, m3MulMV3(il, m3InvRotateVec3(q, (m3Vec3){0.0f, 0.0f, 1.0f})));
+    return r;
 }
 
 static int32_t PrepareContacts(m3World* world, m3ContactConstraint* constraints, m3real h)
@@ -141,8 +160,8 @@ static int32_t PrepareContacts(m3World* world, m3ContactConstraint* constraints,
             manifold->points[0].separation - (m3Dot3(c->rB, c->normal) - m3Dot3(c->rA, c->normal));
         c->invMassA = world->types[bodyA] == (uint8_t)m3_dynamicBody ? world->invMass[bodyA] : 0.0f;
         c->invMassB = world->types[bodyB] == (uint8_t)m3_dynamicBody ? world->invMass[bodyB] : 0.0f;
-        c->invIA = world->types[bodyA] == (uint8_t)m3_dynamicBody ? world->invInertia[bodyA] : 0.0f;
-        c->invIB = world->types[bodyB] == (uint8_t)m3_dynamicBody ? world->invInertia[bodyB] : 0.0f;
+        c->invIA = WorldInvInertia(world, bodyA);
+        c->invIB = WorldInvInertia(world, bodyB);
         c->normalMass = EffectiveMass(c, c->normal);
         c->tangentMass1 = EffectiveMass(c, c->t1);
         c->tangentMass2 = EffectiveMass(c, c->t2);
@@ -356,11 +375,20 @@ void m3StepInternal(m3World* world, float dt, int32_t substeps)
             }
             m3Vec3 v = world->linearVelocities[i];
             m3Vec3 w = world->angularVelocities[i];
-            world->transforms[i].p.x += (double)(h * v.x);
-            world->transforms[i].p.y += (double)(h * v.y);
-            world->transforms[i].p.z += (double)(h * v.z);
+            // Rigid bodies rotate about the center of mass: advance
+            // the COM, spin, then place the origin back. A centered
+            // body (lc zero) reduces to the plain origin update.
+            m3Vec3 lc = world->localCenters[i];
+            m3Vec3 rlcOld = m3RotateVec3(world->transforms[i].q, lc);
+            double cx = world->transforms[i].p.x + (double)rlcOld.x + (double)(h * v.x);
+            double cy = world->transforms[i].p.y + (double)rlcOld.y + (double)(h * v.y);
+            double cz = world->transforms[i].p.z + (double)rlcOld.z + (double)(h * v.z);
             m3Vec3 dw = m3MulSV3(h, w);
             world->transforms[i].q = m3IntegrateRotation(world->transforms[i].q, dw);
+            m3Vec3 rlcNew = m3RotateVec3(world->transforms[i].q, lc);
+            world->transforms[i].p.x = cx - (double)rlcNew.x;
+            world->transforms[i].p.y = cy - (double)rlcNew.y;
+            world->transforms[i].p.z = cz - (double)rlcNew.z;
             deltaPos[i] = m3Add3(deltaPos[i], m3MulSV3(h, v));
             deltaRot[i] = m3IntegrateRotation(deltaRot[i], dw);
         }

@@ -22,7 +22,7 @@
 #endif
 
 #define M3_SNAPSHOT_MAGIC   0x4D33534Eu // 'M3SN'
-#define M3_SNAPSHOT_VERSION 3u          // v3: manifolds with warm-start impulses
+#define M3_SNAPSHOT_VERSION 4u          // v4: inertia tensor and center of mass
 
 // The math types are canonical field data only because they are
 // provably padding-free; a change here is a format version bump.
@@ -30,6 +30,7 @@ _Static_assert(sizeof(m3Vec3) == 12, "m3Vec3 must be padding-free");
 _Static_assert(sizeof(m3Quat) == 16, "m3Quat must be padding-free");
 _Static_assert(sizeof(m3Pos3) == 24, "m3Pos3 must be padding-free");
 _Static_assert(sizeof(m3Transform) == 40, "m3Transform must be padding-free");
+_Static_assert(sizeof(m3Mat3) == 36, "m3Mat3 must be padding-free");
 
 typedef struct m3SnapshotHeader
 {
@@ -107,7 +108,8 @@ static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3Wal
     M3_BLOCK(world->linearVelocities, cap * (int32_t)sizeof(m3Vec3));
     M3_BLOCK(world->angularVelocities, cap * (int32_t)sizeof(m3Vec3));
     M3_BLOCK(world->invMass, cap * (int32_t)sizeof(m3real));
-    M3_BLOCK(world->invInertia, cap * (int32_t)sizeof(m3real));
+    M3_BLOCK(world->invInertiaLocal, cap * (int32_t)sizeof(m3Mat3));
+    M3_BLOCK(world->localCenters, cap * (int32_t)sizeof(m3Vec3));
     M3_BLOCK(world->gravityScales, cap * (int32_t)sizeof(m3real));
     M3_BLOCK(world->linearDamping, cap * (int32_t)sizeof(m3real));
     M3_BLOCK(world->angularDamping, cap * (int32_t)sizeof(m3real));
@@ -255,7 +257,8 @@ uint64_t m3World_Hash(m3WorldId worldId)
         h = m3Hash64(h, &world->linearVelocities[i], (int32_t)sizeof(m3Vec3));
         h = m3Hash64(h, &world->angularVelocities[i], (int32_t)sizeof(m3Vec3));
         h = m3Hash64(h, &world->invMass[i], (int32_t)sizeof(m3real));
-        h = m3Hash64(h, &world->invInertia[i], (int32_t)sizeof(m3real));
+        h = m3Hash64(h, &world->invInertiaLocal[i], (int32_t)sizeof(m3Mat3));
+        h = m3Hash64(h, &world->localCenters[i], (int32_t)sizeof(m3Vec3));
         h = m3Hash64(h, &world->types[i], 1);
     }
     int32_t maxShape = world->shapePool.maxIndex;

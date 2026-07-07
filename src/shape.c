@@ -31,19 +31,48 @@ m3ShapeDef m3DefaultShapeDef(void)
     return def;
 }
 
+// Invert a symmetric positive-definite 3x3 via the adjugate. A
+// singular or non-positive matrix returns zero (an unrotatable body),
+// never NaN.
+static m3Mat3 InvertSymmetric(m3Mat3 m)
+{
+    m3real a = m.cx.x;
+    m3real b = m.cy.x; // = m.cx.y by symmetry
+    m3real c = m.cz.x;
+    m3real d = m.cy.y;
+    m3real e = m.cz.y;
+    m3real f = m.cz.z;
+    m3real co00 = d * f - e * e;
+    m3real co01 = c * e - b * f;
+    m3real co02 = b * e - c * d;
+    m3real det = a * co00 + b * co01 + c * co02;
+    if (!(det > 0.0f))
+    {
+        return m3MakeZeroMat3();
+    }
+    m3real inv = 1.0f / det;
+    m3Mat3 r;
+    r.cx = (m3Vec3){co00 * inv, co01 * inv, co02 * inv};
+    r.cy = (m3Vec3){co01 * inv, (a * f - c * c) * inv, (b * c - a * e) * inv};
+    r.cz = (m3Vec3){co02 * inv, (b * c - a * e) * inv, (a * d - b * b) * inv};
+    return r;
+}
+
 void m3RecomputeMass(m3World* world, int32_t bodyIndex)
 {
     if (world->types[bodyIndex] != (uint8_t)m3_dynamicBody)
     {
         world->invMass[bodyIndex] = 0.0f;
-        world->invInertia[bodyIndex] = 0.0f;
+        world->invInertiaLocal[bodyIndex] = m3MakeZeroMat3();
+        world->localCenters[bodyIndex] = (m3Vec3){0.0f, 0.0f, 0.0f};
         return;
     }
-    // Sum sphere masses and inertias. 2a spheres are pinned to the
-    // body origin, so the scalar (isotropic) inertia is exact and no
-    // parallel-axis term exists; the full tensor arrives in 2b.
+    // Two passes, the Maul2D lesson: first total mass and the mass
+    // weighted center, THEN inertia about that center via the parallel
+    // axis theorem. Every term is non-negative and small; no
+    // big-minus-big cancellation can occur.
     float mass = 0.0f;
-    float inertia = 0.0f;
+    m3Vec3 center = {0.0f, 0.0f, 0.0f};
     for (int32_t s = world->bodyShapeHead[bodyIndex]; s != -1; s = world->shapeNext[s])
     {
         if (world->shapeType[s] != (uint8_t)m3_sphereShape)
@@ -53,20 +82,45 @@ void m3RecomputeMass(m3World* world, int32_t bodyIndex)
         float r = world->shapeGeom[s].s;
         float m = world->shapeDensity[s] * (4.0f / 3.0f) * M3_PI * r * r * r;
         mass += m;
-        inertia += 0.4f * m * r * r;
+        center = m3Add3(center, m3MulSV3(m, world->shapeGeom[s].v));
     }
-    if (mass > 0.0f)
-    {
-        world->invMass[bodyIndex] = 1.0f / mass;
-        world->invInertia[bodyIndex] = inertia > 0.0f ? 1.0f / inertia : 0.0f;
-    }
-    else
+    if (!(mass > 0.0f))
     {
         // Shapeless dynamic body: unit mass, zero inertia (the
         // reference convention).
         world->invMass[bodyIndex] = 1.0f;
-        world->invInertia[bodyIndex] = 0.0f;
+        world->invInertiaLocal[bodyIndex] = m3MakeZeroMat3();
+        world->localCenters[bodyIndex] = (m3Vec3){0.0f, 0.0f, 0.0f};
+        return;
     }
+    center = m3MulSV3(1.0f / mass, center);
+
+    m3Mat3 inertia = m3MakeZeroMat3();
+    for (int32_t s = world->bodyShapeHead[bodyIndex]; s != -1; s = world->shapeNext[s])
+    {
+        if (world->shapeType[s] != (uint8_t)m3_sphereShape)
+        {
+            continue;
+        }
+        float r = world->shapeGeom[s].s;
+        float m = world->shapeDensity[s] * (4.0f / 3.0f) * M3_PI * r * r * r;
+        float ic = 0.4f * m * r * r; // solid sphere about its centroid
+        m3Vec3 d = m3Sub3(world->shapeGeom[s].v, center);
+        float d2 = m3Dot3(d, d);
+        // I += ic * Identity + m * (|d|^2 Identity - d outer d).
+        inertia.cx.x += ic + m * (d2 - d.x * d.x);
+        inertia.cy.y += ic + m * (d2 - d.y * d.y);
+        inertia.cz.z += ic + m * (d2 - d.z * d.z);
+        inertia.cy.x += -m * d.x * d.y;
+        inertia.cx.y += -m * d.x * d.y;
+        inertia.cz.x += -m * d.x * d.z;
+        inertia.cx.z += -m * d.x * d.z;
+        inertia.cz.y += -m * d.y * d.z;
+        inertia.cy.z += -m * d.y * d.z;
+    }
+    world->invMass[bodyIndex] = 1.0f / mass;
+    world->invInertiaLocal[bodyIndex] = InvertSymmetric(inertia);
+    world->localCenters[bodyIndex] = center;
 }
 
 int32_t m3CreateShapeInternal(m3World* world, int32_t bodyIndex, uint8_t type,
@@ -160,14 +214,8 @@ m3ShapeId m3CreateSphereShape(m3BodyId bodyId, const m3ShapeDef* def, const m3Sp
     {
         return m3_nullShapeId;
     }
-    if (world->types[bodyIndex] == (uint8_t)m3_dynamicBody &&
-        (sphere->center.x != 0.0f || sphere->center.y != 0.0f || sphere->center.z != 0.0f))
-    {
-        // The 2a rule: an off-origin center on a dynamic body would
-        // need the full inertia tensor (2b). Refuse loudly rather
-        // than simulate wrong.
-        return m3_nullShapeId;
-    }
+    // The 2a off-origin refusal is gone: the full inertia tensor and
+    // center-of-mass bookkeeping (2b-1) make offset spheres exact.
     m3ShapeGeom geom = {sphere->center, sphere->radius};
     return CreateShapeCommon(bodyId, def, (uint8_t)m3_sphereShape, &geom);
 }

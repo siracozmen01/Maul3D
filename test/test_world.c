@@ -230,17 +230,52 @@ static void TestShapes(void)
     CHECK(gotMass > expectedMass - 1.0e-4f && gotMass < expectedMass + 1.0e-4f,
           "sphere mass is analytic");
     float expectedI = 0.4f * expectedMass * 0.25f;
-    float gotI = 1.0f / w->invInertia[body.index1 - 1];
+    float gotI = 1.0f / w->invInertiaLocal[body.index1 - 1].cx.x;
     CHECK(gotI > expectedI - 1.0e-4f && gotI < expectedI + 1.0e-4f, "sphere inertia is analytic");
+    m3Mat3 tensor = w->invInertiaLocal[body.index1 - 1];
+    CHECK(tensor.cy.x == 0.0f && tensor.cz.x == 0.0f && tensor.cz.y == 0.0f,
+          "a centered sphere's tensor is diagonal");
 
     // Loud refusals: plane on a dynamic body, off-origin dynamic
     // sphere, zero radius.
     m3Plane floor = {{0.0f, 1.0f, 0.0f}, 0.0f};
     CHECK(!m3Shape_IsValid(m3CreatePlaneShape(body, &sd, &floor)),
           "a plane on a dynamic body is refused");
+    // 2b-1: the 2a refusal flips into a feature. An offset sphere on
+    // its own body puts the COM at the offset and keeps the tensor at
+    // the centroid value (no parallel-axis term about the COM itself).
+    m3BodyDef od = m3DefaultBodyDef();
+    od.type = m3_dynamicBody;
+    m3BodyId offsetBody = m3CreateBody(world, &od);
     m3Sphere offset = {{1.0f, 0.0f, 0.0f}, 0.5f};
-    CHECK(!m3Shape_IsValid(m3CreateSphereShape(body, &sd, &offset)),
-          "an off-origin dynamic sphere is refused in 2a");
+    CHECK(m3Shape_IsValid(m3CreateSphereShape(offsetBody, &sd, &offset)),
+          "an off-origin dynamic sphere is exact under the tensor");
+    m3Vec3 lc = w->localCenters[offsetBody.index1 - 1];
+    CHECK(lc.x == 1.0f && lc.y == 0.0f && lc.z == 0.0f, "the COM sits at the sphere center");
+    float gotOffsetI = 1.0f / w->invInertiaLocal[offsetBody.index1 - 1].cx.x;
+    CHECK(gotOffsetI > expectedI - 1.0e-4f && gotOffsetI < expectedI + 1.0e-4f,
+          "inertia about the COM is the centroid value");
+    m3DestroyBody(offsetBody);
+
+    // Two spheres at plus and minus x: COM at the origin, and the
+    // parallel axis theorem shows up in yy and zz but not xx.
+    m3BodyDef td = m3DefaultBodyDef();
+    td.type = m3_dynamicBody;
+    m3BodyId twin = m3CreateBody(world, &td);
+    m3Sphere left = {{-1.0f, 0.0f, 0.0f}, 0.5f};
+    m3Sphere right = {{1.0f, 0.0f, 0.0f}, 0.5f};
+    CHECK(m3Shape_IsValid(m3CreateSphereShape(twin, &sd, &left)) &&
+              m3Shape_IsValid(m3CreateSphereShape(twin, &sd, &right)),
+          "the twin-sphere body builds");
+    m3Vec3 tlc = w->localCenters[twin.index1 - 1];
+    CHECK(tlc.x == 0.0f && tlc.y == 0.0f && tlc.z == 0.0f, "symmetric twins center the COM");
+    float ixx = 1.0f / w->invInertiaLocal[twin.index1 - 1].cx.x;
+    float iyy = 1.0f / w->invInertiaLocal[twin.index1 - 1].cy.y;
+    float exx = 2.0f * expectedI;
+    float eyy = 2.0f * (expectedI + expectedMass * 1.0f);
+    CHECK(ixx > exx - 1.0e-3f && ixx < exx + 1.0e-3f, "xx skips the parallel axis term");
+    CHECK(iyy > eyy - 1.0e-3f && iyy < eyy + 1.0e-3f, "yy carries the parallel axis term");
+    m3DestroyBody(twin);
     m3Sphere flat = {{0.0f, 0.0f, 0.0f}, 0.0f};
     CHECK(!m3Shape_IsValid(m3CreateSphereShape(body, &sd, &flat)), "zero radius is refused");
 
