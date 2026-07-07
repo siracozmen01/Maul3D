@@ -99,6 +99,11 @@ extern "C"
         return (m3Vec3){s * v.x, s * v.y, s * v.z};
     }
 
+    static inline m3Vec3 m3Neg3(m3Vec3 v)
+    {
+        return (m3Vec3){-v.x, -v.y, -v.z};
+    }
+
     static inline m3real m3Dot3(m3Vec3 a, m3Vec3 b)
     {
         return a.x * b.x + a.y * b.y + a.z * b.z;

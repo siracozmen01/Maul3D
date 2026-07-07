@@ -54,6 +54,35 @@ typedef struct m3ShapeGeom
     m3real s;
 } m3ShapeGeom;
 
+// One contact point: anchors are measured from each body's center in
+// world orientation (float is exact enough near contact), impulses are
+// the warm-start payload that persists across steps and through the
+// snapshot. Padding-free by construction.
+typedef struct m3ManifoldPoint
+{
+    m3Vec3 anchorA;
+    m3Vec3 anchorB;
+    m3real separation; // negative = penetration, positive = speculative
+    m3real normalImpulse;
+    m3real tangentImpulse1;
+    m3real tangentImpulse2;
+    uint16_t id;    // feature id (spheres have exactly one feature: 0)
+    uint16_t flags; // bit 0: persisted (impulses carried this rebuild)
+} m3ManifoldPoint;
+
+_Static_assert(sizeof(m3ManifoldPoint) == 44, "manifold point must be padding-free");
+
+// Sphere and plane contacts have at most one point; the array widens
+// in 2b (hulls) with a snapshot format bump.
+typedef struct m3Manifold
+{
+    m3Vec3 normal; // from shape A to shape B, world frame
+    int32_t pointCount;
+    m3ManifoldPoint points[1];
+} m3Manifold;
+
+_Static_assert(sizeof(m3Manifold) == 60, "manifold must be padding-free");
+
 // Journal payload for shape creation (replay re-derives mass).
 typedef struct m3CreateShapeOp
 {
@@ -104,9 +133,11 @@ typedef struct m3World
     uint64_t* shapeUserData;
     int32_t* shapeNext; // next shape on the same body, -1 end
 
-    // Candidate pairs in canonical ascending key order (persistent:
-    // the manifolds keyed on them arrive in task 8).
+    // Candidate pairs in canonical ascending key order, and their
+    // manifolds (persistent: warm-start impulses live here and ride
+    // the snapshot).
     uint64_t* pairKeys;
+    m3Manifold* manifolds;
     int32_t pairCount;
     int32_t pairCapacity;
 
@@ -150,6 +181,26 @@ void m3RecomputeMass(m3World* world, int32_t bodyIndex);
 // ascending key order from fat AABBs; the dynamic tree replaces the
 // scan in 2b behind this same contract.
 m3Result m3UpdatePairs(m3World* world);
+
+// Narrowphase v1: rebuild manifolds for the current pairs in pair
+// order, carrying warm-start impulses forward by feature id from the
+// PREVIOUS step's stash (the caller copies keys and manifolds to step
+// scratch BEFORE m3UpdatePairs overwrites them; oldKeys are sorted).
+m3Result m3UpdateContacts(m3World* world, const uint64_t* oldKeys, const m3Manifold* oldManifolds,
+                          int32_t oldCount);
+
+// Deterministic tangent basis: ONE fixed rule (the world axis with the
+// smallest absolute normal component, ties broken x before y before
+// z), because the friction rows are order-sensitive downstream.
+void m3MakeTangentBasis(m3Vec3 normal, m3Vec3* t1, m3Vec3* t2);
+
+// Pure collide kernels (world-independent, tested in isolation).
+// Normals point from A to B. d is the center offset B minus A in
+// floats (exact enough near contact).
+m3Manifold m3CollideSpheres(m3Vec3 d, m3real radiusA, m3real radiusB);
+// Plane (A) versus sphere (B): dist is the signed distance of the
+// sphere center above the plane, computed in double by the caller.
+m3Manifold m3CollidePlaneSphere(m3Vec3 planeNormal, m3real dist, m3real radius);
 
 void m3JournalRecord(m3World* world, int32_t op, const void* payload, int32_t bytes);
 

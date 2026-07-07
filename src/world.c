@@ -113,6 +113,7 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
 
     world->pairCapacity = 8 * shapeCap;
     M3_ALLOC(world->pairKeys, world->pairCapacity, uint64_t);
+    M3_ALLOC(world->manifolds, world->pairCapacity, m3Manifold);
     world->pairCount = 0;
 
     // Step scratch: grows between steps on m3_errorCapacity, never
@@ -156,6 +157,7 @@ void m3DestroyWorld(m3WorldId worldId)
     m3Free(world->shapeUserData);
     m3Free(world->shapeNext);
     m3Free(world->pairKeys);
+    m3Free(world->manifolds);
     m3StackDestroy(&world->scratch);
     m3Free(world);
 

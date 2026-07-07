@@ -22,7 +22,7 @@
 #endif
 
 #define M3_SNAPSHOT_MAGIC   0x4D33534Eu // 'M3SN'
-#define M3_SNAPSHOT_VERSION 2u          // v2: shapes, body shape lists, pairs
+#define M3_SNAPSHOT_VERSION 3u          // v3: manifolds with warm-start impulses
 
 // The math types are canonical field data only because they are
 // provably padding-free; a change here is a format version bump.
@@ -134,6 +134,7 @@ static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3Wal
     M3_BLOCK(world->shapePool.freeQueue, shapeCap * (int32_t)sizeof(int32_t));
 
     M3_BLOCK(world->pairKeys, world->pairCapacity * (int32_t)sizeof(uint64_t));
+    M3_BLOCK(world->manifolds, world->pairCapacity * (int32_t)sizeof(m3Manifold));
 
 #undef M3_BLOCK
     return cursor;
@@ -272,6 +273,15 @@ uint64_t m3World_Hash(m3WorldId worldId)
         h = m3Hash64(h, &world->shapeDensity[i], 4);
         h = m3Hash64(h, &world->shapeFriction[i], 4);
         h = m3Hash64(h, &world->shapeRestitution[i], 4);
+    }
+    // Pairs and manifolds: warm-start impulses are simulation state
+    // (they steer the next solve), so they are part of what the world
+    // IS.
+    h = m3Hash64(h, &world->pairCount, 4);
+    for (int32_t i = 0; i < world->pairCount; ++i)
+    {
+        h = m3Hash64(h, &world->pairKeys[i], 8);
+        h = m3Hash64(h, &world->manifolds[i], (int32_t)sizeof(m3Manifold));
     }
     return h;
 }

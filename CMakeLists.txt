@@ -10,6 +10,7 @@ add_library(maul3d STATIC
     src/body.c
     src/broad_phase.c
     src/core.c
+    src/manifold.c
     src/math_functions.c
     src/shape.c
     src/snapshot.c
@@ -46,6 +47,12 @@ target_link_libraries(test_world PRIVATE maul3d)
 target_include_directories(test_world PRIVATE src)
 maul3d_apply_flags(test_world)
 add_test(NAME world COMMAND test_world)
+
+add_executable(test_contacts test/test_contacts.c)
+target_link_libraries(test_contacts PRIVATE maul3d)
+target_include_directories(test_contacts PRIVATE src)
+maul3d_apply_flags(test_contacts)
+add_test(NAME contacts COMMAND test_contacts)
 
 add_executable(test_journal test/test_journal.c)
 target_link_libraries(test_journal PRIVATE maul3d)
