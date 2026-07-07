@@ -872,17 +872,21 @@ static void TestMeshContractsAndGaps(void)
     CHECK(!m3Shape_IsValid(m3CreateMeshShape(ground2, &sd, tri, 3, bad, 1)),
           "an out-of-range index is refused");
 
-    // Staged gap (2b-9b): capsule and hull versus mesh carry no
-    // manifold yet; both fall THROUGH the mesh floor. This test
-    // flips into resting assertions when 2b-9b lands.
+    // 2b-9b FLIPPED the capsule half of the staged gap: a capsule
+    // dropped across the interior edges now lands on the two-point
+    // face clip and RESTS level on the mesh. The hull half stays a
+    // documented gap until 2b-9c.
     m3Capsule capsule = {{-0.4f, 0.0f, 0.0f}, {0.4f, 0.0f, 0.0f}, 0.3f};
     m3CreateCapsuleShape(mover, &sd, &capsule);
     bd.position = (m3Pos3){1.5, 2.0, 0.0};
     m3BodyId boxBody = m3CreateBody(world, &bd);
     m3CreateBoxShape(boxBody, &sd, (m3Vec3){0.3f, 0.3f, 0.3f});
     StepN(world, 240);
-    CHECK(m3Body_GetPosition(mover).y < -1.0, "capsule-mesh is the documented gap");
-    CHECK(m3Body_GetPosition(boxBody).y < -1.0, "hull-mesh is the documented gap");
+    m3Pos3 cp = m3Body_GetPosition(mover);
+    CHECK(cp.y > 0.27 && cp.y < 0.33, "the capsule rests on the mesh at its radius");
+    m3Quat cq = m3Body_GetRotation(mover);
+    CHECK(cq.w > 0.999f || cq.w < -0.999f, "the capsule lies level across the edges");
+    CHECK(m3Body_GetPosition(boxBody).y < -1.0, "hull-mesh is the documented gap (2b-9c)");
     m3DestroyWorld(world);
 }
 

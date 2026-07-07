@@ -667,16 +667,17 @@ static m3Manifold CollideSegmentHull(const m3HullData* hull, m3Vec3 p1, m3Vec3 p
 }
 
 // ---------------------------------------------------------------
-// Mesh versus sphere (2b-9a), the reference mesh_contact.c recipe on
-// the simplest witness. Feature = the closest-point voronoi region
-// encoded as a vertex bitmask (1|2|4; 7 = face). Face contacts are
-// accepted immediately and CLAIM their triangle's edges and
-// vertices; edge and vertex contacts are tentative, sorted by
-// distance, and accepted only if their feature is still unclaimed.
-// That filter is the internal-edge mitigation: the neighbor
-// triangle's ghost edge contact dies because the face triangle
-// already owns the edge. One winner manifold per pair in 2b-9a (the
-// deepest accepted); the multi-normal valley case joins 2b-9b.
+// Mesh versus convex (2b-9a sphere, 2b-9b capsule), the reference
+// mesh_contact.c recipe. Feature = the closest voronoi region as a
+// vertex bitmask (1|2|4; 7 = face). Face contacts are accepted
+// immediately and CLAIM their triangle's edges and vertices; edge
+// and vertex contacts are tentative, sorted by distance, accepted
+// only while their feature is unclaimed. That filter is the
+// internal-edge mitigation. Accepted manifolds then merge into ONE
+// pair manifold by normal cluster around the deepest contact (the
+// same-normal flat-floor case merges perfectly; the multi-normal
+// valley keeps only its dominant cluster until per-manifold solver
+// normals arrive with 2b-9c).
 // ---------------------------------------------------------------
 
 typedef struct m3TriPoint
@@ -736,17 +737,307 @@ static m3TriPoint ClosestPointOnTriangle(m3Vec3 a, m3Vec3 b, m3Vec3 c, m3Vec3 q)
     return (m3TriPoint){p, 7};
 }
 
-#define M3_MESH_CANDIDATE_CAP 64
-
-typedef struct m3MeshCandidate
+// One triangle's local manifold: midway contact points (each anchor
+// recovers as point -/+ half the separation along the normal).
+typedef struct m3TriManifold
 {
-    m3real dist2;
-    m3real separation;
-    int32_t triIndex;
-    int32_t feature; // bitmask
-    m3Vec3 normal;   // mesh frame, mesh toward sphere
-    m3Vec3 onTri;    // mesh frame
-} m3MeshCandidate;
+    m3Vec3 normal; // mesh frame, triangle toward shape
+    m3real dist2;  // closest squared distance (the tentative sort key)
+    int32_t pointCount;
+    int32_t feature; // vertex bitmask
+    m3Vec3 point[2];
+    m3real separation[2];
+    uint16_t localId[2];
+} m3TriManifold;
+
+static void CollideSphereTriangle(m3TriManifold* out, m3Vec3 center, m3real radius,
+                                  const m3Vec3 tri[3])
+{
+    out->pointCount = 0;
+    m3Vec3 triN = m3Cross3(m3Sub3(tri[1], tri[0]), m3Sub3(tri[2], tri[0]));
+    if (m3Dot3(triN, m3Sub3(center, tri[0])) < 0.0f)
+    {
+        return; // back side cull (CCW winding, outward normals)
+    }
+    m3TriPoint closest = ClosestPointOnTriangle(tri[0], tri[1], tri[2], center);
+    m3Vec3 d = m3Sub3(center, closest.point);
+    m3real dist2 = m3Dot3(d, d);
+    m3real reach = radius + M3_SPECULATIVE_DISTANCE;
+    if (dist2 > reach * reach)
+    {
+        return;
+    }
+    m3real dist = sqrtf(dist2);
+    m3Vec3 normal = dist2 > 1000.0f * FLT_MIN ? m3MulSV3(1.0f / dist, d) : m3Normalize3(triN);
+    out->normal = normal;
+    out->dist2 = dist2;
+    out->feature = closest.feature;
+    out->pointCount = 1;
+    out->separation[0] = dist - radius;
+    out->point[0] = m3MulSV3(0.5f, m3Add3(m3Sub3(center, m3MulSV3(radius, normal)), closest.point));
+    out->localId[0] = 0;
+}
+
+// Clip the capsule segment to the triangle's side planes (reference
+// b3ClipSegmentToTriangleFace).
+static int ClipSegmentToTriFace(m3Vec3 segment[2], const m3Vec3 tri[3], m3Vec3 faceNormal)
+{
+    m3Vec3 vertex1 = tri[2];
+    for (int32_t i = 0; i < 3; ++i)
+    {
+        m3Vec3 vertex2 = tri[i];
+        m3Vec3 tangent = m3Normalize3(m3Sub3(vertex2, vertex1));
+        m3Vec3 binormal = m3Cross3(tangent, faceNormal);
+        m3real planeOff = m3Dot3(binormal, vertex1);
+
+        m3Vec3 p1 = segment[0];
+        m3Vec3 p2 = segment[1];
+        m3real distance1 = m3Dot3(binormal, p1) - planeOff;
+        m3real distance2 = m3Dot3(binormal, p2) - planeOff;
+        int32_t vertexCount = 0;
+        if (distance1 <= 0.0f)
+        {
+            segment[vertexCount++] = p1;
+        }
+        if (distance2 <= 0.0f)
+        {
+            segment[vertexCount++] = p2;
+        }
+        if (distance1 * distance2 < 0.0f)
+        {
+            m3real t = distance1 / (distance1 - distance2);
+            segment[vertexCount] = m3Add3(p1, m3MulSV3(t, m3Sub3(p2, p1)));
+            vertexCount++;
+        }
+        if (vertexCount != 2)
+        {
+            return 0;
+        }
+        vertex1 = vertex2;
+    }
+    return 1;
+}
+
+// Closest points between two infinite lines, with fractions
+// (reference b3LineDistance).
+static void LineClosest(m3Vec3 p1, m3Vec3 d1, m3Vec3 p2, m3Vec3 d2, m3real* f1, m3real* f2)
+{
+    m3real a11 = m3Dot3(d1, d1);
+    m3real a12 = -m3Dot3(d1, d2);
+    m3real a21 = m3Dot3(d2, d1);
+    m3real a22 = -m3Dot3(d2, d2);
+    m3Vec3 w = m3Sub3(p1, p2);
+    m3real b1 = -m3Dot3(d1, w);
+    m3real b2 = -m3Dot3(d2, w);
+    m3real det = a11 * a22 - a12 * a21;
+    if (det * det < 1000.0f * FLT_MIN)
+    {
+        *f1 = a11 > 0.0f ? m3Dot3(m3Sub3(p2, p1), d1) / a11 : 0.0f;
+        *f2 = 0.0f;
+        return;
+    }
+    *f1 = (a22 * b1 - a12 * b2) / det;
+    *f2 = (a11 * b2 - a21 * b1) / det;
+}
+
+// Edge-edge separation with the volume-sign orientation guard
+// (reference manifold.c b3EdgeEdgeSeparation).
+static m3real EdgeEdgeSep(m3Vec3 p1, m3Vec3 e1, m3Vec3 c1, m3Vec3 p2, m3Vec3 e2, m3Vec3 c2)
+{
+    m3Vec3 u = m3Cross3(e1, e2);
+    m3real length2 = m3Dot3(u, u);
+    m3real scale2 = m3Dot3(e1, e1) * m3Dot3(e2, e2);
+    if (length2 < 0.005f * 0.005f * scale2 || length2 < 1000.0f * FLT_MIN)
+    {
+        return -3.4e38f; // near parallel: a face axis covers it
+    }
+    m3Vec3 n = m3MulSV3(1.0f / sqrtf(length2), u);
+    m3real sign1 = m3Dot3(n, m3Sub3(p1, c1));
+    m3real sign2 = m3Dot3(n, m3Sub3(p2, c2));
+    m3real a1 = sign1 < 0.0f ? -sign1 : sign1;
+    m3real a2 = sign2 < 0.0f ? -sign2 : sign2;
+    if (a1 > a2)
+    {
+        if (sign1 < 0.0f)
+        {
+            n = m3Neg3(n);
+        }
+    }
+    else
+    {
+        if (sign2 > 0.0f)
+        {
+            n = m3Neg3(n);
+        }
+    }
+    return m3Dot3(n, m3Sub3(p2, p1));
+}
+
+// Capsule versus one triangle (reference b3CollideCapsuleAndTriangle):
+// GJK shallow path with the two-point face clip when the closest axis
+// is near the face normal, single closest point otherwise; deep path
+// by face and edge queries with the reference tolerance rule.
+static void CollideCapsuleTriangle(m3TriManifold* out, m3Vec3 c1, m3Vec3 c2, m3real radius,
+                                   const m3Vec3 tri[3])
+{
+    out->pointCount = 0;
+    m3Vec3 triN = m3Normalize3(m3Cross3(m3Sub3(tri[1], tri[0]), m3Sub3(tri[2], tri[0])));
+    m3real triOff = m3Dot3(triN, tri[0]);
+    m3Vec3 mid = m3MulSV3(0.5f, m3Add3(c1, c2));
+    if (m3Dot3(triN, mid) - triOff < 0.0f)
+    {
+        return; // back side cull
+    }
+
+    m3Vec3 segPts[2] = {c1, c2};
+    m3DistanceInput input;
+    memset(&input, 0, sizeof(input));
+    input.proxyA.points = tri;
+    input.proxyA.count = 3;
+    input.proxyA.radius = 0.0f;
+    input.proxyB.points = segPts;
+    input.proxyB.count = 2;
+    input.proxyB.radius = 0.0f;
+    input.q = m3MakeIdentityQuat();
+    input.p = (m3Vec3){0.0f, 0.0f, 0.0f};
+    input.useRadii = false;
+    m3SimplexCache cache;
+    cache.count = 0;
+    cache.metric = 0.0f;
+    m3DistanceOutput dOut = m3ShapeDistance(&input, &cache);
+
+    if (dOut.distance > radius + M3_SPECULATIVE_DISTANCE)
+    {
+        return;
+    }
+
+    if (dOut.distance > 100.0f * FLT_EPSILON)
+    {
+        // Shallow: prefer the two-point face clip when the closest
+        // axis is not grazing the face.
+        m3Vec3 delta = m3Normalize3(m3Sub3(dOut.pointB, dOut.pointA));
+        m3real cosAngle = m3Dot3(triN, delta);
+        cosAngle = cosAngle < 0.0f ? -cosAngle : cosAngle;
+        if (cosAngle > 0.2f)
+        {
+            m3Vec3 segment[2] = {c1, c2};
+            if (ClipSegmentToTriFace(segment, tri, triN))
+            {
+                out->normal = triN;
+                out->dist2 = dOut.distance * dOut.distance;
+                out->feature = 7;
+                out->pointCount = 2;
+                for (int32_t k = 0; k < 2; ++k)
+                {
+                    m3real d = m3Dot3(triN, segment[k]) - triOff;
+                    out->separation[k] = d - radius;
+                    out->point[k] = m3Sub3(segment[k], m3MulSV3(0.5f * (radius + d), triN));
+                    out->localId[k] = (uint16_t)k;
+                }
+                return;
+            }
+        }
+        // Single closest point; the feature comes from the simplex
+        // cache exactly like the sphere path (triangle side = A).
+        int32_t mask = 0;
+        for (int32_t i = 0; i < (int32_t)cache.count && i < 3; ++i)
+        {
+            mask |= 1 << cache.indexA[i];
+        }
+        out->normal = delta;
+        out->dist2 = dOut.distance * dOut.distance;
+        out->feature = mask == 0 ? 7 : mask;
+        out->pointCount = 1;
+        out->separation[0] = dOut.distance - radius;
+        out->point[0] =
+            m3MulSV3(0.5f, m3Add3(dOut.pointA, m3Sub3(dOut.pointB, m3MulSV3(radius, delta))));
+        out->localId[0] = 0;
+        return;
+    }
+
+    // Deep: face query (min cap-center distance) versus edge query.
+    m3real sep1 = m3Dot3(triN, c1) - triOff;
+    m3real sep2 = m3Dot3(triN, c2) - triOff;
+    m3real faceQuerySep = m3MinF(sep1, sep2);
+    if (faceQuerySep > radius)
+    {
+        return;
+    }
+    m3Vec3 capDir = m3Sub3(c2, c1);
+    m3Vec3 triCenter = m3MulSV3(1.0f / 3.0f, m3Add3(tri[0], m3Add3(tri[1], tri[2])));
+    m3real bestEdgeSep = -3.4e38f;
+    int32_t bestEdge = 0;
+    for (int32_t k = 0; k < 3; ++k)
+    {
+        m3Vec3 v1 = tri[k];
+        m3Vec3 e = m3Sub3(tri[(k + 1) % 3], v1);
+        m3real sep = EdgeEdgeSep(v1, e, triCenter, c1, capDir, mid);
+        if (sep > bestEdgeSep)
+        {
+            bestEdgeSep = sep;
+            bestEdge = k;
+        }
+    }
+    if (bestEdgeSep > radius)
+    {
+        return;
+    }
+
+    // Face contact: clip the segment, both ends against the plane.
+    m3real faceSeparation = faceQuerySep - radius;
+    m3Vec3 segment[2] = {c1, c2};
+    if (ClipSegmentToTriFace(segment, tri, triN))
+    {
+        out->normal = triN;
+        out->dist2 = 0.0f;
+        out->feature = 7;
+        out->pointCount = 2;
+        m3real minSep = 3.4e38f;
+        for (int32_t k = 0; k < 2; ++k)
+        {
+            m3real d = m3Dot3(triN, segment[k]) - triOff;
+            out->separation[k] = d - radius;
+            minSep = m3MinF(minSep, out->separation[k]);
+            out->point[k] = m3Sub3(segment[k], m3MulSV3(0.5f * (radius + d), triN));
+            out->localId[k] = (uint16_t)k;
+        }
+        faceSeparation = minSep;
+    }
+
+    // Edge contact only when the face clip failed or the edge axis is
+    // significantly better (the reference tolerance rule).
+    m3real edgeSeparation = bestEdgeSep - radius;
+    if (out->pointCount == 0 || edgeSeparation > 0.5f * faceSeparation + 0.005f)
+    {
+        m3Vec3 v1 = tri[bestEdge];
+        m3Vec3 triEdge = m3Sub3(tri[(bestEdge + 1) % 3], v1);
+        m3Vec3 normal = m3Normalize3(m3Cross3(capDir, triEdge));
+        if (m3Dot3(normal, m3Sub3(v1, triCenter)) < 0.0f)
+        {
+            normal = m3Neg3(normal);
+        }
+        m3real f1;
+        m3real f2;
+        LineClosest(v1, triEdge, c1, capDir, &f1, &f2);
+        if (f1 < 0.0f || f1 > 1.0f || f2 < 0.0f || f2 > 1.0f)
+        {
+            return; // closest point beyond the segment ends
+        }
+        m3Vec3 onTriEdge = m3Add3(v1, m3MulSV3(f1, triEdge));
+        m3Vec3 onCapCore = m3Add3(c1, m3MulSV3(f2, capDir));
+        m3real separation = m3Dot3(normal, m3Sub3(onCapCore, onTriEdge));
+        out->normal = normal;
+        out->dist2 = separation > 0.0f ? separation * separation : 0.0f;
+        out->feature = (1 << bestEdge) | (1 << ((bestEdge + 1) % 3));
+        out->pointCount = 1;
+        out->separation[0] = separation - radius;
+        out->point[0] =
+            m3MulSV3(0.5f, m3Add3(m3Sub3(onCapCore, m3MulSV3(radius, normal)), onTriEdge));
+        out->localId[0] = 0;
+    }
+}
+
+#define M3_MESH_CANDIDATE_CAP 64
 
 typedef struct m3FeatureSet
 {
@@ -792,35 +1083,55 @@ static int ClaimVertex(m3FeatureSet* set, int32_t v)
     return 1;
 }
 
-static void CollideMeshSphere(m3World* world, m3Manifold* fresh, int32_t meshShape,
-                              int32_t sphereShape, int meshIsA)
+typedef struct m3MeshCandidate
+{
+    m3TriManifold local;
+    int32_t triIndex;
+} m3MeshCandidate;
+
+static void CollideMeshConvex(m3World* world, m3Manifold* fresh, int32_t meshShape,
+                              int32_t otherShape, int meshIsA)
 {
     const m3MeshData* mesh = &world->meshData[world->shapeMeshIndex[meshShape]];
     int32_t meshBody = world->shapeBody[meshShape];
-    int32_t ballBody = world->shapeBody[sphereShape];
+    int32_t otherBody = world->shapeBody[otherShape];
     const m3Transform* xfM = &world->transforms[meshBody];
-    m3real radius = world->shapeGeom[sphereShape].s;
+    const m3Transform* xfO = &world->transforms[otherBody];
+    uint8_t otherType = world->shapeType[otherShape];
 
-    // Sphere center into the mesh frame (doubles localized here).
-    double scx;
-    double scy;
-    double scz;
+    // Localize the convex shape into the mesh frame (doubles here).
+    m3Quat conjM = {-xfM->q.x, -xfM->q.y, -xfM->q.z, xfM->q.w};
+    m3Quat qRel = m3MulQuat(conjM, xfO->q);
+    m3Vec3 dp = {(m3real)(xfO->p.x - xfM->p.x), (m3real)(xfO->p.y - xfM->p.y),
+                 (m3real)(xfO->p.z - xfM->p.z)};
+    m3Vec3 pRel = m3InvRotateVec3(xfM->q, dp);
+
+    m3real radius = world->shapeGeom[otherShape].s;
+    m3Vec3 s1 = {0.0f, 0.0f, 0.0f};
+    m3Vec3 s2 = {0.0f, 0.0f, 0.0f};
+    m3Vec3 boundLo;
+    m3Vec3 boundHi;
+    if (otherType == (uint8_t)m3_sphereShape)
     {
-        const m3Transform* xfS = &world->transforms[ballBody];
-        m3Vec3 r = m3RotateVec3(xfS->q, world->shapeGeom[sphereShape].v);
-        scx = xfS->p.x + (double)r.x;
-        scy = xfS->p.y + (double)r.y;
-        scz = xfS->p.z + (double)r.z;
+        s1 = m3Add3(m3RotateVec3(qRel, world->shapeGeom[otherShape].v), pRel);
+        boundLo = s1;
+        boundHi = s1;
     }
-    m3Vec3 center =
-        m3InvRotateVec3(xfM->q, (m3Vec3){(m3real)(scx - xfM->p.x), (m3real)(scy - xfM->p.y),
-                                         (m3real)(scz - xfM->p.z)});
+    else
+    {
+        s1 = m3Add3(m3RotateVec3(qRel, world->shapeGeom[otherShape].v), pRel);
+        s2 = m3Add3(m3RotateVec3(qRel, world->shapeGeom[otherShape].v2), pRel);
+        boundLo.x = m3MinF(s1.x, s2.x);
+        boundLo.y = m3MinF(s1.y, s2.y);
+        boundLo.z = m3MinF(s1.z, s2.z);
+        boundHi.x = m3MaxF(s1.x, s2.x);
+        boundHi.y = m3MaxF(s1.y, s2.y);
+        boundHi.z = m3MaxF(s1.z, s2.z);
+    }
     m3real reach = radius + M3_SPECULATIVE_DISTANCE;
 
-    // Bounded midphase: ascending triangle order, cheap AABB reject.
-    // The static BVH replaces this scan in 2b-9b behind the same
-    // contract; overflow keeps the FIRST candidates (ascending order
-    // makes that deterministic) and a sphere touches only a handful.
+    // Bounded midphase: ascending triangle order, cheap AABB reject
+    // (the static BVH replaces this scan behind the same contract).
     m3MeshCandidate faceAccepted[M3_MESH_CANDIDATE_CAP];
     int32_t faceCount = 0;
     m3MeshCandidate tentative[M3_MESH_CANDIDATE_CAP];
@@ -828,74 +1139,55 @@ static void CollideMeshSphere(m3World* world, m3Manifold* fresh, int32_t meshSha
 
     for (int32_t t = 0; t < mesh->triangleCount; ++t)
     {
-        if (faceCount + tentativeCount >= M3_MESH_CANDIDATE_CAP)
+        if (faceCount >= M3_MESH_CANDIDATE_CAP || tentativeCount >= M3_MESH_CANDIDATE_CAP)
         {
             break;
         }
-        int32_t i1 = mesh->indices[3 * t + 0];
-        int32_t i2 = mesh->indices[3 * t + 1];
-        int32_t i3 = mesh->indices[3 * t + 2];
-        m3Vec3 v1 = mesh->vertices[i1];
-        m3Vec3 v2 = mesh->vertices[i2];
-        m3Vec3 v3 = mesh->vertices[i3];
-
-        m3real lox = m3MinF(v1.x, m3MinF(v2.x, v3.x)) - reach;
-        m3real hix = m3MaxF(v1.x, m3MaxF(v2.x, v3.x)) + reach;
-        m3real loy = m3MinF(v1.y, m3MinF(v2.y, v3.y)) - reach;
-        m3real hiy = m3MaxF(v1.y, m3MaxF(v2.y, v3.y)) + reach;
-        m3real loz = m3MinF(v1.z, m3MinF(v2.z, v3.z)) - reach;
-        m3real hiz = m3MaxF(v1.z, m3MaxF(v2.z, v3.z)) + reach;
-        if (center.x < lox || center.x > hix || center.y < loy || center.y > hiy ||
-            center.z < loz || center.z > hiz)
+        m3Vec3 tri[3] = {mesh->vertices[mesh->indices[3 * t + 0]],
+                         mesh->vertices[mesh->indices[3 * t + 1]],
+                         mesh->vertices[mesh->indices[3 * t + 2]]};
+        m3real lox = m3MinF(tri[0].x, m3MinF(tri[1].x, tri[2].x)) - reach;
+        m3real hix = m3MaxF(tri[0].x, m3MaxF(tri[1].x, tri[2].x)) + reach;
+        m3real loy = m3MinF(tri[0].y, m3MinF(tri[1].y, tri[2].y)) - reach;
+        m3real hiy = m3MaxF(tri[0].y, m3MaxF(tri[1].y, tri[2].y)) + reach;
+        m3real loz = m3MinF(tri[0].z, m3MinF(tri[1].z, tri[2].z)) - reach;
+        m3real hiz = m3MaxF(tri[0].z, m3MaxF(tri[1].z, tri[2].z)) + reach;
+        if (boundHi.x < lox || boundLo.x > hix || boundHi.y < loy || boundLo.y > hiy ||
+            boundHi.z < loz || boundLo.z > hiz)
         {
             continue;
         }
 
-        // Back side cull (CCW winding, outward normal convention).
-        m3Vec3 triN = m3Cross3(m3Sub3(v2, v1), m3Sub3(v3, v1));
-        if (m3Dot3(triN, m3Sub3(center, v1)) < 0.0f)
+        m3TriManifold local;
+        memset(&local, 0, sizeof(local)); // the whole struct is copied
+                                          // below; keep O3 flow checks
+                                          // and MSVC C4701 quiet
+        if (otherType == (uint8_t)m3_sphereShape)
         {
-            continue;
-        }
-
-        m3TriPoint closest = ClosestPointOnTriangle(v1, v2, v3, center);
-        m3Vec3 d = m3Sub3(center, closest.point);
-        m3real dist2 = m3Dot3(d, d);
-        if (dist2 > reach * reach)
-        {
-            continue;
-        }
-        m3real dist = sqrtf(dist2);
-        m3Vec3 normal;
-        if (dist2 > 1000.0f * FLT_MIN)
-        {
-            normal = m3MulSV3(1.0f / dist, d);
+            CollideSphereTriangle(&local, s1, radius, tri);
         }
         else
         {
-            normal = m3Normalize3(triN);
+            CollideCapsuleTriangle(&local, s1, s2, radius, tri);
         }
-
+        if (local.pointCount == 0)
+        {
+            continue;
+        }
         m3MeshCandidate cand;
-        cand.dist2 = dist2;
-        cand.separation = dist - radius;
+        cand.local = local;
         cand.triIndex = t;
-        cand.feature = closest.feature;
-        cand.normal = normal;
-        cand.onTri = closest.point;
-        if (closest.feature == 7)
+        if (local.feature == 7)
         {
-            faceAccepted[faceCount] = cand;
-            faceAccepted[faceCount].triIndex = t;
-            faceCount += 1;
+            faceAccepted[faceCount++] = cand;
         }
         else
         {
-            tentative[tentativeCount] = cand;
-            tentativeCount += 1;
+            tentative[tentativeCount++] = cand;
         }
     }
 
+    // Face contacts claim their features first (triangle order).
     m3FeatureSet set;
     set.edgeCount = 0;
     set.vertCount = 0;
@@ -913,15 +1205,14 @@ static void CollideMeshSphere(m3World* world, m3Manifold* fresh, int32_t meshSha
         (void)ClaimVertex(&set, i3);
     }
 
-    // Tentative contacts in ascending distance (ties to the lower
-    // triangle index): closest first, exactly the reference order.
+    // Tentatives in ascending distance (ties to the lower triangle).
     for (int32_t a = 0; a < tentativeCount; ++a)
     {
         int32_t best = a;
         for (int32_t b = a + 1; b < tentativeCount; ++b)
         {
-            if (tentative[b].dist2 < tentative[best].dist2 ||
-                (tentative[b].dist2 == tentative[best].dist2 &&
+            if (tentative[b].local.dist2 < tentative[best].local.dist2 ||
+                (tentative[b].local.dist2 == tentative[best].local.dist2 &&
                  tentative[b].triIndex < tentative[best].triIndex))
             {
                 best = b;
@@ -932,25 +1223,8 @@ static void CollideMeshSphere(m3World* world, m3Manifold* fresh, int32_t meshSha
         tentative[best] = tmp;
     }
 
-    // Winner selection: deepest accepted manifold (face or surviving
-    // tentative) carries the pair this step.
-    int haveWinner = 0;
-    m3MeshCandidate winner;
-    memset(&winner, 0, sizeof(winner)); // MSVC C4701: the flow guard
-                                        // haveWinner is invisible to it
-    winner.separation = 3.4e38f;
-    winner.triIndex = -1;
-    for (int32_t k = 0; k < faceCount; ++k)
-    {
-        if (!haveWinner || faceAccepted[k].separation < winner.separation ||
-            (faceAccepted[k].separation == winner.separation &&
-             faceAccepted[k].triIndex < winner.triIndex))
-        {
-            winner = faceAccepted[k];
-            haveWinner = 1;
-        }
-    }
-    for (int32_t k = 0; k < tentativeCount; ++k)
+    // Accept the surviving tentatives into the face list.
+    for (int32_t k = 0; k < tentativeCount && faceCount < M3_MESH_CANDIDATE_CAP; ++k)
     {
         int32_t t = tentative[k].triIndex;
         int32_t i1 = mesh->indices[3 * t + 0];
@@ -963,7 +1237,7 @@ static void CollideMeshSphere(m3World* world, m3Manifold* fresh, int32_t meshSha
         int newVert2 = ClaimVertex(&set, i2);
         int newVert3 = ClaimVertex(&set, i3);
         int shouldCollide = 0;
-        switch (tentative[k].feature)
+        switch (tentative[k].local.feature)
         {
         case 1 | 2:
             shouldCollide = newEdge1;
@@ -986,37 +1260,119 @@ static void CollideMeshSphere(m3World* world, m3Manifold* fresh, int32_t meshSha
         default:
             break;
         }
-        if (shouldCollide && (!haveWinner || tentative[k].separation < winner.separation ||
-                              (tentative[k].separation == winner.separation &&
-                               tentative[k].triIndex < winner.triIndex)))
+        if (shouldCollide)
         {
-            winner = tentative[k];
-            haveWinner = 1;
+            faceAccepted[faceCount++] = tentative[k];
         }
     }
 
-    if (!haveWinner)
+    if (faceCount == 0)
     {
         return;
     }
 
-    // Emit: normal and anchors out of the mesh frame, COM-relative,
-    // A-to-B convention (flip when the mesh is shape B).
-    m3Vec3 nWorld = m3RotateVec3(xfM->q, winner.normal); // mesh -> sphere
-    m3Vec3 onTriWorldRel = m3RotateVec3(xfM->q, winner.onTri);
-    double px = xfM->p.x + (double)onTriWorldRel.x;
-    double py = xfM->p.y + (double)onTriWorldRel.y;
-    double pz = xfM->p.z + (double)onTriWorldRel.z;
-    m3Vec3 anchorMesh = FromCom(world, meshBody, px, py, pz);
-    m3Vec3 anchorBall =
-        FromCom(world, ballBody, scx - (double)(nWorld.x * radius),
-                scy - (double)(nWorld.y * radius), scz - (double)(nWorld.z * radius));
+    // Cluster around the deepest accepted contact: manifolds whose
+    // normals agree merge their points; the rest wait for 2b-9c.
+    int32_t repIndex = 0;
+    m3real repSep = 3.4e38f;
+    for (int32_t k = 0; k < faceCount; ++k)
+    {
+        for (int32_t p = 0; p < faceAccepted[k].local.pointCount; ++p)
+        {
+            m3real sep = faceAccepted[k].local.separation[p];
+            if (sep < repSep ||
+                (sep == repSep && faceAccepted[k].triIndex < faceAccepted[repIndex].triIndex))
+            {
+                repSep = sep;
+                repIndex = k;
+            }
+        }
+    }
+    m3Vec3 repNormal = faceAccepted[repIndex].local.normal;
+
+    // Gather cluster points, keep the deepest four (ties by triangle
+    // then local id: the canonical rule).
+    enum
+    {
+        GATHER_CAP = 2 * M3_MESH_CANDIDATE_CAP
+    };
+    m3Vec3 gPoint[GATHER_CAP];
+    m3real gSep[GATHER_CAP];
+    uint16_t gId[GATHER_CAP];
+    int32_t gCount = 0;
+    for (int32_t k = 0; k < faceCount && gCount < GATHER_CAP; ++k)
+    {
+        if (m3Dot3(faceAccepted[k].local.normal, repNormal) < 0.99f)
+        {
+            continue;
+        }
+        for (int32_t p = 0; p < faceAccepted[k].local.pointCount && gCount < GATHER_CAP; ++p)
+        {
+            gPoint[gCount] = faceAccepted[k].local.point[p];
+            gSep[gCount] = faceAccepted[k].local.separation[p];
+            gId[gCount] =
+                (uint16_t)((faceAccepted[k].triIndex << 2) | faceAccepted[k].local.localId[p]);
+            gCount += 1;
+        }
+    }
+    int32_t kept[M3_MANIFOLD_MAX_POINTS];
+    int32_t keptCount = 0;
+    uint8_t used[GATHER_CAP];
+    memset(used, 0, sizeof(used));
+    int32_t want = gCount < M3_MANIFOLD_MAX_POINTS ? gCount : M3_MANIFOLD_MAX_POINTS;
+    for (int32_t k = 0; k < want; ++k)
+    {
+        int32_t best = -1;
+        for (int32_t c = 0; c < gCount; ++c)
+        {
+            if (used[c])
+            {
+                continue;
+            }
+            if (best < 0 || gSep[c] < gSep[best] || (gSep[c] == gSep[best] && gId[c] < gId[best]))
+            {
+                best = c;
+            }
+        }
+        used[best] = 1;
+        kept[keptCount++] = best;
+    }
+    // Ascending id among the kept (canonical point order).
+    for (int32_t a = 0; a < keptCount; ++a)
+    {
+        for (int32_t b = a + 1; b < keptCount; ++b)
+        {
+            if (gId[kept[b]] < gId[kept[a]])
+            {
+                int32_t tmp = kept[a];
+                kept[a] = kept[b];
+                kept[b] = tmp;
+            }
+        }
+    }
+
+    // Emit: midway points split into both anchors along the normal.
+    m3Vec3 nWorld = m3RotateVec3(xfM->q, repNormal); // mesh toward shape
     fresh->normal = meshIsA ? nWorld : m3Neg3(nWorld);
-    fresh->pointCount = 1;
-    fresh->points[0].anchorA = meshIsA ? anchorMesh : anchorBall;
-    fresh->points[0].anchorB = meshIsA ? anchorBall : anchorMesh;
-    fresh->points[0].separation = winner.separation;
-    fresh->points[0].id = (uint16_t)winner.triIndex;
+    fresh->pointCount = keptCount;
+    for (int32_t k = 0; k < keptCount; ++k)
+    {
+        int32_t c = kept[k];
+        m3Vec3 pw = m3RotateVec3(xfM->q, gPoint[c]);
+        double px = xfM->p.x + (double)pw.x;
+        double py = xfM->p.y + (double)pw.y;
+        double pz = xfM->p.z + (double)pw.z;
+        m3real half = 0.5f * gSep[c];
+        m3Vec3 anchorMesh = FromCom(world, meshBody, px - (double)(nWorld.x * half),
+                                    py - (double)(nWorld.y * half), pz - (double)(nWorld.z * half));
+        m3Vec3 anchorOther =
+            FromCom(world, otherBody, px + (double)(nWorld.x * half),
+                    py + (double)(nWorld.y * half), pz + (double)(nWorld.z * half));
+        fresh->points[k].anchorA = meshIsA ? anchorMesh : anchorOther;
+        fresh->points[k].anchorB = meshIsA ? anchorOther : anchorMesh;
+        fresh->points[k].separation = gSep[c];
+        fresh->points[k].id = gId[c];
+    }
 }
 
 m3Result m3UpdateContacts(m3World* world, const uint64_t* oldKeys, const m3Manifold* oldManifolds,
@@ -1043,13 +1399,14 @@ m3Result m3UpdateContacts(m3World* world, const uint64_t* oldKeys, const m3Manif
             memset(&fresh, 0, sizeof(fresh));
             int32_t meshShape = typeA == (uint8_t)m3_meshShape ? shapeA : shapeB;
             int32_t otherShape = meshShape == shapeA ? shapeB : shapeA;
-            if (world->shapeType[otherShape] == (uint8_t)m3_sphereShape)
+            if (world->shapeType[otherShape] == (uint8_t)m3_sphereShape ||
+                world->shapeType[otherShape] == (uint8_t)m3_capsuleShape)
             {
-                CollideMeshSphere(world, &fresh, meshShape, otherShape, meshShape == shapeA);
+                CollideMeshConvex(world, &fresh, meshShape, otherShape, meshShape == shapeA);
             }
-            // Capsule and hull versus mesh land with 2b-9b; until
-            // then those pairs carry no manifold (documented staged
-            // gap, guarded by a test).
+            // Hull versus mesh lands with 2b-9c; until then that pair
+            // carries no manifold (documented staged gap, guarded by
+            // a test).
         }
         else if (planePair && hullPair)
         {
