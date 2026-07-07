@@ -248,6 +248,46 @@ m3Result m3UpdateContacts(m3World* world, const uint64_t* oldKeys, const m3Manif
 // z), because the friction rows are order-sensitive downstream.
 void m3MakeTangentBasis(m3Vec3 normal, m3Vec3* t1, m3Vec3* t2);
 
+// GJK distance (2b-4), adapted from the reference distance.c: convex
+// proxies, a warm-startable simplex cache, results in frame A. The
+// SAT manifolds (2b-5) and the TOI (2b-8) build on this kernel.
+#define M3_MAX_GJK_ITERATIONS 32
+
+typedef struct m3DistanceProxy
+{
+    const m3Vec3* points;
+    int32_t count;
+    m3real radius;
+} m3DistanceProxy;
+
+typedef struct m3SimplexCache
+{
+    m3real metric;
+    uint16_t count;
+    uint8_t indexA[4];
+    uint8_t indexB[4];
+} m3SimplexCache;
+
+typedef struct m3DistanceInput
+{
+    m3DistanceProxy proxyA;
+    m3DistanceProxy proxyB;
+    m3Quat q; // rotation of B in A's frame
+    m3Vec3 p; // position of B in A's frame (caller localizes doubles)
+    bool useRadii;
+} m3DistanceInput;
+
+typedef struct m3DistanceOutput
+{
+    m3Vec3 pointA; // frame A
+    m3Vec3 pointB;
+    m3Vec3 normal;   // A toward B (zero on overlap)
+    m3real distance; // zero on overlap
+    int32_t iterations;
+} m3DistanceOutput;
+
+m3DistanceOutput m3ShapeDistance(const m3DistanceInput* input, m3SimplexCache* cache);
+
 // Pure collide kernels (world-independent, tested in isolation).
 // Normals point from A to B. d is the center offset B minus A in
 // floats (exact enough near contact).

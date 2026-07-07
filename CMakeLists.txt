@@ -10,6 +10,7 @@ add_library(maul3d STATIC
     src/body.c
     src/broad_phase.c
     src/core.c
+    src/distance.c
     src/dynamic_tree.c
     src/hull.c
     src/manifold.c
@@ -56,6 +57,12 @@ target_link_libraries(test_contacts PRIVATE maul3d)
 target_include_directories(test_contacts PRIVATE src)
 maul3d_apply_flags(test_contacts)
 add_test(NAME contacts COMMAND test_contacts)
+
+add_executable(test_distance test/test_distance.c)
+target_link_libraries(test_distance PRIVATE maul3d)
+target_include_directories(test_distance PRIVATE src)
+maul3d_apply_flags(test_distance)
+add_test(NAME distance COMMAND test_distance)
 
 add_executable(test_solver test/test_solver.c)
 target_link_libraries(test_solver PRIVATE maul3d)
