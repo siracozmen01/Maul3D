@@ -14,7 +14,8 @@ extern "C"
     typedef enum m3BodyType
     {
         m3_staticBody = 0,
-        m3_dynamicBody = 2, // kinematic (1) arrives in phase 2b
+        m3_kinematicBody = 1, // moved by velocity, immovable by contact
+        m3_dynamicBody = 2,
     } m3BodyType;
 
     typedef struct m3BodyDef

@@ -60,6 +60,8 @@ int32_t m3CreateBodyInternal(m3World* world, const m3BodyDef* def)
     world->invInertiaLocal[index] = m3MakeZeroMat3();
     world->inertiaLocal[index] = m3MakeZeroMat3();
     world->bulletFlags[index] = 0;
+    world->awake[index] = 1;
+    world->sleepTimes[index] = 0.0f;
     world->minExtents[index] = 1.0e30f;
     world->maxExtents[index] = 0.0f;
     world->localCenters[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
@@ -90,6 +92,8 @@ void m3DestroyBodyInternal(m3World* world, int32_t index)
     world->invInertiaLocal[index] = m3MakeZeroMat3();
     world->inertiaLocal[index] = m3MakeZeroMat3();
     world->bulletFlags[index] = 0;
+    world->awake[index] = 1;
+    world->sleepTimes[index] = 0.0f;
     world->minExtents[index] = 1.0e30f;
     world->maxExtents[index] = 0.0f;
     world->localCenters[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
@@ -103,11 +107,15 @@ void m3DestroyBodyInternal(m3World* world, int32_t index)
 
 void m3SetLinearVelocityInternal(m3World* world, int32_t index, m3Vec3 velocity)
 {
+    world->awake[index] = 1; // a commanded velocity always wakes
+    world->sleepTimes[index] = 0.0f;
     world->linearVelocities[index] = velocity;
 }
 
 void m3SetAngularVelocityInternal(m3World* world, int32_t index, m3Vec3 velocity)
 {
+    world->awake[index] = 1;
+    world->sleepTimes[index] = 0.0f;
     world->angularVelocities[index] = velocity;
 }
 
@@ -115,7 +123,8 @@ m3BodyId m3CreateBody(m3WorldId worldId, const m3BodyDef* def)
 {
     m3World* world = m3WorldFromId(worldId);
     if (world == NULL || def == NULL || def->internalValue != M3_BODY_COOKIE ||
-        (def->type != m3_staticBody && def->type != m3_dynamicBody))
+        (def->type != m3_staticBody && def->type != m3_kinematicBody &&
+         def->type != m3_dynamicBody))
     {
         // Contract, not invariant: a bad def or stale world returns
         // the null id (see m3CreateWorld).

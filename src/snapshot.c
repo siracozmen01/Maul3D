@@ -22,7 +22,7 @@
 #endif
 
 #define M3_SNAPSHOT_MAGIC   0x4D33534Eu // 'M3SN'
-#define M3_SNAPSHOT_VERSION 11u         // v11: static mesh slots
+#define M3_SNAPSHOT_VERSION 12u         // v12: sleep state
 
 // The math types are canonical field data only because they are
 // provably padding-free; a change here is a format version bump.
@@ -127,6 +127,8 @@ static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3Wal
     M3_BLOCK(world->linearDamping, cap * (int32_t)sizeof(m3real));
     M3_BLOCK(world->angularDamping, cap * (int32_t)sizeof(m3real));
     M3_BLOCK(world->types, cap * (int32_t)sizeof(uint8_t));
+    M3_BLOCK(world->awake, cap * (int32_t)sizeof(uint8_t));
+    M3_BLOCK(world->sleepTimes, cap * (int32_t)sizeof(float));
     M3_BLOCK(world->bulletFlags, cap * (int32_t)sizeof(uint8_t));
     M3_BLOCK(world->minExtents, cap * (int32_t)sizeof(float));
     M3_BLOCK(world->maxExtents, cap * (int32_t)sizeof(float));
@@ -315,6 +317,8 @@ uint64_t m3World_Hash(m3WorldId worldId)
         h = m3Hash64(h, &world->localCenters[i], (int32_t)sizeof(m3Vec3));
         h = m3Hash64(h, &world->types[i], 1);
         h = m3Hash64(h, &world->bulletFlags[i], 1);
+        h = m3Hash64(h, &world->awake[i], 1);
+        h = m3Hash64(h, &world->sleepTimes[i], 4);
     }
     int32_t maxShape = world->shapePool.maxIndex;
     for (int32_t i = 0; i < maxShape; ++i)

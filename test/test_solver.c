@@ -978,6 +978,137 @@ static void TestMeshJournalAndRollback(void)
     m3DestroyWorld(world);
 }
 
+static void TestKinematicPlatform(void)
+{
+    // A kinematic platform moves at its commanded velocity, immovable
+    // by the ball riding it; friction drags the ball along.
+    m3WorldId world = MakeWorld();
+
+    m3BodyDef bd = m3DefaultBodyDef();
+    bd.type = m3_kinematicBody;
+    bd.position = (m3Pos3){0.0, 1.0, 0.0};
+    bd.linearVelocity = (m3Vec3){1.0f, 0.0f, 0.0f};
+    m3BodyId platform = m3CreateBody(world, &bd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    sd.friction = 0.9f;
+    m3CreateBoxShape(platform, &sd, (m3Vec3){2.0f, 0.1f, 2.0f});
+
+    bd.type = m3_dynamicBody;
+    bd.position = (m3Pos3){0.0, 1.6, 0.0};
+    bd.linearVelocity = (m3Vec3){0.0f, 0.0f, 0.0f};
+    m3BodyId ball = m3CreateBody(world, &bd);
+    m3Sphere sphere = {{0.0f, 0.0f, 0.0f}, 0.3f};
+    m3CreateSphereShape(ball, &sd, &sphere);
+
+    StepN(world, 120); // two seconds
+
+    m3Pos3 pp = m3Body_GetPosition(platform);
+    CHECK(pp.x > 1.99 && pp.x < 2.01, "the platform advances exactly at its velocity");
+    CHECK(pp.y > 0.99 && pp.y < 1.01, "the ball's weight cannot push the platform");
+    m3Pos3 bp = m3Body_GetPosition(ball);
+    CHECK(bp.y > 1.35 && bp.y < 1.45, "the ball rides on the platform");
+    // A ball on a conveyor rolls: slip ends at v = (2/7) * platform
+    // speed (inertia 2/5 m r^2 spins up 2.5x faster than it
+    // translates). Assert the analytic band, not wishful thinking.
+    m3Vec3 bv = m3Body_GetLinearVelocity(ball);
+    CHECK(bv.x > 0.2f && bv.x < 0.4f, "friction rolls the ball at the conveyor ratio");
+    m3DestroyWorld(world);
+}
+
+static void TestSleepFreezesAndWakes(void)
+{
+    // A resting ball crosses the half-second sleep bar and freezes
+    // BIT-SOLID: velocities exactly zero, position bit-stable across
+    // thirty further steps. A commanded velocity wakes it; a second
+    // ball dropped on it wakes the island through the contact.
+    m3WorldId world = MakeWorld();
+    AddGroundPlane(world, 0.6f);
+    m3BodyId ball = AddBall(world, 0.0, 0.5, 0.0, 0.5f, 0.6f, 0.0f);
+
+    StepN(world, 120); // settle plus the sleep bar
+    m3Vec3 v = m3Body_GetLinearVelocity(ball);
+    CHECK(v.x == 0.0f && v.y == 0.0f && v.z == 0.0f, "the sleeping ball has exact zero velocity");
+    m3Pos3 before = m3Body_GetPosition(ball);
+    StepN(world, 30);
+    m3Pos3 after = m3Body_GetPosition(ball);
+    CHECK(before.x == after.x && before.y == after.y && before.z == after.z,
+          "the sleeping ball is bit-frozen");
+
+    // A commanded velocity wakes it.
+    m3Body_SetLinearVelocity(ball, (m3Vec3){1.0f, 0.0f, 0.0f});
+    StepN(world, 30);
+    m3Pos3 moved = m3Body_GetPosition(ball);
+    CHECK(moved.x > after.x + 0.1, "a commanded velocity wakes the sleeper");
+
+    // Let it sleep again, then wake it by dropping a second ball on it.
+    StepN(world, 300);
+    m3Pos3 asleep = m3Body_GetPosition(ball);
+    m3BodyId dropper = AddBall(world, asleep.x, asleep.y + 2.0, asleep.z, 0.3f, 0.6f, 0.0f);
+    StepN(world, 60);
+    m3Pos3 pushed = m3Body_GetPosition(ball);
+    m3Pos3 dp = m3Body_GetPosition(dropper);
+    CHECK(dp.y < asleep.y + 1.5, "the dropper fell onto the sleeper");
+    CHECK(pushed.y < asleep.y - 0.001 || pushed.x != asleep.x || pushed.z != asleep.z ||
+              m3Body_GetLinearVelocity(ball).y != 0.0f ||
+              m3Body_GetLinearVelocity(dropper).y != 0.0f,
+          "the contact wakes the island");
+    m3DestroyWorld(world);
+}
+
+static void TestSleepDeterminism(void)
+{
+    // Sleep state joins the determinism contract: a scene that
+    // settles, sleeps, and gets re-disturbed double-runs and
+    // journal-replays bit-identically.
+    uint64_t hashes[2];
+    uint8_t journal[16384];
+    int32_t bytes = 0;
+    for (int32_t run = 0; run < 2; ++run)
+    {
+        m3WorldDef def = m3DefaultWorldDef();
+        def.bodyCapacity = 16;
+        def.shapeCapacity = 16;
+        m3WorldId world = m3CreateWorld(&def);
+        if (run == 0)
+        {
+            CHECK(m3World_JournalBegin(world, journal, (int32_t)sizeof(journal)), "journal arms");
+        }
+        m3BodyDef gd = m3DefaultBodyDef();
+        m3BodyId ground = m3CreateBody(world, &gd);
+        m3ShapeDef sd = m3DefaultShapeDef();
+        sd.friction = 0.6f;
+        m3Plane floor = {{0.0f, 1.0f, 0.0f}, 0.0f};
+        m3CreatePlaneShape(ground, &sd, &floor);
+        m3BodyDef bd = m3DefaultBodyDef();
+        bd.type = m3_dynamicBody;
+        bd.position = (m3Pos3){0.0, 0.5, 0.0};
+        m3BodyId a = m3CreateBody(world, &bd);
+        m3Sphere s1 = {{0.0f, 0.0f, 0.0f}, 0.5f};
+        m3CreateSphereShape(a, &sd, &s1);
+        for (int32_t i = 0; i < 90; ++i)
+        {
+            m3World_Step(world, 1.0f / 60.0f, 4);
+        }
+        m3Body_SetLinearVelocity(a, (m3Vec3){0.5f, 0.0f, 0.0f}); // disturb the sleeper
+        for (int32_t i = 0; i < 90; ++i)
+        {
+            m3World_Step(world, 1.0f / 60.0f, 4);
+        }
+        hashes[run] = m3World_Hash(world);
+        if (run == 0)
+        {
+            bytes = m3World_JournalEnd(world);
+            CHECK(bytes > 0, "the sleep session recorded");
+            m3WorldId twin = m3CreateWorld(&def);
+            CHECK(m3World_JournalReplay(twin, journal, bytes), "the sleep session replays");
+            CHECK(m3World_Hash(twin) == hashes[0], "the replay is bit-identical");
+            m3DestroyWorld(twin);
+        }
+        m3DestroyWorld(world);
+    }
+    CHECK(hashes[0] == hashes[1], "the sleep scene is bit-deterministic");
+}
+
 static void TestSolverHashGate(void)
 {
     // The fixed solver scene for the CI gate: a plane, a three-sphere
@@ -1019,6 +1150,9 @@ int main(void)
     TestMeshContractsAndGaps();
     TestBoxSlidesAcrossMeshFloor();
     TestMeshJournalAndRollback();
+    TestKinematicPlatform();
+    TestSleepFreezesAndWakes();
+    TestSleepDeterminism();
     TestSolverHashGate();
     if (s_failures == 0)
     {

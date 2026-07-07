@@ -22,7 +22,7 @@
 // integration order, constants). Part of the snapshot config hash, so
 // a snapshot from a different behavior revision is refused loudly
 // instead of silently diverging (the Jolt friction-model lesson).
-#define M3_SOLVER_REV 10 // rev 10: hull-mesh lands
+#define M3_SOLVER_REV 11 // rev 11: kinematic bodies, islands, sleep
 
 // Def cookies: a def that did not come from its m3Default*Def factory
 // is rejected loudly (the Maul2D pattern).
@@ -220,6 +220,8 @@ typedef struct m3World
     m3real* linearDamping;
     m3real* angularDamping;
     uint8_t* types;
+    uint8_t* awake;       // 0 = sleeping (dynamic bodies only), frozen solid
+    float* sleepTimes;    // seconds below the sleep threshold (2b-10)
     uint8_t* bulletFlags; // 1 = full continuous vs dynamics (2b-8)
     float* minExtents;    // per body: thinnest shape measure (CCD trigger)
     float* maxExtents;    // per body: farthest point from the COM (CCD arc bound)

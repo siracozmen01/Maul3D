@@ -92,6 +92,8 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     M3_ALLOC(world->linearDamping, cap, m3real);
     M3_ALLOC(world->angularDamping, cap, m3real);
     M3_ALLOC(world->types, cap, uint8_t);
+    M3_ALLOC(world->awake, cap, uint8_t);
+    M3_ALLOC(world->sleepTimes, cap, float);
     M3_ALLOC(world->bulletFlags, cap, uint8_t);
     M3_ALLOC(world->minExtents, cap, float);
     M3_ALLOC(world->maxExtents, cap, float);
@@ -178,6 +180,8 @@ void m3DestroyWorld(m3WorldId worldId)
     m3Free(world->linearDamping);
     m3Free(world->angularDamping);
     m3Free(world->types);
+    m3Free(world->awake);
+    m3Free(world->sleepTimes);
     m3Free(world->bulletFlags);
     m3Free(world->minExtents);
     m3Free(world->maxExtents);
