@@ -7,10 +7,15 @@ include(cmake/CompilerFlags.cmake)
 
 add_library(maul3d STATIC
     src/core.c
+    src/math_functions.c
 )
 target_include_directories(maul3d PUBLIC include)
 target_include_directories(maul3d PRIVATE src)
 maul3d_apply_flags(maul3d)
+if(NOT MSVC)
+    # sqrtf and remainderf, the only libm the bit law allows.
+    target_link_libraries(maul3d PUBLIC m)
+endif()
 
 enable_testing()
 
@@ -18,3 +23,8 @@ add_executable(test_determinism test/test_determinism.c)
 target_link_libraries(test_determinism PRIVATE maul3d)
 maul3d_apply_flags(test_determinism)
 add_test(NAME determinism COMMAND test_determinism)
+
+add_executable(test_math test/test_math.c)
+target_link_libraries(test_math PRIVATE maul3d)
+maul3d_apply_flags(test_math)
+add_test(NAME math COMMAND test_math)
