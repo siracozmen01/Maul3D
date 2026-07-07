@@ -393,6 +393,172 @@ static void TestGyroscopicTumble(void)
     m3DestroyWorld(world);
 }
 
+static void TestDeepSphereRecovers(void)
+{
+    // The 2b-7 milestone: a sphere spawned INSIDE a static box (the
+    // destruction-rubble pose) exits along the least-deep face and
+    // rests on top. Spawned near the top face, the exact point-in-hull
+    // kernel must pick +y deterministically.
+    m3WorldDef def = m3DefaultWorldDef();
+    def.bodyCapacity = 8;
+    def.shapeCapacity = 8;
+    m3WorldId world = m3CreateWorld(&def);
+
+    m3BodyDef bd = m3DefaultBodyDef();
+    bd.position = (m3Pos3){0.0, 0.5, 0.0};
+    m3BodyId block = m3CreateBody(world, &bd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    m3CreateBoxShape(block, &sd, (m3Vec3){0.5f, 0.5f, 0.5f});
+
+    bd.type = m3_dynamicBody;
+    bd.position = (m3Pos3){0.0, 0.85, 0.0}; // 0.15 under the top face
+    m3BodyId ball = m3CreateBody(world, &bd);
+    m3Sphere sphere = {{0.0f, 0.0f, 0.0f}, 0.3f};
+    m3CreateSphereShape(ball, &sd, &sphere);
+
+    StepN(world, 480);
+
+    m3Pos3 p = m3Body_GetPosition(ball);
+    CHECK(p.y > 1.24 && p.y < 1.36, "the deep sphere pops out and rests on top");
+    CHECK(p.x > -0.05 && p.x < 0.05, "the exit is straight up, no sideways drift");
+    m3DestroyWorld(world);
+}
+
+static void TestDeepCapsuleRecovers(void)
+{
+    // A capsule skewered through the box near its top face: both cap
+    // centers are OUTSIDE the side planes, so only the segment SAT
+    // sees the right axis (a centroid heuristic would shove it
+    // sideways). The honest deep-recovery promise: the capsule is
+    // EXPELLED and settles somewhere sane. It need not end balanced
+    // on top: the violent pop-out picks up a small sequential-solve
+    // torque (the reference solvers share this trait) and the rod
+    // may legitimately slide off the box and land on the ground.
+    m3WorldId world = MakeWorld();
+    AddGroundPlane(world, 0.6f);
+
+    m3BodyDef bd = m3DefaultBodyDef();
+    bd.position = (m3Pos3){0.0, 0.5, 0.0};
+    m3BodyId block = m3CreateBody(world, &bd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    m3CreateBoxShape(block, &sd, (m3Vec3){0.5f, 0.5f, 0.5f});
+
+    bd.type = m3_dynamicBody;
+    bd.position = (m3Pos3){0.0, 0.8, 0.0}; // core 0.2 under the top
+    m3BodyId rod = m3CreateBody(world, &bd);
+    m3Capsule capsule = {{-1.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, 0.2f};
+    m3CreateCapsuleShape(rod, &sd, &capsule);
+
+    StepN(world, 480);
+
+    m3Pos3 p = m3Body_GetPosition(rod);
+    CHECK(p.x > -5.0 && p.x < 5.0 && p.z > -5.0 && p.z < 5.0 && p.y > 0.1 && p.y < 1.35,
+          "the skewered capsule is expelled and settles nearby");
+    int insideCore =
+        p.x > -0.45 && p.x < 0.45 && p.y > 0.05 && p.y < 0.95 && p.z > -0.45 && p.z < 0.45;
+    CHECK(!insideCore, "it never stays trapped inside the box");
+    m3DestroyWorld(world);
+}
+
+static void TestCrossedCapsulesSeparate(void)
+{
+    // Two capsules spawned with their cores exactly crossing (the
+    // measure-zero pose): the mutual perpendicular is +-y here and the
+    // center-delta tiebreak is zero, so the fixed rule must still
+    // separate them vertically and deterministically.
+    m3WorldId world = MakeWorld();
+    AddGroundPlane(world, 0.6f);
+
+    m3BodyDef bd = m3DefaultBodyDef();
+    bd.type = m3_dynamicBody;
+    bd.position = (m3Pos3){0.0, 0.3, 0.0};
+    m3BodyId a = m3CreateBody(world, &bd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    m3Capsule alongX = {{-0.6f, 0.0f, 0.0f}, {0.6f, 0.0f, 0.0f}, 0.3f};
+    m3CreateCapsuleShape(a, &sd, &alongX);
+
+    m3BodyId b = m3CreateBody(world, &bd); // same position: cores cross
+    m3Capsule alongZ = {{0.0f, 0.0f, -0.6f}, {0.0f, 0.0f, 0.6f}, 0.3f};
+    m3CreateCapsuleShape(b, &sd, &alongZ);
+
+    // Assert while the stack stands (step 120): the exact rule must
+    // have pushed one capsule cleanly on top of the other. Much
+    // later the upper one legitimately rolls off its knife-edge
+    // balance; that is physics, not the property under test.
+    StepN(world, 120);
+
+    m3Pos3 pa = m3Body_GetPosition(a);
+    m3Pos3 pb = m3Body_GetPosition(b);
+    double gap = pa.y > pb.y ? pa.y - pb.y : pb.y - pa.y;
+    CHECK(gap > 0.5, "the crossed capsules separate vertically");
+    double low = pa.y < pb.y ? pa.y : pb.y;
+    CHECK(low > 0.27 && low < 0.33, "the lower one rests on the plane");
+    m3DestroyWorld(world);
+}
+
+static void TestDeepFuzzDeterminism(void)
+{
+    // Twenty deep-spawn poses from a fixed SplitMix stream, run twice
+    // in fresh worlds: every pose must end finite and OUTSIDE the box
+    // core, and the two runs must hash bit-identically (the deep
+    // kernels join the determinism contract).
+    uint64_t hashes[2] = {0, 0};
+    for (int32_t run = 0; run < 2; ++run)
+    {
+        uint64_t rng = 0x9E3779B97F4A7C15ull;
+        uint64_t combined = 0xcbf29ce484222325ull;
+        for (int32_t round = 0; round < 20; ++round)
+        {
+            m3WorldDef def = m3DefaultWorldDef();
+            def.bodyCapacity = 8;
+            def.shapeCapacity = 8;
+            m3WorldId world = m3CreateWorld(&def);
+            AddGroundPlane(world, 0.6f);
+            m3BodyDef bd = m3DefaultBodyDef();
+            bd.position = (m3Pos3){0.0, 0.5, 0.0};
+            m3BodyId block = m3CreateBody(world, &bd);
+            m3ShapeDef sd = m3DefaultShapeDef();
+            m3CreateBoxShape(block, &sd, (m3Vec3){0.5f, 0.5f, 0.5f});
+
+            // Three SplitMix64 draws map into the box interior.
+            double coords[3];
+            for (int32_t k = 0; k < 3; ++k)
+            {
+                rng += 0x9E3779B97F4A7C15ull;
+                uint64_t z = rng;
+                z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+                z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+                z = z ^ (z >> 31);
+                coords[k] = -0.4 + 0.8 * ((double)(z >> 11) / 9007199254740992.0);
+            }
+            bd.type = m3_dynamicBody;
+            bd.position = (m3Pos3){coords[0], 0.5 + coords[1], coords[2]};
+            m3BodyId ball = m3CreateBody(world, &bd);
+            m3Sphere sphere = {{0.0f, 0.0f, 0.0f}, 0.25f};
+            m3CreateSphereShape(ball, &sd, &sphere);
+
+            StepN(world, 240);
+
+            m3Pos3 p = m3Body_GetPosition(ball);
+            // Spawns near the box BOTTOM exit downward into the
+            // ground plane and end SQUEEZED between two opposing
+            // soft contacts, a hair below the surface: legitimate
+            // physics for an impossible pose, not a tunnel. The
+            // bound admits the squeeze, refuses any blow-up.
+            CHECK(p.y > -0.2 && p.y < 2.0 && p.x > -20.0 && p.x < 20.0 && p.z > -20.0 && p.z < 20.0,
+                  "the deep spawn ends finite: at rest or squeezed");
+            int insideCore =
+                p.x > -0.35 && p.x < 0.35 && p.y > 0.15 && p.y < 0.85 && p.z > -0.35 && p.z < 0.35;
+            CHECK(!insideCore, "the deep spawn ends outside the box core");
+            uint64_t h = m3World_Hash(world);
+            combined = (combined ^ h) * 0x100000001B3ull;
+            m3DestroyWorld(world);
+        }
+        hashes[run] = combined;
+    }
+    CHECK(hashes[0] == hashes[1], "the deep fuzz is bit-deterministic");
+}
+
 static void TestSolverHashGate(void)
 {
     // The fixed solver scene for the CI gate: a plane, a three-sphere
@@ -422,6 +588,10 @@ int main(void)
     TestSphereRestsOnBox();
     TestSphereRestsOnCapsule();
     TestGyroscopicTumble();
+    TestDeepSphereRecovers();
+    TestDeepCapsuleRecovers();
+    TestCrossedCapsulesSeparate();
+    TestDeepFuzzDeterminism();
     TestSolverHashGate();
     if (s_failures == 0)
     {

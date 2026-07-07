@@ -465,15 +465,204 @@ static m3DistanceProxy ShapeProxy(const m3World* world, int32_t shape, m3Vec3 sc
     return proxy;
 }
 
-// Mean of the proxy points, the deep-overlap fallback direction seed.
-static m3Vec3 ProxyCentroid(const m3DistanceProxy* proxy)
+// Exact deep recovery, part one: a point core strictly inside a hull.
+// The least-deep face (max signed distance, ties to the lower face
+// index) IS the minimum translation: moving by -d along its normal
+// reaches the supporting plane, so the point leaves the hull, and any
+// smaller move keeps every face constraint strictly negative. No
+// iteration, no polytope, nothing to make deterministic after the
+// fact. The projected witness can land off the face polygon in
+// obtuse corners; the normal and depth stay exact and the anchor
+// error is bounded by one face span (the reference accepts the same).
+static void DeepPointInHull(const m3HullData* hull, m3Vec3 q, m3Vec3* normalOut, m3real* coreSepOut,
+                            m3Vec3* onHullOut)
 {
-    m3Vec3 c = {0.0f, 0.0f, 0.0f};
-    for (int32_t i = 0; i < proxy->count; ++i)
+    int32_t best = 0;
+    m3real bestD = -3.4e38f;
+    for (int32_t f = 0; f < hull->faceCount; ++f)
     {
-        c = m3Add3(c, proxy->points[i]);
+        m3real d = m3Dot3(hull->faceNormals[f], q) - hull->faceOffsets[f];
+        if (d > bestD)
+        {
+            bestD = d;
+            best = f;
+        }
     }
-    return m3MulSV3(1.0f / (m3real)proxy->count, c);
+    *normalOut = hull->faceNormals[best];
+    *coreSepOut = bestD;
+    *onHullOut = m3Sub3(q, m3MulSV3(bestD, hull->faceNormals[best]));
+}
+
+// Capsule versus hull, one path for every depth: the segment SAT.
+// Axes are the hull faces plus every hull edge crossed with the
+// segment direction (the complete set for a convex against a
+// segment). A winning face clips the segment's parameter interval
+// against the face side planes and contacts BOTH clipped ends, which
+// is what lets a lying capsule rest instead of wobbling on GJK's one
+// witness; a winning edge takes the closest-point contact. In
+// vertex-region approaches these axes underestimate the true
+// distance, so a speculative point can appear a touch early; that
+// only pre-arms the solver's speculative band and cannot snag.
+// Results in the hull frame: anchorA on the hull, anchorB on the
+// capsule skin, normal hull toward capsule.
+static m3Manifold CollideSegmentHull(const m3HullData* hull, m3Vec3 p1, m3Vec3 p2, m3real radius)
+{
+    const m3real linearSlop = 0.005f;
+    m3Manifold manifold;
+    memset(&manifold, 0, sizeof(manifold));
+
+    int32_t bestFace = 0;
+    m3real bestFaceSep = -3.4e38f;
+    for (int32_t f = 0; f < hull->faceCount; ++f)
+    {
+        m3real d1 = m3Dot3(hull->faceNormals[f], p1) - hull->faceOffsets[f];
+        m3real d2 = m3Dot3(hull->faceNormals[f], p2) - hull->faceOffsets[f];
+        m3real sep = m3MinF(d1, d2);
+        if (sep > bestFaceSep)
+        {
+            bestFaceSep = sep;
+            bestFace = f;
+        }
+    }
+
+    m3Vec3 segDir = m3Sub3(p2, p1);
+    m3Vec3 bestEdgeAxis = {0.0f, 1.0f, 0.0f};
+    m3real bestEdgeSep = -3.4e38f;
+    int32_t bestEdge = -1;
+    for (int32_t e = 0; e < hull->edgeCount; e += 2)
+    {
+        m3Vec3 a = hull->vertices[hull->edges[e].origin];
+        m3Vec3 b = hull->vertices[hull->edges[e + 1].origin];
+        m3Vec3 axis = m3Cross3(m3Sub3(b, a), segDir);
+        m3real len2 = m3Dot3(axis, axis);
+        if (len2 < 1.0e-10f)
+        {
+            continue; // parallel: a face axis covers this direction
+        }
+        axis = m3MulSV3(1.0f / sqrtf(len2), axis);
+        if (m3Dot3(axis, m3Sub3(a, hull->center)) < 0.0f)
+        {
+            axis = m3Neg3(axis); // outward from the hull
+        }
+        m3real hullMax = -3.4e38f;
+        for (int32_t v = 0; v < hull->vertexCount; ++v)
+        {
+            m3real proj = m3Dot3(axis, hull->vertices[v]);
+            if (proj > hullMax)
+            {
+                hullMax = proj;
+            }
+        }
+        m3real sep = m3MinF(m3Dot3(axis, p1), m3Dot3(axis, p2)) - hullMax;
+        if (sep > bestEdgeSep)
+        {
+            bestEdgeSep = sep;
+            bestEdgeAxis = axis;
+            bestEdge = e;
+        }
+    }
+
+    int edgeWins = bestEdge >= 0 && bestEdgeSep > bestFaceSep + 0.1f * linearSlop;
+    m3real coreSep = edgeWins ? bestEdgeSep : bestFaceSep;
+    if (coreSep - radius > M3_SPECULATIVE_DISTANCE)
+    {
+        return manifold;
+    }
+
+    if (edgeWins)
+    {
+        m3Vec3 a = hull->vertices[hull->edges[bestEdge].origin];
+        m3Vec3 b = hull->vertices[hull->edges[bestEdge + 1].origin];
+        m3Vec3 cSeg;
+        m3Vec3 cEdge;
+        SegmentClosest(p1, segDir, a, m3Sub3(b, a), &cSeg, &cEdge);
+        manifold.normal = bestEdgeAxis;
+        manifold.pointCount = 1;
+        manifold.points[0].anchorA = cEdge;
+        manifold.points[0].anchorB = m3Sub3(cSeg, m3MulSV3(radius, bestEdgeAxis));
+        manifold.points[0].separation = bestEdgeSep - radius;
+        manifold.points[0].id = (uint16_t)(0x8000u | (uint32_t)bestEdge);
+        return manifold;
+    }
+
+    m3Vec3 n = hull->faceNormals[bestFace];
+    m3real off = hull->faceOffsets[bestFace];
+    int32_t count = hull->faceVertCounts[bestFace];
+    int32_t startIdx = hull->faceVertStart[bestFace];
+    m3Vec3 centroid = {0.0f, 0.0f, 0.0f};
+    for (int32_t k = 0; k < count; ++k)
+    {
+        centroid = m3Add3(centroid, hull->vertices[hull->faceIndices[startIdx + k]]);
+    }
+    centroid = m3MulSV3(1.0f / (m3real)count, centroid);
+
+    m3real t0 = 0.0f;
+    m3real t1 = 1.0f;
+    int emptySlab = 0;
+    for (int32_t k = 0; k < count; ++k)
+    {
+        m3Vec3 a = hull->vertices[hull->faceIndices[startIdx + k]];
+        m3Vec3 b = hull->vertices[hull->faceIndices[startIdx + (k + 1) % count]];
+        m3Vec3 sideN = m3Cross3(m3Sub3(b, a), n);
+        if (m3Dot3(sideN, m3Sub3(centroid, a)) < 0.0f)
+        {
+            sideN = m3Neg3(sideN); // inward: keep the face side
+        }
+        m3real c0 = m3Dot3(sideN, m3Sub3(p1, a));
+        m3real cd = m3Dot3(sideN, segDir);
+        if (cd > -1.0e-9f && cd < 1.0e-9f)
+        {
+            if (c0 < 0.0f)
+            {
+                emptySlab = 1;
+                break;
+            }
+            continue;
+        }
+        m3real tc = -c0 / cd;
+        if (cd > 0.0f)
+        {
+            t0 = m3MaxF(t0, tc);
+        }
+        else
+        {
+            t1 = m3MinF(t1, tc);
+        }
+    }
+    if (emptySlab || t0 > t1)
+    {
+        // Grazing a corner outside the face slab: one clamped point,
+        // the deterministic middle of the crossed-over interval.
+        m3real tm = 0.5f * (t0 + t1);
+        tm = m3MaxF(0.0f, m3MinF(1.0f, tm));
+        t0 = tm;
+        t1 = tm;
+    }
+
+    int32_t emitted = 0;
+    for (int32_t k = 0; k < 2; ++k)
+    {
+        if (k == 1 && !(t1 > t0))
+        {
+            break; // degenerate interval: one point only
+        }
+        m3real t = k == 0 ? t0 : t1;
+        m3Vec3 pt = m3Add3(p1, m3MulSV3(t, segDir));
+        m3real d = m3Dot3(n, pt) - off;
+        m3real sepK = d - radius;
+        if (sepK > M3_SPECULATIVE_DISTANCE)
+        {
+            continue;
+        }
+        manifold.points[emitted].anchorA = m3Sub3(pt, m3MulSV3(d, n));
+        manifold.points[emitted].anchorB = m3Sub3(pt, m3MulSV3(radius, n));
+        manifold.points[emitted].separation = sepK;
+        manifold.points[emitted].id = (uint16_t)k;
+        emitted += 1;
+    }
+    manifold.normal = n;
+    manifold.pointCount = emitted;
+    return manifold;
 }
 
 m3Result m3UpdateContacts(m3World* world, const uint64_t* oldKeys, const m3Manifold* oldManifolds,
@@ -692,15 +881,59 @@ m3Result m3UpdateContacts(m3World* world, const uint64_t* oldKeys, const m3Manif
                 }
             }
         }
+        else if (hullPair && capsulePair)
+        {
+            // Capsule versus hull: the segment SAT at every depth,
+            // never GJK. GJK's one witness cannot hold a lying
+            // capsule (it wobbles off the single point), and a deep
+            // skewer needs the same SAT axes anyway. Doubles localize
+            // into the hull frame, the kernel answers there, and the
+            // manifold lifts out with COM anchors like every other
+            // pair.
+            memset(&fresh, 0, sizeof(fresh));
+            int32_t hullShape = typeA == (uint8_t)m3_hullShape ? shapeA : shapeB;
+            int32_t capShape = hullShape == shapeA ? shapeB : shapeA;
+            int32_t hullBody = world->shapeBody[hullShape];
+            int32_t capBody = world->shapeBody[capShape];
+            const m3Transform* xfH = &world->transforms[hullBody];
+            const m3Transform* xfC = &world->transforms[capBody];
+            m3Quat conjH = {-xfH->q.x, -xfH->q.y, -xfH->q.z, xfH->q.w};
+            m3Quat qRel = m3MulQuat(conjH, xfC->q);
+            m3Vec3 dp = {(m3real)(xfC->p.x - xfH->p.x), (m3real)(xfC->p.y - xfH->p.y),
+                         (m3real)(xfC->p.z - xfH->p.z)};
+            m3Vec3 pRel = m3InvRotateVec3(xfH->q, dp);
+            m3Vec3 s1 = m3Add3(m3RotateVec3(qRel, world->shapeGeom[capShape].v), pRel);
+            m3Vec3 s2 = m3Add3(m3RotateVec3(qRel, world->shapeGeom[capShape].v2), pRel);
+            const m3HullData* hull = &world->hullData[world->shapeHullIndex[hullShape]];
+            m3Manifold local = CollideSegmentHull(hull, s1, s2, world->shapeGeom[capShape].s);
+            if (local.pointCount > 0)
+            {
+                m3Vec3 nWorld = m3RotateVec3(xfH->q, local.normal); // hull toward capsule
+                fresh.normal = hullShape == shapeA ? nWorld : m3Neg3(nWorld);
+                fresh.pointCount = local.pointCount;
+                for (int32_t k = 0; k < local.pointCount; ++k)
+                {
+                    m3Vec3 rH = m3RotateVec3(xfH->q, local.points[k].anchorA);
+                    m3Vec3 rC = m3RotateVec3(xfH->q, local.points[k].anchorB);
+                    m3Vec3 aHull = FromCom(world, hullBody, xfH->p.x + (double)rH.x,
+                                           xfH->p.y + (double)rH.y, xfH->p.z + (double)rH.z);
+                    m3Vec3 aCap = FromCom(world, capBody, xfH->p.x + (double)rC.x,
+                                          xfH->p.y + (double)rC.y, xfH->p.z + (double)rC.z);
+                    fresh.points[k].anchorA = hullShape == shapeA ? aHull : aCap;
+                    fresh.points[k].anchorB = hullShape == shapeA ? aCap : aHull;
+                    fresh.points[k].separation = local.points[k].separation;
+                    fresh.points[k].id = local.points[k].id;
+                }
+            }
+        }
         else if (hullPair || capsulePair)
         {
-            // The generic convex pair (hull-sphere, capsule-sphere,
-            // capsule-capsule, capsule-hull): GJK on the cores in A's
-            // frame, radii applied analytically. One contact point,
-            // feature id 0. Deep core overlap (GJK distance zero)
-            // takes a documented crude fallback until EPA lands in
-            // 2b-7: the center-to-center direction and a radius-sum
-            // bound; the solver's push clamp keeps it gentle.
+            // The remaining convex pairs (hull-sphere, capsule-sphere,
+            // capsule-capsule): GJK on the cores in A's frame, radii
+            // applied analytically, one contact point, feature id 0.
+            // Deep core overlap has an exact answer for each family;
+            // EPA never became necessary (hull-hull and capsule-hull
+            // deep pairs go through their SATs).
             memset(&fresh, 0, sizeof(fresh));
             int32_t bodyA = world->shapeBody[shapeA];
             int32_t bodyB = world->shapeBody[shapeB];
@@ -736,17 +969,92 @@ m3Result m3UpdateContacts(m3World* world, const uint64_t* oldKeys, const m3Manif
                     pALocal = m3Add3(out.pointA, m3MulSV3(rA, nLocal));
                     pBLocal = m3Sub3(out.pointB, m3MulSV3(rB, nLocal));
                 }
+                else if (hullPair)
+                {
+                    // A sphere center inside a hull: the least-deep
+                    // face is the exact minimum translation (2b-7).
+                    int hullIsA = typeA == (uint8_t)m3_hullShape;
+                    const m3HullData* hull =
+                        &world->hullData[world->shapeHullIndex[hullIsA ? shapeA : shapeB]];
+                    const m3DistanceProxy* round = hullIsA ? &input.proxyB : &input.proxyA;
+                    m3Vec3 core = hullIsA
+                                      ? m3Add3(m3RotateVec3(input.q, round->points[0]), input.p)
+                                      : m3InvRotateVec3(input.q, m3Sub3(round->points[0], input.p));
+                    m3Vec3 nHull; // hull toward sphere, hull frame
+                    m3real coreSep;
+                    m3Vec3 onHull;
+                    DeepPointInHull(hull, core, &nHull, &coreSep, &onHull);
+                    m3real rRound = round->radius;
+                    sep = coreSep - rRound;
+                    if (hullIsA)
+                    {
+                        nLocal = nHull;
+                        pALocal = onHull;
+                        pBLocal = m3Sub3(core, m3MulSV3(rRound, nHull));
+                    }
+                    else
+                    {
+                        m3Vec3 nA = m3RotateVec3(input.q, nHull);
+                        nLocal = m3Neg3(nA);
+                        pALocal = m3Sub3(m3Add3(m3RotateVec3(input.q, core), input.p),
+                                         m3MulSV3(rRound, nA));
+                        pBLocal = m3Add3(m3RotateVec3(input.q, onHull), input.p);
+                    }
+                }
                 else
                 {
-                    // Deep overlap fallback (until EPA, 2b-7).
-                    m3Vec3 cA = ProxyCentroid(&input.proxyA);
-                    m3Vec3 cB =
-                        m3Add3(m3RotateVec3(input.q, ProxyCentroid(&input.proxyB)), input.p);
-                    nLocal = m3Normalize3(m3Sub3(cB, cA));
+                    // Sphere and capsule cores meeting exactly (a
+                    // center on a segment, two segments crossing):
+                    // measure-zero poses. The mutual perpendicular is
+                    // the exact axis and the skins overlap by exactly
+                    // rA + rB along it.
+                    m3Vec3 axis;
+                    m3Vec3 cA;
+                    m3Vec3 cB;
+                    if (input.proxyA.count == 2 && input.proxyB.count == 2)
+                    {
+                        m3Vec3 dirA = m3Sub3(pointsA[1], pointsA[0]);
+                        m3Vec3 dirB = m3RotateVec3(input.q, m3Sub3(pointsB[1], pointsB[0]));
+                        axis = m3Cross3(dirA, dirB);
+                        cA = m3MulSV3(0.5f, m3Add3(pointsA[0], pointsA[1]));
+                        cB = m3Add3(
+                            m3RotateVec3(input.q, m3MulSV3(0.5f, m3Add3(pointsB[0], pointsB[1]))),
+                            input.p);
+                        if (m3Dot3(axis, axis) < 1.0e-10f)
+                        {
+                            axis = m3Sub3(cB, cA); // parallel: center delta
+                        }
+                    }
+                    else
+                    {
+                        // Capsule versus sphere: any segment
+                        // perpendicular works; the tangent basis rule
+                        // makes the pick bit-stable.
+                        m3Vec3 dir = input.proxyA.count == 2
+                                         ? m3Sub3(pointsA[1], pointsA[0])
+                                         : m3RotateVec3(input.q, m3Sub3(pointsB[1], pointsB[0]));
+                        m3Vec3 t1;
+                        m3Vec3 t2;
+                        m3MakeTangentBasis(m3Normalize3(dir), &t1, &t2);
+                        axis = t1;
+                        cA = input.proxyA.count == 1
+                                 ? pointsA[0]
+                                 : m3MulSV3(0.5f, m3Add3(pointsA[0], pointsA[1]));
+                        cB = input.proxyB.count == 1
+                                 ? m3Add3(m3RotateVec3(input.q, pointsB[0]), input.p)
+                                 : m3Add3(m3RotateVec3(input.q, m3MulSV3(0.5f, m3Add3(pointsB[0],
+                                                                                      pointsB[1]))),
+                                          input.p);
+                    }
+                    nLocal = m3Normalize3(axis); // zero falls back to +y
+                    if (m3Dot3(nLocal, m3Sub3(cB, cA)) < 0.0f)
+                    {
+                        nLocal = m3Neg3(nLocal);
+                    }
                     m3Vec3 mid = m3MulSV3(0.5f, m3Add3(cA, cB));
                     pALocal = mid;
                     pBLocal = mid;
-                    sep = -(rA + rB) - M3_SPECULATIVE_DISTANCE;
+                    sep = -(rA + rB);
                 }
                 fresh.normal = m3RotateVec3(xfA->q, nLocal);
                 m3Vec3 wA = m3RotateVec3(xfA->q, pALocal);
