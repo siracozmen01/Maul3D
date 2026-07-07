@@ -936,6 +936,8 @@ static void CollideMeshSphere(m3World* world, m3Manifold* fresh, int32_t meshSha
     // tentative) carries the pair this step.
     int haveWinner = 0;
     m3MeshCandidate winner;
+    memset(&winner, 0, sizeof(winner)); // MSVC C4701: the flow guard
+                                        // haveWinner is invisible to it
     winner.separation = 3.4e38f;
     winner.triIndex = -1;
     for (int32_t k = 0; k < faceCount; ++k)
