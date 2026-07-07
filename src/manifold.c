@@ -118,7 +118,14 @@ m3Result m3UpdateContacts(m3World* world, const uint64_t* oldKeys, const m3Manif
         uint8_t typeB = world->shapeType[shapeB];
 
         m3Manifold fresh;
-        if (typeA == (uint8_t)m3_planeShape || typeB == (uint8_t)m3_planeShape)
+        if (typeA == (uint8_t)m3_hullShape || typeB == (uint8_t)m3_hullShape)
+        {
+            // Hull contact generation lands with GJK (2b-4) and SAT
+            // (2b-5); until then a hull pair carries no manifold. The
+            // staged gap is documented here, never silent elsewhere.
+            memset(&fresh, 0, sizeof(fresh));
+        }
+        else if (typeA == (uint8_t)m3_planeShape || typeB == (uint8_t)m3_planeShape)
         {
             // Canonical orientation: the plane plays A. If the sphere
             // has the lower index the manifold flips on the way out.

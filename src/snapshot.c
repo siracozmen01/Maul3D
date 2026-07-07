@@ -22,7 +22,7 @@
 #endif
 
 #define M3_SNAPSHOT_MAGIC   0x4D33534Eu // 'M3SN'
-#define M3_SNAPSHOT_VERSION 5u          // v5: the broadphase tree is state
+#define M3_SNAPSHOT_VERSION 6u          // v6: interned hulls
 
 // The math types are canonical field data only because they are
 // provably padding-free; a change here is a format version bump.
@@ -51,10 +51,14 @@ typedef struct m3SnapshotHeader
     int32_t pairCount;
     int32_t treeRoot;
     int32_t treeFreeList;
+    int32_t hullMaxIndex;
+    int32_t hullFreeHead;
+    int32_t hullFreeCount;
+    int32_t hullRetiredCount;
     m3Vec3 gravity;
 } m3SnapshotHeader;
 
-_Static_assert(sizeof(m3SnapshotHeader) == 88, "snapshot header must be padding-free");
+_Static_assert(sizeof(m3SnapshotHeader) == 104, "snapshot header must be padding-free");
 
 static uint64_t ConfigHash(void)
 {
@@ -142,6 +146,12 @@ static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3Wal
     // so a rolled-back world continues on the identical tree shape.
     M3_BLOCK(world->proxyIds, shapeCap * (int32_t)sizeof(int32_t));
     M3_BLOCK(world->tree.nodes, world->tree.capacity * (int32_t)sizeof(m3TreeNode));
+    M3_BLOCK(world->shapeHullIndex, shapeCap * (int32_t)sizeof(int32_t));
+    M3_BLOCK(world->hullData, shapeCap * (int32_t)sizeof(m3HullData));
+    M3_BLOCK(world->hullRefCounts, shapeCap * (int32_t)sizeof(int32_t));
+    M3_BLOCK(world->hullPool.generations, shapeCap * (int32_t)sizeof(uint16_t));
+    M3_BLOCK(world->hullPool.alive, shapeCap * (int32_t)sizeof(uint8_t));
+    M3_BLOCK(world->hullPool.freeQueue, shapeCap * (int32_t)sizeof(int32_t));
     M3_BLOCK(world->manifolds, world->pairCapacity * (int32_t)sizeof(m3Manifold));
 
 #undef M3_BLOCK
@@ -191,6 +201,10 @@ int32_t m3World_Snapshot(m3WorldId worldId, void* out, int32_t capacity)
     header.pairCount = world->pairCount;
     header.treeRoot = world->tree.root;
     header.treeFreeList = world->tree.freeList;
+    header.hullMaxIndex = world->hullPool.maxIndex;
+    header.hullFreeHead = world->hullPool.freeHead;
+    header.hullFreeCount = world->hullPool.freeCount;
+    header.hullRetiredCount = world->hullPool.retiredCount;
     header.gravity = world->gravity;
 
     uint8_t* bytes = (uint8_t*)out;
@@ -236,6 +250,10 @@ bool m3World_Restore(m3WorldId worldId, const void* data, int32_t size)
     world->pairCount = header.pairCount;
     world->tree.root = header.treeRoot;
     world->tree.freeList = header.treeFreeList;
+    world->hullPool.maxIndex = header.hullMaxIndex;
+    world->hullPool.freeHead = header.hullFreeHead;
+    world->hullPool.freeCount = header.hullFreeCount;
+    world->hullPool.retiredCount = header.hullRetiredCount;
     WalkBlocks(world, NULL, (const uint8_t*)data + sizeof(header), m3_walkRead);
     return true;
 }
@@ -286,6 +304,7 @@ uint64_t m3World_Hash(m3WorldId worldId)
         h = m3Hash64(h, &world->shapeDensity[i], 4);
         h = m3Hash64(h, &world->shapeFriction[i], 4);
         h = m3Hash64(h, &world->shapeRestitution[i], 4);
+        h = m3Hash64(h, &world->shapeHullIndex[i], 4);
     }
     // Pairs and manifolds: warm-start impulses are simulation state
     // (they steer the next solve), so they are part of what the world

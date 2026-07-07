@@ -15,6 +15,7 @@ extern "C"
     {
         m3_sphereShape = 0,
         m3_planeShape = 1, // static bodies only: an infinite half-space
+        m3_hullShape = 2,  // convex hull (boxes in 2b-3; point clouds later)
     } m3ShapeType;
 
     typedef struct m3Sphere
@@ -58,6 +59,12 @@ extern "C"
     /// returns the null id loudly). The normal is normalized on create.
     M3_API m3ShapeId m3CreatePlaneShape(m3BodyId bodyId, const m3ShapeDef* def,
                                         const m3Plane* plane);
+
+    /// Create a box (a convex hull with analytic mass properties:
+    /// m = 8 rho hx hy hz, I = m/3 diag(hy^2+hz^2, ...) about the
+    /// center). Hull collision lands in the GJK and SAT slices; until
+    /// then a box participates in the broadphase and in mass only.
+    M3_API m3ShapeId m3CreateBoxShape(m3BodyId bodyId, const m3ShapeDef* def, m3Vec3 halfExtents);
 
     M3_API bool m3Shape_IsValid(m3ShapeId shapeId);
 

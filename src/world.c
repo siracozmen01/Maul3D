@@ -112,6 +112,15 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
         world->shapeNext[i] = -1;
     }
 
+    M3_ALLOC(world->shapeHullIndex, shapeCap, int32_t);
+    for (int32_t i = 0; i < shapeCap; ++i)
+    {
+        world->shapeHullIndex[i] = -1;
+    }
+    world->hullPool = m3IdPoolCreate(shapeCap);
+    M3_ALLOC(world->hullData, shapeCap, m3HullData);
+    M3_ALLOC(world->hullRefCounts, shapeCap, int32_t);
+
     world->tree = m3TreeCreate(2 * shapeCap);
     M3_ALLOC(world->proxyIds, shapeCap, int32_t);
     for (int32_t i = 0; i < shapeCap; ++i)
@@ -165,6 +174,10 @@ void m3DestroyWorld(m3WorldId worldId)
     m3Free(world->shapeRestitution);
     m3Free(world->shapeUserData);
     m3Free(world->shapeNext);
+    m3Free(world->shapeHullIndex);
+    m3IdPoolDestroy(&world->hullPool);
+    m3Free(world->hullData);
+    m3Free(world->hullRefCounts);
     m3TreeDestroy(&world->tree);
     m3Free(world->proxyIds);
     m3Free(world->pairKeys);

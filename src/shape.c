@@ -58,6 +58,41 @@ static m3Mat3 InvertSymmetric(m3Mat3 m)
     return r;
 }
 
+// Density-scaled mass, centroid, and centroid inertia of one shape.
+// Returns 0 for shapes that carry no mass (planes).
+static int ShapeMassProps(const m3World* world, int32_t s, float* massOut, m3Vec3* comOut,
+                          m3Mat3* inertiaOut)
+{
+    uint8_t type = world->shapeType[s];
+    if (type == (uint8_t)m3_sphereShape)
+    {
+        float r = world->shapeGeom[s].s;
+        float m = world->shapeDensity[s] * (4.0f / 3.0f) * M3_PI * r * r * r;
+        float ic = 0.4f * m * r * r;
+        *massOut = m;
+        *comOut = world->shapeGeom[s].v;
+        *inertiaOut = m3MakeZeroMat3();
+        inertiaOut->cx.x = ic;
+        inertiaOut->cy.y = ic;
+        inertiaOut->cz.z = ic;
+        return 1;
+    }
+    if (type == (uint8_t)m3_hullShape)
+    {
+        const m3HullData* hull = &world->hullData[world->shapeHullIndex[s]];
+        float density = world->shapeDensity[s];
+        *massOut = density * hull->unitMass;
+        *comOut = hull->unitCom;
+        m3Mat3 ic = hull->unitInertiaCom;
+        ic.cx = m3MulSV3(density, ic.cx);
+        ic.cy = m3MulSV3(density, ic.cy);
+        ic.cz = m3MulSV3(density, ic.cz);
+        *inertiaOut = ic;
+        return 1;
+    }
+    return 0;
+}
+
 void m3RecomputeMass(m3World* world, int32_t bodyIndex)
 {
     if (world->types[bodyIndex] != (uint8_t)m3_dynamicBody)
@@ -75,14 +110,15 @@ void m3RecomputeMass(m3World* world, int32_t bodyIndex)
     m3Vec3 center = {0.0f, 0.0f, 0.0f};
     for (int32_t s = world->bodyShapeHead[bodyIndex]; s != -1; s = world->shapeNext[s])
     {
-        if (world->shapeType[s] != (uint8_t)m3_sphereShape)
+        float m;
+        m3Vec3 c;
+        m3Mat3 ic;
+        if (!ShapeMassProps(world, s, &m, &c, &ic))
         {
             continue;
         }
-        float r = world->shapeGeom[s].s;
-        float m = world->shapeDensity[s] * (4.0f / 3.0f) * M3_PI * r * r * r;
         mass += m;
-        center = m3Add3(center, m3MulSV3(m, world->shapeGeom[s].v));
+        center = m3Add3(center, m3MulSV3(m, c));
     }
     if (!(mass > 0.0f))
     {
@@ -98,25 +134,26 @@ void m3RecomputeMass(m3World* world, int32_t bodyIndex)
     m3Mat3 inertia = m3MakeZeroMat3();
     for (int32_t s = world->bodyShapeHead[bodyIndex]; s != -1; s = world->shapeNext[s])
     {
-        if (world->shapeType[s] != (uint8_t)m3_sphereShape)
+        float m;
+        m3Vec3 c;
+        m3Mat3 ic;
+        if (!ShapeMassProps(world, s, &m, &c, &ic))
         {
             continue;
         }
-        float r = world->shapeGeom[s].s;
-        float m = world->shapeDensity[s] * (4.0f / 3.0f) * M3_PI * r * r * r;
-        float ic = 0.4f * m * r * r; // solid sphere about its centroid
-        m3Vec3 d = m3Sub3(world->shapeGeom[s].v, center);
+        m3Vec3 d = m3Sub3(c, center);
         float d2 = m3Dot3(d, d);
-        // I += ic * Identity + m * (|d|^2 Identity - d outer d).
-        inertia.cx.x += ic + m * (d2 - d.x * d.x);
-        inertia.cy.y += ic + m * (d2 - d.y * d.y);
-        inertia.cz.z += ic + m * (d2 - d.z * d.z);
-        inertia.cy.x += -m * d.x * d.y;
-        inertia.cx.y += -m * d.x * d.y;
-        inertia.cz.x += -m * d.x * d.z;
-        inertia.cx.z += -m * d.x * d.z;
-        inertia.cz.y += -m * d.y * d.z;
-        inertia.cy.z += -m * d.y * d.z;
+        // I += Ic + m * (|d|^2 Identity - d outer d), the full 3D
+        // parallel axis theorem, term by term non-negative diagonals.
+        inertia.cx.x += ic.cx.x + m * (d2 - d.x * d.x);
+        inertia.cy.y += ic.cy.y + m * (d2 - d.y * d.y);
+        inertia.cz.z += ic.cz.z + m * (d2 - d.z * d.z);
+        inertia.cy.x += ic.cy.x - m * d.x * d.y;
+        inertia.cx.y += ic.cx.y - m * d.x * d.y;
+        inertia.cz.x += ic.cz.x - m * d.x * d.z;
+        inertia.cx.z += ic.cx.z - m * d.x * d.z;
+        inertia.cz.y += ic.cz.y - m * d.y * d.z;
+        inertia.cy.z += ic.cy.z - m * d.y * d.z;
     }
     world->invMass[bodyIndex] = 1.0f / mass;
     world->invInertiaLocal[bodyIndex] = InvertSymmetric(inertia);
@@ -142,9 +179,26 @@ int32_t m3CreateShapeInternal(m3World* world, int32_t bodyIndex, uint8_t type,
     // recoverable because replay recreates in the same order).
     world->shapeNext[index] = world->bodyShapeHead[bodyIndex];
     world->bodyShapeHead[bodyIndex] = index;
-    // Spheres enter the broadphase tree; infinite planes stay out and
-    // take the dedicated pair pass.
-    if (type == (uint8_t)m3_sphereShape)
+    world->shapeHullIndex[index] = -1;
+    if (type == (uint8_t)m3_hullShape)
+    {
+        // geom.v carries the box half extents (the journaled rebuild
+        // recipe); the interned data is derived, deterministic state.
+        m3HullData data;
+        m3BuildBoxHull(&data, geom->v);
+        world->shapeHullIndex[index] = m3InternHull(world, &data);
+        if (world->shapeHullIndex[index] < 0)
+        {
+            world->bodyShapeHead[bodyIndex] = world->shapeNext[index];
+            world->shapeNext[index] = -1;
+            world->shapeBody[index] = -1;
+            m3IdPoolFree(&world->shapePool, index);
+            return -1;
+        }
+    }
+    // Spheres and hulls enter the broadphase tree; infinite planes
+    // stay out and take the dedicated pair pass.
+    if (type != (uint8_t)m3_planeShape)
     {
         double lo[3];
         double hi[3];
@@ -154,6 +208,8 @@ int32_t m3CreateShapeInternal(m3World* world, int32_t bodyIndex, uint8_t type,
         {
             // Tree pool exhausted: undo loudly, never a half-created
             // shape.
+            m3ReleaseHull(world, world->shapeHullIndex[index]);
+            world->shapeHullIndex[index] = -1;
             world->bodyShapeHead[bodyIndex] = world->shapeNext[index];
             world->shapeNext[index] = -1;
             world->shapeBody[index] = -1;
@@ -196,6 +252,8 @@ void m3DestroyShapeInternal(m3World* world, int32_t index)
         m3TreeRemove(&world->tree, world->proxyIds[index]);
         world->proxyIds[index] = M3_TREE_NULL;
     }
+    m3ReleaseHull(world, world->shapeHullIndex[index]);
+    world->shapeHullIndex[index] = -1;
     m3IdPoolFree(&world->shapePool, index);
     m3RecomputeMass(world, bodyIndex);
 }
@@ -264,6 +322,16 @@ m3ShapeId m3CreatePlaneShape(m3BodyId bodyId, const m3ShapeDef* def, const m3Pla
     }
     m3ShapeGeom geom = {m3Normalize3(plane->normal), plane->offset};
     return CreateShapeCommon(bodyId, def, (uint8_t)m3_planeShape, &geom);
+}
+
+m3ShapeId m3CreateBoxShape(m3BodyId bodyId, const m3ShapeDef* def, m3Vec3 halfExtents)
+{
+    if (!(halfExtents.x > 0.0f) || !(halfExtents.y > 0.0f) || !(halfExtents.z > 0.0f))
+    {
+        return m3_nullShapeId; // contract: bad extents return null
+    }
+    m3ShapeGeom geom = {halfExtents, 0.0f};
+    return CreateShapeCommon(bodyId, def, (uint8_t)m3_hullShape, &geom);
 }
 
 bool m3Shape_IsValid(m3ShapeId shapeId)

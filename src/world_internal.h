@@ -47,8 +47,35 @@ typedef enum m3Op
     m3_opCreateShape = 6,
 } m3Op;
 
+// Immutable interned hull data (lifetime 3): vertices, face planes,
+// and face vertex loops for the SAT (2b-5), plus unit-density mass
+// properties. Content-deduplicated on intern; shapes reference by
+// index and refcount. Fixed arrays keep it one snapshot block.
+#define M3_HULL_MAX_VERTS        24
+#define M3_HULL_MAX_FACES        16
+#define M3_HULL_MAX_FACE_INDICES 64
+
+typedef struct m3HullData
+{
+    int32_t vertexCount;
+    int32_t faceCount;
+    int32_t indexCount;
+    float unitMass;        // at density one
+    m3Vec3 unitCom;        // body-local centroid
+    m3Mat3 unitInertiaCom; // at density one, about the centroid
+    m3Vec3 vertices[M3_HULL_MAX_VERTS];
+    m3Vec3 faceNormals[M3_HULL_MAX_FACES];
+    m3real faceOffsets[M3_HULL_MAX_FACES];
+    uint8_t faceVertCounts[M3_HULL_MAX_FACES];
+    uint8_t faceVertStart[M3_HULL_MAX_FACES];
+    uint8_t faceIndices[M3_HULL_MAX_FACE_INDICES];
+} m3HullData;
+
+_Static_assert(sizeof(m3HullData) == 704, "hull data must be padding-free");
+
 // Geometry is one padding-free 16-byte record per shape, interpreted
-// by type: sphere {v=center, s=radius}, plane {v=normal, s=offset}.
+// by type: sphere {v=center, s=radius}, plane {v=normal, s=offset},
+// hull {v=box half extents for the journaled rebuild, s unused}.
 typedef struct m3ShapeGeom
 {
     m3Vec3 v;
@@ -133,7 +160,13 @@ typedef struct m3World
     float* shapeFriction;
     float* shapeRestitution;
     uint64_t* shapeUserData;
-    int32_t* shapeNext; // next shape on the same body, -1 end
+    int32_t* shapeNext;      // next shape on the same body, -1 end
+    int32_t* shapeHullIndex; // interned hull slot, -1 for non-hulls
+
+    // The interned hull pool (immutable content, refcounted).
+    m3IdPool hullPool;
+    m3HullData* hullData;
+    int32_t* hullRefCounts;
 
     // Broadphase: the fat-AABB tree (spheres only; infinite planes
     // stay out and take a dedicated pass), per-shape proxy ids, both
@@ -180,6 +213,12 @@ void m3SetLinearVelocityInternal(m3World* world, int32_t index, m3Vec3 velocity)
 void m3SetAngularVelocityInternal(m3World* world, int32_t index, m3Vec3 velocity);
 
 int32_t m3ShapeSlot(const m3World* world, m3ShapeId shapeId);
+
+// Analytic box hull (canonical vertex and face order) and the intern
+// machinery. Interning dedupes by content in ascending slot order.
+void m3BuildBoxHull(m3HullData* out, m3Vec3 halfExtents);
+int32_t m3InternHull(m3World* world, const m3HullData* data); // -1 = pool exhausted
+void m3ReleaseHull(m3World* world, int32_t hullIndex);
 int32_t m3CreateShapeInternal(m3World* world, int32_t bodyIndex, uint8_t type,
                               const m3ShapeGeom* geom, const m3ShapeDef* def);
 void m3DestroyShapeInternal(m3World* world, int32_t index);

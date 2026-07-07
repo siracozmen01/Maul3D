@@ -279,6 +279,39 @@ static void TestShapes(void)
     m3Sphere flat = {{0.0f, 0.0f, 0.0f}, 0.0f};
     CHECK(!m3Shape_IsValid(m3CreateSphereShape(body, &sd, &flat)), "zero radius is refused");
 
+    // Boxes: analytic mass (8 rho hx hy hz) and inertia
+    // (m/3 (hy^2+hz^2) on xx), plus intern dedupe and refcounts.
+    m3BodyDef xd = m3DefaultBodyDef();
+    xd.type = m3_dynamicBody;
+    m3BodyId boxBody = m3CreateBody(world, &xd);
+    m3ShapeDef xs = m3DefaultShapeDef();
+    xs.density = 2.0f;
+    m3ShapeId box1 = m3CreateBoxShape(boxBody, &xs, (m3Vec3){0.5f, 0.25f, 1.0f});
+    CHECK(m3Shape_IsValid(box1), "box created");
+    float bm = 2.0f * 8.0f * 0.5f * 0.25f * 1.0f;
+    float gotBm = 1.0f / w->invMass[boxBody.index1 - 1];
+    CHECK(gotBm > bm - 1.0e-4f && gotBm < bm + 1.0e-4f, "box mass is analytic");
+    float bIxx = (bm / 3.0f) * (0.25f * 0.25f + 1.0f * 1.0f);
+    float gotBIxx = 1.0f / w->invInertiaLocal[boxBody.index1 - 1].cx.x;
+    CHECK(gotBIxx > bIxx - 1.0e-3f && gotBIxx < bIxx + 1.0e-3f, "box inertia is analytic");
+    CHECK(!m3Shape_IsValid(m3CreateBoxShape(boxBody, &xs, (m3Vec3){0.0f, 1.0f, 1.0f})),
+          "a degenerate box extent is refused");
+
+    // Identical boxes intern to ONE hull slot; a different box gets
+    // its own; releasing the twin frees nothing until both die.
+    m3BodyId boxBody2 = m3CreateBody(world, &xd);
+    m3CreateBoxShape(boxBody2, &xs, (m3Vec3){0.5f, 0.25f, 1.0f});
+    int32_t slot1 = w->shapeHullIndex[box1.index1 - 1];
+    CHECK(w->hullRefCounts[slot1] == 2, "identical boxes share one interned hull");
+    m3BodyId boxBody3 = m3CreateBody(world, &xd);
+    m3CreateBoxShape(boxBody3, &xs, (m3Vec3){0.3f, 0.3f, 0.3f});
+    CHECK(w->hullPool.maxIndex == 2, "a different box interns a second hull");
+    m3DestroyBody(boxBody2);
+    CHECK(w->hullRefCounts[slot1] == 1, "releasing the twin decrements the refcount");
+    m3DestroyBody(boxBody3);
+    m3DestroyBody(boxBody);
+    CHECK(w->hullPool.freeCount == 2, "dead hulls return to the pool");
+
     // The cascade: a body takes its shapes with it.
     m3DestroyBody(body);
     CHECK(!m3Shape_IsValid(s), "shapes die with their body");
@@ -378,8 +411,17 @@ static void TestTreeReferee(void)
         bd.linearVelocity =
             (m3Vec3){(m3real)RefRange(-3.0, 3.0), 0.0f, (m3real)RefRange(-3.0, 3.0)};
         bodies[i] = m3CreateBody(world, &bd);
-        m3Sphere ball = {{0.0f, 0.0f, 0.0f}, (m3real)RefRange(0.2, 0.9)};
-        m3CreateSphereShape(bodies[i], &sd, &ball);
+        if ((i & 3) == 3)
+        {
+            m3CreateBoxShape(bodies[i], &sd,
+                             (m3Vec3){(m3real)RefRange(0.2, 0.7), (m3real)RefRange(0.2, 0.7),
+                                      (m3real)RefRange(0.2, 0.7)});
+        }
+        else
+        {
+            m3Sphere ball = {{0.0f, 0.0f, 0.0f}, (m3real)RefRange(0.2, 0.9)};
+            m3CreateSphereShape(bodies[i], &sd, &ball);
+        }
     }
 
     uint64_t refKeys[512];
