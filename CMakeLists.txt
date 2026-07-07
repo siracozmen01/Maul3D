@@ -10,6 +10,7 @@ add_library(maul3d STATIC
     src/body.c
     src/core.c
     src/math_functions.c
+    src/snapshot.c
     src/world.c
 )
 target_include_directories(maul3d PUBLIC include)

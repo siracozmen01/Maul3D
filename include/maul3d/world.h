@@ -30,6 +30,21 @@ extern "C"
     M3_API void m3DestroyWorld(m3WorldId worldId);
     M3_API bool m3World_IsValid(m3WorldId worldId);
 
+    /// Snapshot and rollback, first-class from day one. The format is
+    /// portable and versioned: field blocks in little-endian order with
+    /// a header carrying a config hash (engine version, solver
+    /// revision, precision, FP policy). Restore refuses a mismatched
+    /// config or format loudly, restores in place, and the restored
+    /// world resimulates bit-exactly (the rollback gate, task 10).
+    M3_API int32_t m3World_SnapshotSize(m3WorldId worldId);
+    M3_API int32_t m3World_Snapshot(m3WorldId worldId, void* out, int32_t capacity);
+    M3_API bool m3World_Restore(m3WorldId worldId, const void* data, int32_t size);
+
+    /// FNV-1a 64 over the curated deterministic state (transforms,
+    /// velocities, mass, types, step count, gravity) in canonical slot
+    /// order. The value every gate compares.
+    M3_API uint64_t m3World_Hash(m3WorldId worldId);
+
     /// Journal: every mutation of the world is a discrete recorded op,
     /// and replaying the stream through the same internal functions
     /// reproduces the world bit for bit. Begin hands the world a

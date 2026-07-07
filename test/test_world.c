@@ -8,6 +8,7 @@
 #include "maul3d/body.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static int s_failures = 0;
@@ -107,11 +108,109 @@ static void TestTwoWorldsIsolation(void)
     m3DestroyWorld(w2);
 }
 
+static void TestSnapshot(void)
+{
+    // The day-one rule: if the empty world cannot snapshot and restore
+    // byte-identically, the architecture is already wrong.
+    m3WorldDef def = m3DefaultWorldDef();
+    def.bodyCapacity = 8;
+    m3WorldId world = m3CreateWorld(&def);
+
+    int32_t size = m3World_SnapshotSize(world);
+    CHECK(size > 0, "the empty world has a snapshot size");
+    void* snapA = malloc((size_t)size);
+    void* snapB = malloc((size_t)size);
+    CHECK(m3World_Snapshot(world, snapA, size) == size, "empty world snapshots");
+    CHECK(m3World_Restore(world, snapA, size), "empty world restores into itself");
+    CHECK(m3World_Snapshot(world, snapB, size) == size, "re-snapshot");
+    CHECK(memcmp(snapA, snapB, (size_t)size) == 0, "restore then snapshot is byte-identical");
+
+    // Populate, snapshot, mutate, restore: the mutation must vanish
+    // completely, hash and bytes both.
+    m3BodyDef bd = m3DefaultBodyDef();
+    bd.type = m3_dynamicBody;
+    bd.position = (m3Pos3){0.0, 3.0, 0.0};
+    m3BodyId a = m3CreateBody(world, &bd);
+    m3BodyId doomed = m3CreateBody(world, &bd);
+    uint64_t hashBefore = m3World_Hash(world);
+    CHECK(m3World_Snapshot(world, snapA, size) == size, "populated snapshot");
+
+    m3Body_SetLinearVelocity(a, (m3Vec3){5.0f, 0.0f, 0.0f});
+    m3DestroyBody(doomed);
+    m3BodyId intruder = m3CreateBody(world, &bd); // reuses doomed's slot
+    uint64_t hashMutated = m3World_Hash(world);
+    CHECK(hashMutated != hashBefore, "mutations move the hash");
+    CHECK(m3Body_IsValid(intruder), "the intruder is live before the rollback");
+
+    CHECK(m3World_Restore(world, snapA, size), "restore rolls the world back");
+    CHECK(m3World_Hash(world) == hashBefore, "the hash returns to the snapshot value");
+    CHECK(m3World_Snapshot(world, snapB, size) == size, "post-restore snapshot");
+    CHECK(memcmp(snapA, snapB, (size_t)size) == 0, "the bytes return too");
+    CHECK(m3Body_IsValid(doomed), "the destroyed body lives again after rollback");
+    CHECK(!m3Body_IsValid(intruder), "the post-snapshot body is stale after rollback");
+    CHECK(m3Body_GetLinearVelocity(a).x == 0.0f, "the setter is rolled back");
+
+    // The mini rollback-determinism proof: rerun the SAME mutations
+    // and the timeline repeats exactly, minted id and hash included.
+    m3Body_SetLinearVelocity(a, (m3Vec3){5.0f, 0.0f, 0.0f});
+    m3DestroyBody(doomed);
+    m3BodyId reMinted = m3CreateBody(world, &bd);
+    CHECK(reMinted.index1 == intruder.index1 && reMinted.generation == intruder.generation,
+          "rerunning the ops after rollback repeats the minted id");
+    CHECK(m3World_Hash(world) == hashMutated, "and repeats the hash bit for bit");
+
+    // Refusals are loud and total: corrupt config, corrupt magic,
+    // truncated size, and a foreign capacity all fail without touching
+    // the world.
+    uint64_t untouched = m3World_Hash(world);
+    uint8_t* corrupt = (uint8_t*)snapA;
+    corrupt[8] ^= 0xFF; // configHash byte
+    CHECK(!m3World_Restore(world, corrupt, size), "a corrupted config hash is refused");
+    corrupt[8] ^= 0xFF;
+    corrupt[0] ^= 0xFF; // magic byte
+    CHECK(!m3World_Restore(world, corrupt, size), "a corrupted magic is refused");
+    corrupt[0] ^= 0xFF;
+    CHECK(!m3World_Restore(world, corrupt, size - 4), "a truncated snapshot is refused");
+    m3WorldDef other = m3DefaultWorldDef();
+    other.bodyCapacity = 16;
+    m3WorldId foreign = m3CreateWorld(&other);
+    CHECK(!m3World_Restore(foreign, snapA, size), "a foreign capacity is refused");
+    CHECK(m3World_Hash(world) == untouched, "refused restores never touch the world");
+
+    free(snapA);
+    free(snapB);
+    m3DestroyWorld(foreign);
+    m3DestroyWorld(world);
+}
+
+static void TestWorldHashGate(void)
+{
+    // A fixed scene whose hash joins the cross-platform CI gate: every
+    // cell must reproduce these bits.
+    m3WorldDef def = m3DefaultWorldDef();
+    def.bodyCapacity = 16;
+    m3WorldId world = m3CreateWorld(&def);
+    m3BodyDef bd = m3DefaultBodyDef();
+    for (int32_t i = 0; i < 5; ++i)
+    {
+        bd.type = (i & 1) ? m3_staticBody : m3_dynamicBody;
+        bd.position = (m3Pos3){0.25 * (double)i, 1.0 + 0.5 * (double)i, -0.125 * (double)i};
+        bd.linearVelocity = (m3Vec3){0.1f * (m3real)i, 0.0f, -0.2f * (m3real)i};
+        bd.angularVelocity = (m3Vec3){0.0f, 0.3f * (m3real)i, 0.0f};
+        bd.userData = (uint64_t)i;
+        m3CreateBody(world, &bd);
+    }
+    printf("M3_WORLD_HASH=%016llx\n", (unsigned long long)m3World_Hash(world));
+    m3DestroyWorld(world);
+}
+
 int main(void)
 {
     TestWorldLifecycle();
     TestBodies();
     TestTwoWorldsIsolation();
+    TestSnapshot();
+    TestWorldHashGate();
     if (s_failures == 0)
     {
         printf("test_world: all checks passed\n");

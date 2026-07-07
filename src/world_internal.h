@@ -16,6 +16,12 @@
 
 #define M3_MAX_WORLDS 64
 
+// Bumped on ANY change that alters simulation behavior (solver math,
+// integration order, constants). Part of the snapshot config hash, so
+// a snapshot from a different behavior revision is refused loudly
+// instead of silently diverging (the Jolt friction-model lesson).
+#define M3_SOLVER_REV 1
+
 // Def cookies: a def that did not come from its m3Default*Def factory
 // is rejected loudly (the Maul2D pattern).
 #define M3_COOKIE       0x4D33u // 'M3'
