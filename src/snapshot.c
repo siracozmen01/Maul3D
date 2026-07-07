@@ -22,7 +22,7 @@
 #endif
 
 #define M3_SNAPSHOT_MAGIC   0x4D33534Eu // 'M3SN'
-#define M3_SNAPSHOT_VERSION 4u          // v4: inertia tensor and center of mass
+#define M3_SNAPSHOT_VERSION 5u          // v5: the broadphase tree is state
 
 // The math types are canonical field data only because they are
 // provably padding-free; a change here is a format version bump.
@@ -49,10 +49,12 @@ typedef struct m3SnapshotHeader
     int32_t shapeFreeCount;
     int32_t shapeRetiredCount;
     int32_t pairCount;
+    int32_t treeRoot;
+    int32_t treeFreeList;
     m3Vec3 gravity;
 } m3SnapshotHeader;
 
-_Static_assert(sizeof(m3SnapshotHeader) == 80, "snapshot header must be padding-free");
+_Static_assert(sizeof(m3SnapshotHeader) == 88, "snapshot header must be padding-free");
 
 static uint64_t ConfigHash(void)
 {
@@ -136,6 +138,10 @@ static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3Wal
     M3_BLOCK(world->shapePool.freeQueue, shapeCap * (int32_t)sizeof(int32_t));
 
     M3_BLOCK(world->pairKeys, world->pairCapacity * (int32_t)sizeof(uint64_t));
+    // The broadphase is state: proxies and the tree restore exactly,
+    // so a rolled-back world continues on the identical tree shape.
+    M3_BLOCK(world->proxyIds, shapeCap * (int32_t)sizeof(int32_t));
+    M3_BLOCK(world->tree.nodes, world->tree.capacity * (int32_t)sizeof(m3TreeNode));
     M3_BLOCK(world->manifolds, world->pairCapacity * (int32_t)sizeof(m3Manifold));
 
 #undef M3_BLOCK
@@ -183,6 +189,8 @@ int32_t m3World_Snapshot(m3WorldId worldId, void* out, int32_t capacity)
     header.shapeFreeCount = world->shapePool.freeCount;
     header.shapeRetiredCount = world->shapePool.retiredCount;
     header.pairCount = world->pairCount;
+    header.treeRoot = world->tree.root;
+    header.treeFreeList = world->tree.freeList;
     header.gravity = world->gravity;
 
     uint8_t* bytes = (uint8_t*)out;
@@ -226,6 +234,8 @@ bool m3World_Restore(m3WorldId worldId, const void* data, int32_t size)
     world->shapePool.freeCount = header.shapeFreeCount;
     world->shapePool.retiredCount = header.shapeRetiredCount;
     world->pairCount = header.pairCount;
+    world->tree.root = header.treeRoot;
+    world->tree.freeList = header.treeFreeList;
     WalkBlocks(world, NULL, (const uint8_t*)data + sizeof(header), m3_walkRead);
     return true;
 }

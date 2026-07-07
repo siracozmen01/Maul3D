@@ -338,6 +338,74 @@ static void TestPairs(void)
     m3DestroyWorld(world);
 }
 
+static uint32_t s_refState = 0x51ED270Bu;
+static uint32_t RefNext(void)
+{
+    s_refState += 0x9E3779B9u;
+    uint32_t z = s_refState;
+    z = (z ^ (z >> 16)) * 0x85EBCA6Bu;
+    z = (z ^ (z >> 13)) * 0xC2B2AE35u;
+    return z ^ (z >> 16);
+}
+static double RefRange(double lo, double hi)
+{
+    return lo + (hi - lo) * ((double)(RefNext() >> 8) * (1.0 / 16777216.0));
+}
+
+static void TestTreeReferee(void)
+{
+    // The module-contract gate: the tree-backed pair scan must produce
+    // the IDENTICAL list the brute-force referee produces, on a dense
+    // random scene, after motion, and after destruction.
+    m3WorldDef def = m3DefaultWorldDef();
+    def.bodyCapacity = 64;
+    def.shapeCapacity = 64;
+    m3WorldId world = m3CreateWorld(&def);
+    m3World* w = m3WorldFromIndex0((uint16_t)(world.index1 - 1));
+
+    m3BodyDef gd = m3DefaultBodyDef();
+    m3BodyId ground = m3CreateBody(world, &gd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    m3Plane floor = {{0.0f, 1.0f, 0.0f}, 0.0f};
+    m3CreatePlaneShape(ground, &sd, &floor);
+
+    m3BodyId bodies[40];
+    for (int32_t i = 0; i < 40; ++i)
+    {
+        m3BodyDef bd = m3DefaultBodyDef();
+        bd.type = m3_dynamicBody;
+        bd.position = (m3Pos3){RefRange(-6.0, 6.0), RefRange(0.5, 6.0), RefRange(-6.0, 6.0)};
+        bd.linearVelocity =
+            (m3Vec3){(m3real)RefRange(-3.0, 3.0), 0.0f, (m3real)RefRange(-3.0, 3.0)};
+        bodies[i] = m3CreateBody(world, &bd);
+        m3Sphere ball = {{0.0f, 0.0f, 0.0f}, (m3real)RefRange(0.2, 0.9)};
+        m3CreateSphereShape(bodies[i], &sd, &ball);
+    }
+
+    uint64_t refKeys[512];
+    for (int32_t round = 0; round < 4; ++round)
+    {
+        CHECK(m3UpdatePairsBruteForce(w) == m3_success, "referee scan");
+        int32_t refCount = w->pairCount;
+        memcpy(refKeys, w->pairKeys, (size_t)refCount * sizeof(uint64_t));
+        CHECK(m3UpdatePairs(w) == m3_success, "tree scan");
+        CHECK(w->pairCount == refCount, "tree and referee agree on the count");
+        CHECK(memcmp(w->pairKeys, refKeys, (size_t)refCount * sizeof(uint64_t)) == 0,
+              "tree and referee agree on every key");
+
+        if (round == 1)
+        {
+            for (int32_t i = 0; i < 10; ++i)
+            {
+                m3DestroyBody(bodies[i]); // cascades shapes, removes proxies
+            }
+        }
+        m3World_Step(world, 1.0f / 60.0f, 4); // real motion between rounds
+    }
+
+    m3DestroyWorld(world);
+}
+
 int main(void)
 {
     TestWorldLifecycle();
@@ -346,6 +414,7 @@ int main(void)
     TestSnapshot();
     TestShapes();
     TestPairs();
+    TestTreeReferee();
     TestWorldHashGate();
     if (s_failures == 0)
     {

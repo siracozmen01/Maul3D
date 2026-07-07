@@ -10,6 +10,7 @@
 #define MAUL3D_WORLD_INTERNAL_H
 
 #include "allocator.h"
+#include "dynamic_tree.h"
 
 #include "maul3d/body.h"
 #include "maul3d/shape.h"
@@ -134,6 +135,12 @@ typedef struct m3World
     uint64_t* shapeUserData;
     int32_t* shapeNext; // next shape on the same body, -1 end
 
+    // Broadphase: the fat-AABB tree (spheres only; infinite planes
+    // stay out and take a dedicated pass), per-shape proxy ids, both
+    // persistent snapshot state.
+    m3Tree tree;
+    int32_t* proxyIds; // M3_TREE_NULL for planes and dead shapes
+
     // Candidate pairs in canonical ascending key order, and their
     // manifolds (persistent: warm-start impulses live here and ride
     // the snapshot).
@@ -182,6 +189,13 @@ void m3RecomputeMass(m3World* world, int32_t bodyIndex);
 // ascending key order from fat AABBs; the dynamic tree replaces the
 // scan in 2b behind this same contract.
 m3Result m3UpdatePairs(m3World* world);
+
+// The 2a brute-force scan, kept as the referee: on any scene the tree
+// path must produce the identical pair list (a test gate).
+m3Result m3UpdatePairsBruteForce(m3World* world);
+
+// Fat world bounds of a sphere shape (double, margin included).
+void m3ShapeFatAabb(const m3World* world, int32_t shape, double lo[3], double hi[3]);
 
 // Narrowphase v1: rebuild manifolds for the current pairs in pair
 // order, carrying warm-start impulses forward by feature id from the

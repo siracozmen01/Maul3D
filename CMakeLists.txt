@@ -10,6 +10,7 @@ add_library(maul3d STATIC
     src/body.c
     src/broad_phase.c
     src/core.c
+    src/dynamic_tree.c
     src/manifold.c
     src/math_functions.c
     src/shape.c

@@ -142,6 +142,29 @@ int32_t m3CreateShapeInternal(m3World* world, int32_t bodyIndex, uint8_t type,
     // recoverable because replay recreates in the same order).
     world->shapeNext[index] = world->bodyShapeHead[bodyIndex];
     world->bodyShapeHead[bodyIndex] = index;
+    // Spheres enter the broadphase tree; infinite planes stay out and
+    // take the dedicated pair pass.
+    if (type == (uint8_t)m3_sphereShape)
+    {
+        double lo[3];
+        double hi[3];
+        m3ShapeFatAabb(world, index, lo, hi);
+        world->proxyIds[index] = m3TreeInsert(&world->tree, lo, hi, index);
+        if (world->proxyIds[index] == M3_TREE_NULL)
+        {
+            // Tree pool exhausted: undo loudly, never a half-created
+            // shape.
+            world->bodyShapeHead[bodyIndex] = world->shapeNext[index];
+            world->shapeNext[index] = -1;
+            world->shapeBody[index] = -1;
+            m3IdPoolFree(&world->shapePool, index);
+            return -1;
+        }
+    }
+    else
+    {
+        world->proxyIds[index] = M3_TREE_NULL;
+    }
     m3RecomputeMass(world, bodyIndex);
     return index;
 }
@@ -168,6 +191,11 @@ void m3DestroyShapeInternal(m3World* world, int32_t index)
     world->shapeRestitution[index] = 0.0f;
     world->shapeUserData[index] = 0;
     world->shapeNext[index] = -1;
+    if (world->proxyIds[index] != M3_TREE_NULL)
+    {
+        m3TreeRemove(&world->tree, world->proxyIds[index]);
+        world->proxyIds[index] = M3_TREE_NULL;
+    }
     m3IdPoolFree(&world->shapePool, index);
     m3RecomputeMass(world, bodyIndex);
 }
