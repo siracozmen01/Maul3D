@@ -7,9 +7,13 @@
 // includes the internal allocator header.
 
 #include "allocator.h"
+#include "simd.h"
+
+#include "maul3d/math.h"
 
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 static int s_failures = 0;
 
@@ -91,11 +95,85 @@ static void TestIdShapes(void)
           "ids are 8 bytes");
 }
 
+// Deterministic PRNG (SplitMix32) so the sweep reproduces bit for bit
+// on every machine.
+static uint32_t s_state = 0x9E3779B9u;
+static uint32_t NextU32(void)
+{
+    s_state += 0x9E3779B9u;
+    uint32_t z = s_state;
+    z = (z ^ (z >> 16)) * 0x85EBCA6Bu;
+    z = (z ^ (z >> 13)) * 0xC2B2AE35u;
+    return z ^ (z >> 16);
+}
+static float NextF(void)
+{
+    // [-8, 8) with a 24-bit mantissa: exercises signs and magnitudes
+    // without generating NaN or infinity.
+    return -8.0f + 16.0f * ((float)(NextU32() >> 8) * (1.0f / 16777216.0f));
+}
+
+static void TestSimdBitLaw(void)
+{
+    // The vector ops must equal the pinned scalar ops bit for bit,
+    // lane by lane: min/max as compare-and-select, and mul-add in TWO
+    // roundings (the 4-wide law: the SSE2 baseline has no FMA, so no
+    // backend may fuse).
+    for (int32_t iter = 0; iter < 4096; ++iter)
+    {
+        float a[4];
+        float b[4];
+        float c[4];
+        for (int32_t i = 0; i < 4; ++i)
+        {
+            a[i] = NextF();
+            b[i] = NextF();
+            c[i] = NextF();
+        }
+        m3f4 va = m3F4Load(a);
+        m3f4 vb = m3F4Load(b);
+        m3f4 vc = m3F4Load(c);
+
+        float outMin[4];
+        float outMax[4];
+        float outMulAdd[4];
+        float outNegMulAdd[4];
+        m3F4Store(outMin, m3F4Min(va, vb));
+        m3F4Store(outMax, m3F4Max(va, vb));
+        m3F4Store(outMulAdd, m3F4MulAdd(va, vb, vc));
+        m3F4Store(outNegMulAdd, m3F4NegMulAdd(va, vb, vc));
+
+        for (int32_t i = 0; i < 4; ++i)
+        {
+            float sMin = m3MinF(a[i], b[i]);
+            float sMax = m3MaxF(a[i], b[i]);
+            float sMulAdd = a[i] * b[i] + c[i];
+            float sNegMulAdd = c[i] - a[i] * b[i];
+            CHECK(memcmp(&outMin[i], &sMin, 4) == 0, "vector min matches pinned scalar bits");
+            CHECK(memcmp(&outMax[i], &sMax, 4) == 0, "vector max matches pinned scalar bits");
+            CHECK(memcmp(&outMulAdd[i], &sMulAdd, 4) == 0,
+                  "mul-add is two roundings, matching scalar");
+            CHECK(memcmp(&outNegMulAdd[i], &sNegMulAdd, 4) == 0,
+                  "neg-mul-add is two roundings, matching scalar");
+        }
+    }
+
+    // Select semantics: an all-ones mask picks a, all-zeros picks b.
+    float av[4] = {1.0f, 2.0f, 3.0f, 4.0f};
+    float bv[4] = {9.0f, 8.0f, 7.0f, 6.0f};
+    float out[4];
+    m3F4Store(out, m3F4Select(m3F4GT(m3F4Set1(1.0f), m3F4Zero()), m3F4Load(av), m3F4Load(bv)));
+    CHECK(out[0] == 1.0f && out[3] == 4.0f, "true mask selects a");
+    m3F4Store(out, m3F4Select(m3F4GT(m3F4Zero(), m3F4Set1(1.0f)), m3F4Load(av), m3F4Load(bv)));
+    CHECK(out[0] == 9.0f && out[3] == 6.0f, "false mask selects b");
+}
+
 int main(void)
 {
     TestStack();
     TestIdPool();
     TestIdShapes();
+    TestSimdBitLaw();
     if (s_failures == 0)
     {
         printf("test_core: all checks passed\n");
