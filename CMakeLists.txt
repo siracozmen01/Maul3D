@@ -8,8 +8,10 @@ include(cmake/CompilerFlags.cmake)
 add_library(maul3d STATIC
     src/allocator.c
     src/body.c
+    src/broad_phase.c
     src/core.c
     src/math_functions.c
+    src/shape.c
     src/snapshot.c
     src/world.c
 )
@@ -41,6 +43,7 @@ add_test(NAME core COMMAND test_core)
 
 add_executable(test_world test/test_world.c)
 target_link_libraries(test_world PRIVATE maul3d)
+target_include_directories(test_world PRIVATE src)
 maul3d_apply_flags(test_world)
 add_test(NAME world COMMAND test_world)
 

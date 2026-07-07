@@ -22,7 +22,7 @@
 #endif
 
 #define M3_SNAPSHOT_MAGIC   0x4D33534Eu // 'M3SN'
-#define M3_SNAPSHOT_VERSION 1u
+#define M3_SNAPSHOT_VERSION 2u          // v2: shapes, body shape lists, pairs
 
 // The math types are canonical field data only because they are
 // provably padding-free; a change here is a format version bump.
@@ -42,10 +42,16 @@ typedef struct m3SnapshotHeader
     int32_t freeHead;
     int32_t freeCount;
     int32_t retiredCount;
+    int32_t shapeCapacity;
+    int32_t shapeMaxIndex;
+    int32_t shapeFreeHead;
+    int32_t shapeFreeCount;
+    int32_t shapeRetiredCount;
+    int32_t pairCount;
     m3Vec3 gravity;
 } m3SnapshotHeader;
 
-_Static_assert(sizeof(m3SnapshotHeader) == 56, "snapshot header must be padding-free");
+_Static_assert(sizeof(m3SnapshotHeader) == 80, "snapshot header must be padding-free");
 
 static uint64_t ConfigHash(void)
 {
@@ -112,6 +118,22 @@ static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3Wal
     M3_BLOCK(world->bodyPool.generations, cap * (int32_t)sizeof(uint16_t));
     M3_BLOCK(world->bodyPool.alive, cap * (int32_t)sizeof(uint8_t));
     M3_BLOCK(world->bodyPool.freeQueue, cap * (int32_t)sizeof(int32_t));
+    M3_BLOCK(world->bodyShapeHead, cap * (int32_t)sizeof(int32_t));
+
+    int32_t shapeCap = world->shapeCapacity;
+    M3_BLOCK(world->shapeBody, shapeCap * (int32_t)sizeof(int32_t));
+    M3_BLOCK(world->shapeType, shapeCap * (int32_t)sizeof(uint8_t));
+    M3_BLOCK(world->shapeGeom, shapeCap * (int32_t)sizeof(m3ShapeGeom));
+    M3_BLOCK(world->shapeDensity, shapeCap * (int32_t)sizeof(float));
+    M3_BLOCK(world->shapeFriction, shapeCap * (int32_t)sizeof(float));
+    M3_BLOCK(world->shapeRestitution, shapeCap * (int32_t)sizeof(float));
+    M3_BLOCK(world->shapeUserData, shapeCap * (int32_t)sizeof(uint64_t));
+    M3_BLOCK(world->shapeNext, shapeCap * (int32_t)sizeof(int32_t));
+    M3_BLOCK(world->shapePool.generations, shapeCap * (int32_t)sizeof(uint16_t));
+    M3_BLOCK(world->shapePool.alive, shapeCap * (int32_t)sizeof(uint8_t));
+    M3_BLOCK(world->shapePool.freeQueue, shapeCap * (int32_t)sizeof(int32_t));
+
+    M3_BLOCK(world->pairKeys, world->pairCapacity * (int32_t)sizeof(uint64_t));
 
 #undef M3_BLOCK
     return cursor;
@@ -152,6 +174,12 @@ int32_t m3World_Snapshot(m3WorldId worldId, void* out, int32_t capacity)
     header.freeHead = world->bodyPool.freeHead;
     header.freeCount = world->bodyPool.freeCount;
     header.retiredCount = world->bodyPool.retiredCount;
+    header.shapeCapacity = world->shapeCapacity;
+    header.shapeMaxIndex = world->shapePool.maxIndex;
+    header.shapeFreeHead = world->shapePool.freeHead;
+    header.shapeFreeCount = world->shapePool.freeCount;
+    header.shapeRetiredCount = world->shapePool.retiredCount;
+    header.pairCount = world->pairCount;
     header.gravity = world->gravity;
 
     uint8_t* bytes = (uint8_t*)out;
@@ -170,7 +198,8 @@ bool m3World_Restore(m3WorldId worldId, const void* data, int32_t size)
     m3SnapshotHeader header;
     memcpy(&header, data, sizeof(header));
     if (header.magic != M3_SNAPSHOT_MAGIC || header.formatVersion != M3_SNAPSHOT_VERSION ||
-        header.configHash != ConfigHash() || header.bodyCapacity != world->bodyCapacity)
+        header.configHash != ConfigHash() || header.bodyCapacity != world->bodyCapacity ||
+        header.shapeCapacity != world->shapeCapacity)
     {
         // Wrong world shape or wrong build semantics: refuse loudly,
         // never a partial restore.
@@ -189,6 +218,11 @@ bool m3World_Restore(m3WorldId worldId, const void* data, int32_t size)
     world->bodyPool.freeHead = header.freeHead;
     world->bodyPool.freeCount = header.freeCount;
     world->bodyPool.retiredCount = header.retiredCount;
+    world->shapePool.maxIndex = header.shapeMaxIndex;
+    world->shapePool.freeHead = header.shapeFreeHead;
+    world->shapePool.freeCount = header.shapeFreeCount;
+    world->shapePool.retiredCount = header.shapeRetiredCount;
+    world->pairCount = header.pairCount;
     WalkBlocks(world, NULL, (const uint8_t*)data + sizeof(header), m3_walkRead);
     return true;
 }
@@ -222,6 +256,22 @@ uint64_t m3World_Hash(m3WorldId worldId)
         h = m3Hash64(h, &world->invMass[i], (int32_t)sizeof(m3real));
         h = m3Hash64(h, &world->invInertia[i], (int32_t)sizeof(m3real));
         h = m3Hash64(h, &world->types[i], 1);
+    }
+    int32_t maxShape = world->shapePool.maxIndex;
+    for (int32_t i = 0; i < maxShape; ++i)
+    {
+        uint8_t alive = world->shapePool.alive[i];
+        h = m3Hash64(h, &alive, 1);
+        if (alive == 0)
+        {
+            continue;
+        }
+        h = m3Hash64(h, &world->shapeBody[i], 4);
+        h = m3Hash64(h, &world->shapeType[i], 1);
+        h = m3Hash64(h, &world->shapeGeom[i], (int32_t)sizeof(m3ShapeGeom));
+        h = m3Hash64(h, &world->shapeDensity[i], 4);
+        h = m3Hash64(h, &world->shapeFriction[i], 4);
+        h = m3Hash64(h, &world->shapeRestitution[i], 4);
     }
     return h;
 }

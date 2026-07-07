@@ -89,6 +89,31 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     M3_ALLOC(world->angularDamping, cap, m3real);
     M3_ALLOC(world->types, cap, uint8_t);
     M3_ALLOC(world->userData, cap, uint64_t);
+    M3_ALLOC(world->bodyShapeHead, cap, int32_t);
+    for (int32_t i = 0; i < cap; ++i)
+    {
+        world->bodyShapeHead[i] = -1;
+    }
+
+    int32_t shapeCap = def->shapeCapacity;
+    world->shapePool = m3IdPoolCreate(shapeCap);
+    M3_ALLOC(world->shapeBody, shapeCap, int32_t);
+    M3_ALLOC(world->shapeType, shapeCap, uint8_t);
+    M3_ALLOC(world->shapeGeom, shapeCap, m3ShapeGeom);
+    M3_ALLOC(world->shapeDensity, shapeCap, float);
+    M3_ALLOC(world->shapeFriction, shapeCap, float);
+    M3_ALLOC(world->shapeRestitution, shapeCap, float);
+    M3_ALLOC(world->shapeUserData, shapeCap, uint64_t);
+    M3_ALLOC(world->shapeNext, shapeCap, int32_t);
+    for (int32_t i = 0; i < shapeCap; ++i)
+    {
+        world->shapeBody[i] = -1;
+        world->shapeNext[i] = -1;
+    }
+
+    world->pairCapacity = 8 * shapeCap;
+    M3_ALLOC(world->pairKeys, world->pairCapacity, uint64_t);
+    world->pairCount = 0;
 
     // Step scratch: grows between steps on m3_errorCapacity, never
     // mid-step. 256 KiB is generous for the 2a sphere world.
@@ -120,6 +145,17 @@ void m3DestroyWorld(m3WorldId worldId)
     m3Free(world->angularDamping);
     m3Free(world->types);
     m3Free(world->userData);
+    m3Free(world->bodyShapeHead);
+    m3IdPoolDestroy(&world->shapePool);
+    m3Free(world->shapeBody);
+    m3Free(world->shapeType);
+    m3Free(world->shapeGeom);
+    m3Free(world->shapeDensity);
+    m3Free(world->shapeFriction);
+    m3Free(world->shapeRestitution);
+    m3Free(world->shapeUserData);
+    m3Free(world->shapeNext);
+    m3Free(world->pairKeys);
     m3StackDestroy(&world->scratch);
     m3Free(world);
 
@@ -299,6 +335,29 @@ bool m3World_JournalReplay(m3WorldId worldId, const void* data, int32_t size)
                 return false;
             }
             m3SetAngularVelocityInternal(world, index, record.v);
+            break;
+        }
+        case m3_opCreateShape:
+        {
+            m3CreateShapeOp record;
+            if (bytes != (int32_t)sizeof(record))
+            {
+                return false;
+            }
+            memcpy(&record, payload, sizeof(record));
+            record.body.world0 = world->worldIndex0;
+            int32_t bodyIndex = m3BodySlot(world, record.body);
+            if (bodyIndex < 0)
+            {
+                return false;
+            }
+            int32_t index =
+                m3CreateShapeInternal(world, bodyIndex, record.type, &record.geom, &record.def);
+            if (index < 0 || index + 1 != record.expected.index1 ||
+                world->shapePool.generations[index] != record.expected.generation)
+            {
+                return false; // id determinism holds for shapes too
+            }
             break;
         }
         default:

@@ -7,6 +7,7 @@
 // checked field by field with memcmp. Black box: public headers only.
 
 #include "maul3d/body.h"
+#include "maul3d/shape.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -50,6 +51,10 @@ int main(void)
     m3BodyId a0 = m3CreateBody(a, &bd);
     bd.position = (m3Pos3){2.0, 5.0, -1.0};
     m3BodyId a1 = m3CreateBody(a, &bd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    m3Sphere ball = {{0.0f, 0.0f, 0.0f}, 0.4f};
+    m3ShapeId shape0 = m3CreateSphereShape(a0, &sd, &ball);
+    CHECK(m3Shape_IsValid(shape0), "journaled sphere created");
     m3Body_SetLinearVelocity(a0, (m3Vec3){1.0f, 0.0f, 0.0f});
     m3Body_SetAngularVelocity(a1, (m3Vec3){0.0f, 3.0f, 0.0f});
     m3DestroyBody(a0);

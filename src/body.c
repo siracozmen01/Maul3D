@@ -63,11 +63,18 @@ int32_t m3CreateBodyInternal(m3World* world, const m3BodyDef* def)
     world->angularDamping[index] = def->angularDamping;
     world->types[index] = (uint8_t)def->type;
     world->userData[index] = def->userData;
+    world->bodyShapeHead[index] = -1;
     return index;
 }
 
 void m3DestroyBodyInternal(m3World* world, int32_t index)
 {
+    // Cascade: a body takes its shapes with it (each destroy unlinks
+    // the list head, so this drains deterministically).
+    while (world->bodyShapeHead[index] != -1)
+    {
+        m3DestroyShapeInternal(world, world->bodyShapeHead[index]);
+    }
     // Zero the slot so recycled state can never leak into a new body
     // or into the snapshot bytes.
     world->transforms[index] = (m3Transform){{0.0, 0.0, 0.0}, {0.0f, 0.0f, 0.0f, 1.0f}};

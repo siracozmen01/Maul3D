@@ -12,6 +12,7 @@
 #include "allocator.h"
 
 #include "maul3d/body.h"
+#include "maul3d/shape.h"
 #include "maul3d/world.h"
 
 #define M3_MAX_WORLDS 64
@@ -27,6 +28,11 @@
 #define M3_COOKIE       0x4D33u // 'M3'
 #define M3_WORLD_COOKIE ((int32_t)(M3_COOKIE ^ ((int32_t)sizeof(m3WorldDef) << 8)))
 #define M3_BODY_COOKIE  ((int32_t)(M3_COOKIE ^ ((int32_t)sizeof(m3BodyDef) << 8) ^ 1))
+#define M3_SHAPE_COOKIE ((int32_t)(M3_COOKIE ^ ((int32_t)sizeof(m3ShapeDef) << 8) ^ 2))
+
+// Fat AABB margin: pairs exist slightly before touch so speculative
+// contacts (task 8) have something to work with.
+#define M3_AABB_MARGIN (4.0f * 0.005f)
 
 // Journal ops. The stream is [i32 op][i32 size][payload], replayed
 // through the same internal functions the public API uses.
@@ -37,8 +43,27 @@ typedef enum m3Op
     m3_opDestroyBody = 3,
     m3_opSetLinearVelocity = 4,
     m3_opSetAngularVelocity = 5,
-    m3_opCreateShape = 6, // reserved for task 7
+    m3_opCreateShape = 6,
 } m3Op;
+
+// Geometry is one padding-free 16-byte record per shape, interpreted
+// by type: sphere {v=center, s=radius}, plane {v=normal, s=offset}.
+typedef struct m3ShapeGeom
+{
+    m3Vec3 v;
+    m3real s;
+} m3ShapeGeom;
+
+// Journal payload for shape creation (replay re-derives mass).
+typedef struct m3CreateShapeOp
+{
+    m3ShapeDef def;
+    m3ShapeGeom geom;
+    m3BodyId body;
+    m3ShapeId expected;
+    uint8_t type;
+    uint8_t pad[7];
+} m3CreateShapeOp;
 
 typedef struct m3World
 {
@@ -66,6 +91,24 @@ typedef struct m3World
     m3real* angularDamping;
     uint8_t* types;
     uint64_t* userData;
+    int32_t* bodyShapeHead; // head of each body's shape list, -1 none
+
+    // Shape identity and SoA shape state (persistent, walked).
+    m3IdPool shapePool;
+    int32_t* shapeBody;
+    uint8_t* shapeType;
+    m3ShapeGeom* shapeGeom;
+    float* shapeDensity;
+    float* shapeFriction;
+    float* shapeRestitution;
+    uint64_t* shapeUserData;
+    int32_t* shapeNext; // next shape on the same body, -1 end
+
+    // Candidate pairs in canonical ascending key order (persistent:
+    // the manifolds keyed on them arrive in task 8).
+    uint64_t* pairKeys;
+    int32_t pairCount;
+    int32_t pairCapacity;
 
     // Per-step scratch (lifetime 2: never snapshotted).
     m3Stack scratch;
@@ -96,6 +139,17 @@ int32_t m3CreateBodyInternal(m3World* world, const m3BodyDef* def);
 void m3DestroyBodyInternal(m3World* world, int32_t index);
 void m3SetLinearVelocityInternal(m3World* world, int32_t index, m3Vec3 velocity);
 void m3SetAngularVelocityInternal(m3World* world, int32_t index, m3Vec3 velocity);
+
+int32_t m3ShapeSlot(const m3World* world, m3ShapeId shapeId);
+int32_t m3CreateShapeInternal(m3World* world, int32_t bodyIndex, uint8_t type,
+                              const m3ShapeGeom* geom, const m3ShapeDef* def);
+void m3DestroyShapeInternal(m3World* world, int32_t index);
+void m3RecomputeMass(m3World* world, int32_t bodyIndex);
+
+// Broadphase v1 (the swappable seam): fills pairKeys in canonical
+// ascending key order from fat AABBs; the dynamic tree replaces the
+// scan in 2b behind this same contract.
+m3Result m3UpdatePairs(m3World* world);
 
 void m3JournalRecord(m3World* world, int32_t op, const void* payload, int32_t bytes);
 

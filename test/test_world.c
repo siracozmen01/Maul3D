@@ -5,7 +5,10 @@
 // recycling, generation staleness, world pinning), and the loud
 // failure paths. Black box: public headers only.
 
-#include "maul3d/body.h"
+// White box: pair inspection reads world internals directly.
+#include "world_internal.h"
+
+#include "maul3d/shape.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -204,12 +207,110 @@ static void TestWorldHashGate(void)
     m3DestroyWorld(world);
 }
 
+static void TestShapes(void)
+{
+    m3WorldDef def = m3DefaultWorldDef();
+    def.bodyCapacity = 8;
+    def.shapeCapacity = 8;
+    m3WorldId world = m3CreateWorld(&def);
+
+    m3BodyDef bd = m3DefaultBodyDef();
+    bd.type = m3_dynamicBody;
+    m3BodyId body = m3CreateBody(world, &bd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    sd.density = 2.0f;
+
+    // Analytic sphere mass: r = 0.5, density 2 -> m = 2 * 4/3 pi / 8.
+    m3Sphere ball = {{0.0f, 0.0f, 0.0f}, 0.5f};
+    m3ShapeId s = m3CreateSphereShape(body, &sd, &ball);
+    CHECK(m3Shape_IsValid(s), "sphere created");
+    m3World* w = m3WorldFromIndex0((uint16_t)(world.index1 - 1));
+    float expectedMass = 2.0f * (4.0f / 3.0f) * M3_PI * 0.125f;
+    float gotMass = 1.0f / w->invMass[body.index1 - 1];
+    CHECK(gotMass > expectedMass - 1.0e-4f && gotMass < expectedMass + 1.0e-4f,
+          "sphere mass is analytic");
+    float expectedI = 0.4f * expectedMass * 0.25f;
+    float gotI = 1.0f / w->invInertia[body.index1 - 1];
+    CHECK(gotI > expectedI - 1.0e-4f && gotI < expectedI + 1.0e-4f, "sphere inertia is analytic");
+
+    // Loud refusals: plane on a dynamic body, off-origin dynamic
+    // sphere, zero radius.
+    m3Plane floor = {{0.0f, 1.0f, 0.0f}, 0.0f};
+    CHECK(!m3Shape_IsValid(m3CreatePlaneShape(body, &sd, &floor)),
+          "a plane on a dynamic body is refused");
+    m3Sphere offset = {{1.0f, 0.0f, 0.0f}, 0.5f};
+    CHECK(!m3Shape_IsValid(m3CreateSphereShape(body, &sd, &offset)),
+          "an off-origin dynamic sphere is refused in 2a");
+    m3Sphere flat = {{0.0f, 0.0f, 0.0f}, 0.0f};
+    CHECK(!m3Shape_IsValid(m3CreateSphereShape(body, &sd, &flat)), "zero radius is refused");
+
+    // The cascade: a body takes its shapes with it.
+    m3DestroyBody(body);
+    CHECK(!m3Shape_IsValid(s), "shapes die with their body");
+
+    m3DestroyWorld(world);
+}
+
+static void TestPairs(void)
+{
+    // A static plane and three dynamic spheres: A and B overlap, C is
+    // far away. The scan must produce exactly the plane pairs plus
+    // (A, B), in canonical ascending key order, and the pairs must
+    // survive a snapshot round-trip.
+    m3WorldDef def = m3DefaultWorldDef();
+    def.bodyCapacity = 8;
+    def.shapeCapacity = 8;
+    m3WorldId world = m3CreateWorld(&def);
+    m3World* w = m3WorldFromIndex0((uint16_t)(world.index1 - 1));
+
+    m3BodyDef ground = m3DefaultBodyDef();
+    m3BodyId groundBody = m3CreateBody(world, &ground);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    m3Plane floor = {{0.0f, 1.0f, 0.0f}, 0.0f};
+    m3CreatePlaneShape(groundBody, &sd, &floor); // shape 0
+
+    m3BodyDef bd = m3DefaultBodyDef();
+    bd.type = m3_dynamicBody;
+    m3Sphere ball = {{0.0f, 0.0f, 0.0f}, 0.5f};
+    bd.position = (m3Pos3){0.0, 1.0, 0.0};
+    m3CreateSphereShape(m3CreateBody(world, &bd), &sd, &ball); // shape 1 (A)
+    bd.position = (m3Pos3){0.6, 1.0, 0.0};
+    m3CreateSphereShape(m3CreateBody(world, &bd), &sd, &ball); // shape 2 (B), overlaps A
+    bd.position = (m3Pos3){100.0, 1.0, 0.0};
+    m3CreateSphereShape(m3CreateBody(world, &bd), &sd, &ball); // shape 3 (C), far
+
+    CHECK(m3UpdatePairs(w) == m3_success, "the pair scan succeeds");
+    CHECK(w->pairCount == 4, "plane pairs with every sphere, plus the A-B overlap");
+    uint64_t expected[4] = {
+        ((uint64_t)0 << 32) | 1u,
+        ((uint64_t)0 << 32) | 2u,
+        ((uint64_t)0 << 32) | 3u,
+        ((uint64_t)1 << 32) | 2u,
+    };
+    CHECK(memcmp(w->pairKeys, expected, sizeof(expected)) == 0,
+          "pair keys are exact and canonically ordered");
+
+    // Snapshot round-trip carries the pairs (v2 format).
+    int32_t size = m3World_SnapshotSize(world);
+    void* snap = malloc((size_t)size);
+    CHECK(m3World_Snapshot(world, snap, size) == size, "v2 snapshot");
+    w->pairCount = 0;
+    memset(w->pairKeys, 0, sizeof(expected));
+    CHECK(m3World_Restore(world, snap, size), "v2 restore");
+    CHECK(w->pairCount == 4 && memcmp(w->pairKeys, expected, sizeof(expected)) == 0,
+          "pairs survive the round-trip");
+    free(snap);
+    m3DestroyWorld(world);
+}
+
 int main(void)
 {
     TestWorldLifecycle();
     TestBodies();
     TestTwoWorldsIsolation();
     TestSnapshot();
+    TestShapes();
+    TestPairs();
     TestWorldHashGate();
     if (s_failures == 0)
     {
