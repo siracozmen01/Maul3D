@@ -4,6 +4,7 @@
 #ifndef MAUL3D_BASE_H
 #define MAUL3D_BASE_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -31,6 +32,31 @@ extern "C"
         m3_errorCapacity = 2, // a fixed pool or the step scratch ran out
         m3_errorConfig = 3,   // snapshot/journal config hash mismatch
     } m3Result;
+
+    /// Opaque generation-tagged handles: the only identity, public and
+    /// internal. index1 is 1-based (0 means null), the generation
+    /// detects stale handles after slot reuse, world0 pins an id to its
+    /// world. Handles encode no address, so they survive snapshot
+    /// restore unchanged.
+    typedef struct m3WorldId
+    {
+        int32_t index1;
+        uint16_t generation;
+    } m3WorldId;
+
+    typedef struct m3BodyId
+    {
+        int32_t index1;
+        uint16_t world0;
+        uint16_t generation;
+    } m3BodyId;
+
+    typedef struct m3ShapeId
+    {
+        int32_t index1;
+        uint16_t world0;
+        uint16_t generation;
+    } m3ShapeId;
 
     /// FNV-1a 64: the deterministic hash every gate is built on.
     /// Seed with M3_HASH_INIT, fold bytes in canonical order.

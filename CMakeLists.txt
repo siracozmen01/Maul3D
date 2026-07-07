@@ -6,6 +6,7 @@ option(MAUL3D_SANITIZE "Build with ASAN/UBSAN" OFF)
 include(cmake/CompilerFlags.cmake)
 
 add_library(maul3d STATIC
+    src/allocator.c
     src/core.c
     src/math_functions.c
 )
@@ -28,3 +29,9 @@ add_executable(test_math test/test_math.c)
 target_link_libraries(test_math PRIVATE maul3d)
 maul3d_apply_flags(test_math)
 add_test(NAME math COMMAND test_math)
+
+add_executable(test_core test/test_core.c)
+target_link_libraries(test_core PRIVATE maul3d)
+target_include_directories(test_core PRIVATE src)
+maul3d_apply_flags(test_core)
+add_test(NAME core COMMAND test_core)
