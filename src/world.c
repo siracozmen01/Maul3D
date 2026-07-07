@@ -47,7 +47,8 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
 {
     m3WorldId nullId = {0, 0};
     if (def == NULL || def->internalValue != M3_WORLD_COOKIE || def->bodyCapacity <= 0 ||
-        def->shapeCapacity <= 0 || def->meshCapacity <= 0 || def->workerCount <= 0)
+        def->shapeCapacity <= 0 || def->meshCapacity <= 0 || def->workerCount <= 0 ||
+        (def->enqueueTask == NULL) != (def->finishTask == NULL))
     {
         // User-input validation is contract, not invariant: the API
         // promises a null id for a bad def (tests exercise this), so
@@ -77,6 +78,9 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     world->shapeCapacity = def->shapeCapacity;
     world->meshCapacity = def->meshCapacity;
     world->workerCount = def->workerCount;
+    world->enqueueTask = def->enqueueTask;
+    world->finishTask = def->finishTask;
+    world->userTaskContext = def->userTaskContext;
     world->generation = s_worldGenerations[slot];
     world->worldIndex0 = (uint16_t)slot;
     world->bodyPool = m3IdPoolCreate(cap);

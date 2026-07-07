@@ -201,6 +201,9 @@ typedef struct m3World
     int32_t bodyCapacity;
     int32_t shapeCapacity;
     int32_t workerCount;
+    m3EnqueueTaskFn* enqueueTask; // host threading hooks (never state)
+    m3FinishTaskFn* finishTask;
+    void* userTaskContext;
     uint16_t generation;  // this world slot's generation
     uint16_t worldIndex0; // 0-based slot in the world table
 
@@ -343,6 +346,12 @@ void m3ShapeFatAabb(const m3World* world, int32_t shape, double lo[3], double hi
 // scratch BEFORE m3UpdatePairs overwrites them; oldKeys are sorted).
 m3Result m3UpdateContacts(m3World* world, const uint64_t* oldKeys, const m3Manifold* oldManifolds,
                           int32_t oldCount);
+
+// The narrowphase over one pair range: every pair writes only its own
+// manifold slot, so any partition of [0, pairCount) is bit-identical
+// to the serial run (the parallel contract).
+void m3UpdateContactsRange(m3World* world, int32_t start, int32_t end, const uint64_t* oldKeys,
+                           const m3Manifold* oldManifolds, int32_t oldCount);
 
 // Deterministic tangent basis: ONE fixed rule (the world axis with the
 // smallest absolute normal component, ties broken x before y before

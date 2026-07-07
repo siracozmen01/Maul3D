@@ -18,6 +18,111 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+// ---------------------------------------------------------------
+// A test-grade host thread pool for the worker-twin gate: real
+// threads, spawn-per-enqueue (fine for tests). The library never
+// owns threads; it only describes ranges. Any split and any
+// schedule must produce identical bits, and gate 4 now proves that
+// with actual concurrency instead of a vacuous serial pass.
+// ---------------------------------------------------------------
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <pthread.h>
+#endif
+
+#define POOL_WORKERS 4
+
+typedef struct PoolRange
+{
+    m3TaskFn* task;
+    void* taskContext;
+    int32_t start;
+    int32_t end;
+} PoolRange;
+
+typedef struct PoolTask
+{
+    PoolRange ranges[POOL_WORKERS];
+    int32_t rangeCount;
+#ifdef _WIN32
+    HANDLE threads[POOL_WORKERS];
+#else
+    pthread_t threads[POOL_WORKERS];
+#endif
+    int32_t threadCount;
+} PoolTask;
+
+#ifdef _WIN32
+static DWORD WINAPI PoolMain(LPVOID arg)
+{
+    PoolRange* r = (PoolRange*)arg;
+    r->task(r->start, r->end, r->taskContext);
+    return 0;
+}
+#else
+static void* PoolMain(void* arg)
+{
+    PoolRange* r = (PoolRange*)arg;
+    r->task(r->start, r->end, r->taskContext);
+    return NULL;
+}
+#endif
+
+static void* PoolEnqueue(m3TaskFn* task, int32_t itemCount, int32_t minRange, void* taskContext,
+                         void* userContext)
+{
+    (void)userContext;
+    static PoolTask taskSlot; // one in-flight task (the library's contract)
+    PoolTask* t = &taskSlot;
+    int32_t workers = POOL_WORKERS;
+    int32_t grain = (itemCount + workers - 1) / workers;
+    grain = grain < minRange ? minRange : grain;
+    t->rangeCount = 0;
+    t->threadCount = 0;
+    for (int32_t start = 0; start < itemCount; start += grain)
+    {
+        int32_t end = start + grain < itemCount ? start + grain : itemCount;
+        PoolRange* r = &t->ranges[t->rangeCount++];
+        r->task = task;
+        r->taskContext = taskContext;
+        r->start = start;
+        r->end = end;
+        if (t->rangeCount == POOL_WORKERS)
+        {
+            r->end = itemCount; // last range absorbs the tail
+            break;
+        }
+    }
+    // Run range 0 on this thread, the rest on spawned threads.
+    for (int32_t k = 1; k < t->rangeCount; ++k)
+    {
+#ifdef _WIN32
+        t->threads[t->threadCount] = CreateThread(NULL, 0, PoolMain, &t->ranges[k], 0, NULL);
+#else
+        pthread_create(&t->threads[t->threadCount], NULL, PoolMain, &t->ranges[k]);
+#endif
+        t->threadCount += 1;
+    }
+    t->ranges[0].task(t->ranges[0].start, t->ranges[0].end, taskContext);
+    return t;
+}
+
+static void PoolFinish(void* userTask, void* userContext)
+{
+    (void)userContext;
+    PoolTask* t = (PoolTask*)userTask;
+    for (int32_t k = 0; k < t->threadCount; ++k)
+    {
+#ifdef _WIN32
+        WaitForSingleObject(t->threads[k], INFINITE);
+        CloseHandle(t->threads[k]);
+#else
+        pthread_join(t->threads[k], NULL);
+#endif
+    }
+}
+
 static int s_failures = 0;
 
 #define CHECK(cond, msg)                                                                           \
@@ -77,12 +182,17 @@ static m3BodyId BuildGoldenScene(m3WorldId world)
     return lastDropper;
 }
 
-static m3WorldId MakeGoldenWorld(int32_t workerCount)
+static m3WorldId MakeGoldenWorld(int32_t workerCount, int threaded)
 {
     m3WorldDef def = m3DefaultWorldDef();
     def.bodyCapacity = 64;
     def.shapeCapacity = 64;
     def.workerCount = workerCount;
+    if (threaded)
+    {
+        def.enqueueTask = PoolEnqueue;
+        def.finishTask = PoolFinish;
+    }
     return m3CreateWorld(&def);
 }
 
@@ -96,7 +206,7 @@ static void StepN(m3WorldId world, int32_t steps)
 
 static uint64_t RunGolden(int32_t steps, int32_t workerCount)
 {
-    m3WorldId world = MakeGoldenWorld(workerCount);
+    m3WorldId world = MakeGoldenWorld(workerCount, workerCount > 1);
     BuildGoldenScene(world);
     StepN(world, steps);
     uint64_t h = m3World_Hash(world);
@@ -113,14 +223,14 @@ static void GateGoldenAndReplay(void)
     printf("M3_DET_HASH=%016llx\n", (unsigned long long)h1);
 
     // Gate 2b: a journaled session replays bit for bit.
-    m3WorldId a = MakeGoldenWorld(1);
+    m3WorldId a = MakeGoldenWorld(1, 0);
     uint8_t* journal = (uint8_t*)malloc(1 << 20);
     CHECK(m3World_JournalBegin(a, journal, 1 << 20), "journal begins");
     BuildGoldenScene(a);
     StepN(a, 150);
     int32_t bytes = m3World_JournalEnd(a);
     CHECK(bytes > 0, "the session fits the journal");
-    m3WorldId b = MakeGoldenWorld(1);
+    m3WorldId b = MakeGoldenWorld(1, 0);
     CHECK(m3World_JournalReplay(b, journal, bytes), "the session replays");
     CHECK(m3World_Hash(a) == m3World_Hash(b), "gate 2b: journal replay is bit-identical");
     free(journal);
@@ -131,7 +241,7 @@ static void GateGoldenAndReplay(void)
 static void GateRollback(void)
 {
     // Gate 3, the flagship: what our base engine cannot do.
-    m3WorldId w = MakeGoldenWorld(1);
+    m3WorldId w = MakeGoldenWorld(1, 0);
     m3BodyId dropper = BuildGoldenScene(w);
     StepN(w, 100);
 
@@ -161,12 +271,15 @@ static void GateRollback(void)
 
 static void GateWorkerTwins(void)
 {
-    // Gate 4: worker counts must never change the bits. The 2a solver
-    // is serial, so this holds trivially; it is armed here so the 2b
-    // threading lands against a gate that already exists.
+    // Gate 4, and since 2b-11 it BITES: the four-worker run executes
+    // the narrowphase on a real thread pool (spawned threads, any
+    // scheduling the OS feels like) and must produce the exact bits
+    // of the serial run. Twice, so the pool run is also self-stable.
     uint64_t h1 = RunGolden(200, 1);
     uint64_t h4 = RunGolden(200, 4);
+    uint64_t h4b = RunGolden(200, 4);
     CHECK(h1 == h4, "gate 4: worker twins are bit-identical");
+    CHECK(h4 == h4b, "gate 4: the threaded run is self-stable");
 }
 
 int main(void)

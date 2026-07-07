@@ -11,6 +11,20 @@ extern "C"
 {
 #endif
 
+    /// The task interface (2b-11): the HOST owns the threads, the
+    /// library only describes work. enqueueTask receives a task
+    /// function, the item count, and a minimum grain; the host splits
+    /// [0, itemCount) into subranges, runs each range exactly once on
+    /// any thread in any order, and returns an opaque handle that
+    /// finishTask must block on. Determinism holds for ANY split and
+    /// ANY schedule because parallel phases only ever write disjoint
+    /// slots; the worker-twin gate proves it on every commit. Leave
+    /// both hooks null for serial execution.
+    typedef void m3TaskFn(int32_t startIndex, int32_t endIndex, void* taskContext);
+    typedef void* m3EnqueueTaskFn(m3TaskFn* task, int32_t itemCount, int32_t minRange,
+                                  void* taskContext, void* userContext);
+    typedef void m3FinishTaskFn(void* userTask, void* userContext);
+
     /// World definition. Build with m3DefaultWorldDef so the cookie is
     /// valid; a zeroed or hand-rolled def is rejected loudly.
     typedef struct m3WorldDef
@@ -18,8 +32,11 @@ extern "C"
         m3Vec3 gravity;
         int32_t bodyCapacity;
         int32_t shapeCapacity;
-        int32_t meshCapacity; // static triangle-mesh slots (24 KB each)
-        int32_t workerCount;  // twin worlds with different counts must hash equal
+        int32_t meshCapacity;         // static triangle-mesh slots (24 KB each)
+        int32_t workerCount;          // twin worlds with different counts must hash equal
+        m3EnqueueTaskFn* enqueueTask; // both null = serial (the default)
+        m3FinishTaskFn* finishTask;
+        void* userTaskContext;
         int32_t internalValue;
     } m3WorldDef;
 

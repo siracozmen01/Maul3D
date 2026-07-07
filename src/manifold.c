@@ -1838,13 +1838,14 @@ static void CollideMeshConvex(m3World* world, m3Manifold* fresh, int32_t meshSha
     }
 }
 
-m3Result m3UpdateContacts(m3World* world, const uint64_t* oldKeys, const m3Manifold* oldManifolds,
-                          int32_t oldCount)
+void m3UpdateContactsRange(m3World* world, int32_t start, int32_t end, const uint64_t* oldKeys,
+                           const m3Manifold* oldManifolds, int32_t oldCount)
 {
     // Rebuild manifolds in pair order, carrying impulses forward by
     // feature id from the caller's stash. The old keys are sorted
-    // (canonical order), so the lookup is a binary search.
-    for (int32_t i = 0; i < world->pairCount; ++i)
+    // (canonical order), so the lookup is a binary search. Each pair
+    // writes ONLY manifolds[i]: the range is safe under any split.
+    for (int32_t i = start; i < end; ++i)
     {
         uint64_t key = world->pairKeys[i];
         int32_t shapeA = (int32_t)(key >> 32);
@@ -2355,6 +2356,38 @@ m3Result m3UpdateContacts(m3World* world, const uint64_t* oldKeys, const m3Manif
             }
         }
         world->manifolds[i] = fresh;
+    }
+}
+
+// The task-function shim: the host calls back into the range worker.
+typedef struct m3ContactTaskContext
+{
+    m3World* world;
+    const uint64_t* oldKeys;
+    const m3Manifold* oldManifolds;
+    int32_t oldCount;
+} m3ContactTaskContext;
+
+static void ContactTask(int32_t startIndex, int32_t endIndex, void* taskContext)
+{
+    m3ContactTaskContext* ctx = (m3ContactTaskContext*)taskContext;
+    m3UpdateContactsRange(ctx->world, startIndex, endIndex, ctx->oldKeys, ctx->oldManifolds,
+                          ctx->oldCount);
+}
+
+m3Result m3UpdateContacts(m3World* world, const uint64_t* oldKeys, const m3Manifold* oldManifolds,
+                          int32_t oldCount)
+{
+    if (world->enqueueTask != NULL && world->pairCount > 1)
+    {
+        m3ContactTaskContext ctx = {world, oldKeys, oldManifolds, oldCount};
+        void* task =
+            world->enqueueTask(ContactTask, world->pairCount, 16, &ctx, world->userTaskContext);
+        world->finishTask(task, world->userTaskContext);
+    }
+    else
+    {
+        m3UpdateContactsRange(world, 0, world->pairCount, oldKeys, oldManifolds, oldCount);
     }
     return m3_success;
 }

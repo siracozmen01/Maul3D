@@ -31,8 +31,10 @@ endif()
 
 enable_testing()
 
+find_package(Threads REQUIRED)
+
 add_executable(test_determinism test/test_determinism.c)
-target_link_libraries(test_determinism PRIVATE maul3d)
+target_link_libraries(test_determinism PRIVATE maul3d Threads::Threads)
 maul3d_apply_flags(test_determinism)
 add_test(NAME determinism COMMAND test_determinism)
 
