@@ -118,11 +118,117 @@ m3Result m3UpdateContacts(m3World* world, const uint64_t* oldKeys, const m3Manif
         uint8_t typeB = world->shapeType[shapeB];
 
         m3Manifold fresh;
-        if (typeA == (uint8_t)m3_hullShape || typeB == (uint8_t)m3_hullShape)
+        int planePair = typeA == (uint8_t)m3_planeShape || typeB == (uint8_t)m3_planeShape;
+        int hullPair = typeA == (uint8_t)m3_hullShape || typeB == (uint8_t)m3_hullShape;
+        if (planePair && hullPair)
         {
-            // Hull contact generation lands with GJK (2b-4) and SAT
-            // (2b-5); until then a hull pair carries no manifold. The
-            // staged gap is documented here, never silent elsewhere.
+            // Plane versus hull (2b-5a): every hull vertex below the
+            // margin becomes a candidate; the four deepest survive
+            // (ties break on the lower vertex index) and emit in
+            // ascending vertex order, the canonical point order.
+            // Feature id = vertex index, so the carry follows each
+            // corner across rebuilds.
+            memset(&fresh, 0, sizeof(fresh));
+            int32_t planeShape = typeA == (uint8_t)m3_planeShape ? shapeA : shapeB;
+            int32_t hullShape = planeShape == shapeA ? shapeB : shapeA;
+            const m3HullData* hull = &world->hullData[world->shapeHullIndex[hullShape]];
+            int32_t planeBody = world->shapeBody[planeShape];
+            int32_t hullBody = world->shapeBody[hullShape];
+            const m3Transform* xf = &world->transforms[hullBody];
+            m3Vec3 n = world->shapeGeom[planeShape].v;
+            m3real offset = world->shapeGeom[planeShape].s;
+
+            int32_t candIndex[M3_HULL_MAX_VERTS];
+            m3real candSep[M3_HULL_MAX_VERTS];
+            double candW[M3_HULL_MAX_VERTS][3];
+            int32_t candCount = 0;
+            for (int32_t v = 0; v < hull->vertexCount; ++v)
+            {
+                m3Vec3 r = m3RotateVec3(xf->q, hull->vertices[v]);
+                double wx = xf->p.x + (double)r.x;
+                double wy = xf->p.y + (double)r.y;
+                double wz = xf->p.z + (double)r.z;
+                double sep =
+                    (double)n.x * wx + (double)n.y * wy + (double)n.z * wz - (double)offset;
+                if ((m3real)sep < M3_SPECULATIVE_DISTANCE)
+                {
+                    candIndex[candCount] = v;
+                    candSep[candCount] = (m3real)sep;
+                    candW[candCount][0] = wx;
+                    candW[candCount][1] = wy;
+                    candW[candCount][2] = wz;
+                    candCount += 1;
+                }
+            }
+            // Keep the four deepest (selection by min separation, ties
+            // to the lower vertex index), then emit in ascending
+            // vertex-index order.
+            int32_t kept[M3_MANIFOLD_MAX_POINTS];
+            int32_t keptCount = 0;
+            uint8_t used[M3_HULL_MAX_VERTS];
+            memset(used, 0, sizeof(used));
+            int32_t want = candCount < M3_MANIFOLD_MAX_POINTS ? candCount : M3_MANIFOLD_MAX_POINTS;
+            for (int32_t k = 0; k < want; ++k)
+            {
+                int32_t best = -1;
+                for (int32_t c = 0; c < candCount; ++c)
+                {
+                    if (used[c])
+                    {
+                        continue;
+                    }
+                    if (best < 0 || candSep[c] < candSep[best] ||
+                        (candSep[c] == candSep[best] && candIndex[c] < candIndex[best]))
+                    {
+                        best = c;
+                    }
+                }
+                used[best] = 1;
+                kept[keptCount++] = best;
+            }
+            // Ascending vertex index among the kept (canonical).
+            for (int32_t a = 0; a < keptCount; ++a)
+            {
+                for (int32_t b = a + 1; b < keptCount; ++b)
+                {
+                    if (candIndex[kept[b]] < candIndex[kept[a]])
+                    {
+                        int32_t tmp = kept[a];
+                        kept[a] = kept[b];
+                        kept[b] = tmp;
+                    }
+                }
+            }
+            fresh.normal = n; // plane (A) toward hull (B)
+            fresh.pointCount = keptCount;
+            for (int32_t k = 0; k < keptCount; ++k)
+            {
+                int32_t c = kept[k];
+                double sepD = (double)candSep[c];
+                double px = candW[c][0] - (double)n.x * sepD;
+                double py = candW[c][1] - (double)n.y * sepD;
+                double pz = candW[c][2] - (double)n.z * sepD;
+                fresh.points[k].anchorA = FromCom(world, planeBody, px, py, pz);
+                fresh.points[k].anchorB =
+                    FromCom(world, hullBody, candW[c][0], candW[c][1], candW[c][2]);
+                fresh.points[k].separation = candSep[c];
+                fresh.points[k].id = (uint16_t)candIndex[c];
+            }
+            if (planeShape != shapeA)
+            {
+                fresh.normal = m3Neg3(fresh.normal);
+                for (int32_t k = 0; k < keptCount; ++k)
+                {
+                    m3Vec3 tmp = fresh.points[k].anchorA;
+                    fresh.points[k].anchorA = fresh.points[k].anchorB;
+                    fresh.points[k].anchorB = tmp;
+                }
+            }
+        }
+        else if (hullPair)
+        {
+            // Hull versus hull and hull versus sphere land with the
+            // SAT (2b-5b); until then these pairs carry no manifold.
             memset(&fresh, 0, sizeof(fresh));
         }
         else if (typeA == (uint8_t)m3_planeShape || typeB == (uint8_t)m3_planeShape)

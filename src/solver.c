@@ -45,31 +45,37 @@ static m3Softness MakeSoft(m3real hertz, m3real zeta, m3real h)
     return (m3Softness){omega / a1, a2 * a3, a3};
 }
 
-typedef struct m3ContactConstraint
+typedef struct m3ConstraintPoint
 {
-    int32_t bodyA;
-    int32_t bodyB;
-    int32_t manifoldIndex;
-    m3Vec3 normal;
-    m3Vec3 t1;
-    m3Vec3 t2;
-    m3Vec3 rA; // prepare-time anchors from each body's center
+    m3Vec3 rA; // prepare-time anchors from each body's COM
     m3Vec3 rB;
     m3real baseSeparation; // separation minus dot(rB - rA, n) at prepare
     m3real normalMass;
     m3real tangentMass1;
     m3real tangentMass2;
-    m3real friction;
-    m3real restitution;
     m3real relativeVelocity; // vn at prepare, for the restitution pass
     m3real normalImpulse;
     m3real tangentImpulse1;
     m3real tangentImpulse2;
+} m3ConstraintPoint;
+
+typedef struct m3ContactConstraint
+{
+    int32_t bodyA;
+    int32_t bodyB;
+    int32_t manifoldIndex;
+    int32_t pointCount;
+    m3Vec3 normal;
+    m3Vec3 t1;
+    m3Vec3 t2;
+    m3real friction;
+    m3real restitution;
     m3real invMassA;
     m3real invMassB;
     m3Mat3 invIA; // world-space inverse inertia, frozen at prepare
     m3Mat3 invIB;
     m3Softness softness;
+    m3ConstraintPoint points[M3_MANIFOLD_MAX_POINTS];
 } m3ContactConstraint;
 
 static m3Vec3 VelocityAt(const m3World* world, int32_t body, m3Vec3 arm)
@@ -98,16 +104,15 @@ static void ApplyImpulse(m3World* world, const m3ContactConstraint* c, m3Vec3 im
     }
 }
 
-// Effective mass along one direction with scalar (isotropic) inertia.
-static m3real EffectiveMass(const m3ContactConstraint* c, m3Vec3 dir)
+// Effective mass along one direction for one contact point's arms.
+static m3real EffectiveMass(const m3ContactConstraint* c, m3Vec3 rA, m3Vec3 rB, m3Vec3 dir)
 {
-    m3Vec3 arm1 = m3Cross3(c->rA, dir);
-    m3Vec3 arm2 = m3Cross3(c->rB, dir);
+    m3Vec3 arm1 = m3Cross3(rA, dir);
+    m3Vec3 arm2 = m3Cross3(rB, dir);
     m3real k = c->invMassA + c->invMassB + m3Dot3(arm1, m3MulMV3(c->invIA, arm1)) +
                m3Dot3(arm2, m3MulMV3(c->invIB, arm2));
     return k > 0.0f ? 1.0f / k : 0.0f;
 }
-
 // I_w^-1 = R I_l^-1 R^T, built by applying the operator to the world
 // basis vectors. Frozen at prepare like the anchors (reference
 // discipline); the per-substep refresh arrives with the gyroscopic
@@ -152,47 +157,53 @@ static int32_t PrepareContacts(m3World* world, m3ContactConstraint* constraints,
         c->bodyA = bodyA;
         c->bodyB = bodyB;
         c->manifoldIndex = i;
+        c->pointCount = manifold->pointCount;
         c->normal = manifold->normal;
         m3MakeTangentBasis(c->normal, &c->t1, &c->t2);
-        c->rA = manifold->points[0].anchorA;
-        c->rB = manifold->points[0].anchorB;
-        c->baseSeparation =
-            manifold->points[0].separation - (m3Dot3(c->rB, c->normal) - m3Dot3(c->rA, c->normal));
         c->invMassA = world->types[bodyA] == (uint8_t)m3_dynamicBody ? world->invMass[bodyA] : 0.0f;
         c->invMassB = world->types[bodyB] == (uint8_t)m3_dynamicBody ? world->invMass[bodyB] : 0.0f;
         c->invIA = WorldInvInertia(world, bodyA);
         c->invIB = WorldInvInertia(world, bodyB);
-        c->normalMass = EffectiveMass(c, c->normal);
-        c->tangentMass1 = EffectiveMass(c, c->t1);
-        c->tangentMass2 = EffectiveMass(c, c->t2);
         // Reference mixing: friction geometric, restitution maximum.
         c->friction = sqrtf(world->shapeFriction[shapeA] * world->shapeFriction[shapeB]);
-        m3real restA = world->shapeRestitution[shapeA];
-        m3real restB = world->shapeRestitution[shapeB];
-        c->restitution = m3MaxF(restA, restB);
-        c->relativeVelocity = m3Dot3(
-            m3Sub3(VelocityAt(world, bodyB, c->rB), VelocityAt(world, bodyA, c->rA)), c->normal);
-        c->normalImpulse = manifold->points[0].normalImpulse;
-        c->tangentImpulse1 = manifold->points[0].tangentImpulse1;
-        c->tangentImpulse2 = manifold->points[0].tangentImpulse2;
-        // Contacts against a static body run stiffer (reference).
+        c->restitution = m3MaxF(world->shapeRestitution[shapeA], world->shapeRestitution[shapeB]);
         c->softness = (c->invMassA == 0.0f || c->invMassB == 0.0f) ? staticSoft : soft;
+
+        for (int32_t k = 0; k < c->pointCount; ++k)
+        {
+            m3ConstraintPoint* cp = &c->points[k];
+            cp->rA = manifold->points[k].anchorA;
+            cp->rB = manifold->points[k].anchorB;
+            cp->baseSeparation = manifold->points[k].separation -
+                                 (m3Dot3(cp->rB, c->normal) - m3Dot3(cp->rA, c->normal));
+            cp->normalMass = EffectiveMass(c, cp->rA, cp->rB, c->normal);
+            cp->tangentMass1 = EffectiveMass(c, cp->rA, cp->rB, c->t1);
+            cp->tangentMass2 = EffectiveMass(c, cp->rA, cp->rB, c->t2);
+            cp->relativeVelocity =
+                m3Dot3(m3Sub3(VelocityAt(world, bodyB, cp->rB), VelocityAt(world, bodyA, cp->rA)),
+                       c->normal);
+            cp->normalImpulse = manifold->points[k].normalImpulse;
+            cp->tangentImpulse1 = manifold->points[k].tangentImpulse1;
+            cp->tangentImpulse2 = manifold->points[k].tangentImpulse2;
+        }
     }
     return count;
 }
-
 static void WarmStart(m3World* world, m3ContactConstraint* constraints, int32_t count)
 {
     for (int32_t i = 0; i < count; ++i)
     {
         m3ContactConstraint* c = constraints + i;
-        m3Vec3 impulse = m3Add3(
-            m3MulSV3(c->normalImpulse, c->normal),
-            m3Add3(m3MulSV3(c->tangentImpulse1, c->t1), m3MulSV3(c->tangentImpulse2, c->t2)));
-        ApplyImpulse(world, c, impulse, c->rA, c->rB);
+        for (int32_t k = 0; k < c->pointCount; ++k)
+        {
+            m3ConstraintPoint* cp = &c->points[k];
+            m3Vec3 impulse = m3Add3(
+                m3MulSV3(cp->normalImpulse, c->normal),
+                m3Add3(m3MulSV3(cp->tangentImpulse1, c->t1), m3MulSV3(cp->tangentImpulse2, c->t2)));
+            ApplyImpulse(world, c, impulse, cp->rA, cp->rB);
+        }
     }
 }
-
 static void SolveContacts(m3World* world, m3ContactConstraint* constraints, int32_t count,
                           const m3Vec3* deltaPos, const m3Quat* deltaRot, m3real invH, bool useBias)
 {
@@ -200,95 +211,110 @@ static void SolveContacts(m3World* world, m3ContactConstraint* constraints, int3
     {
         m3ContactConstraint* c = constraints + i;
 
-        // Current anchors: prepare-time anchors re-rotated by the
-        // substep deltas, used ONLY to measure separation drift; the
-        // Jacobian keeps the fixed anchors (reference discipline).
-        m3Vec3 rsA = m3RotateVec3(deltaRot[c->bodyA], c->rA);
-        m3Vec3 rsB = m3RotateVec3(deltaRot[c->bodyB], c->rB);
-        m3Vec3 ds = m3Add3(m3Sub3(deltaPos[c->bodyB], deltaPos[c->bodyA]), m3Sub3(rsB, rsA));
-        m3real s = c->baseSeparation + m3Dot3(ds, c->normal);
-
-        m3real bias = 0.0f;
-        m3real massScale = 1.0f;
-        m3real impulseScale = 0.0f;
-        if (s > 0.0f)
+        // Normal rows first, then friction rows, per the reference
+        // schedule. The Jacobian keeps the fixed prepare-time anchors;
+        // rotated anchors only measure the separation drift.
+        for (int32_t k = 0; k < c->pointCount; ++k)
         {
-            bias = s * invH; // speculative: prevent crossing
-        }
-        else if (useBias)
-        {
-            bias = m3MaxF(c->softness.biasRate * s, -M3_CONTACT_PUSH_MAX_SPEED);
-            massScale = c->softness.massScale;
-            impulseScale = c->softness.impulseScale;
+            m3ConstraintPoint* cp = &c->points[k];
+            m3Vec3 rsA = m3RotateVec3(deltaRot[c->bodyA], cp->rA);
+            m3Vec3 rsB = m3RotateVec3(deltaRot[c->bodyB], cp->rB);
+            m3Vec3 ds = m3Add3(m3Sub3(deltaPos[c->bodyB], deltaPos[c->bodyA]), m3Sub3(rsB, rsA));
+            m3real s = cp->baseSeparation + m3Dot3(ds, c->normal);
+
+            m3real bias = 0.0f;
+            m3real massScale = 1.0f;
+            m3real impulseScale = 0.0f;
+            if (s > 0.0f)
+            {
+                bias = s * invH; // speculative: prevent crossing
+            }
+            else if (useBias)
+            {
+                bias = m3MaxF(c->softness.biasRate * s, -M3_CONTACT_PUSH_MAX_SPEED);
+                massScale = c->softness.massScale;
+                impulseScale = c->softness.impulseScale;
+            }
+
+            m3real vn = m3Dot3(
+                m3Sub3(VelocityAt(world, c->bodyB, cp->rB), VelocityAt(world, c->bodyA, cp->rA)),
+                c->normal);
+            m3real impulse =
+                -cp->normalMass * massScale * (vn + bias) - impulseScale * cp->normalImpulse;
+            m3real newImpulse = m3MaxF(cp->normalImpulse + impulse, 0.0f);
+            impulse = newImpulse - cp->normalImpulse;
+            cp->normalImpulse = newImpulse;
+            ApplyImpulse(world, c, m3MulSV3(impulse, c->normal), cp->rA, cp->rB);
         }
 
-        m3real vn =
-            m3Dot3(m3Sub3(VelocityAt(world, c->bodyB, c->rB), VelocityAt(world, c->bodyA, c->rA)),
-                   c->normal);
-        m3real impulse = -c->normalMass * massScale * (vn + bias) - impulseScale * c->normalImpulse;
-        m3real newImpulse = m3MaxF(c->normalImpulse + impulse, 0.0f);
-        impulse = newImpulse - c->normalImpulse;
-        c->normalImpulse = newImpulse;
-        ApplyImpulse(world, c, m3MulSV3(impulse, c->normal), c->rA, c->rB);
-
-        // Friction in both passes (reference schedule), clamped to the
-        // Coulomb disc by scaling the accumulated tangent vector.
-        m3Vec3 vrel =
-            m3Sub3(VelocityAt(world, c->bodyB, c->rB), VelocityAt(world, c->bodyA, c->rA));
-        m3real vt1 = m3Dot3(vrel, c->t1);
-        m3real vt2 = m3Dot3(vrel, c->t2);
-        m3real f1 = c->tangentImpulse1 - c->tangentMass1 * vt1;
-        m3real f2 = c->tangentImpulse2 - c->tangentMass2 * vt2;
-        m3real maxFriction = c->friction * c->normalImpulse;
-        m3real mag2 = f1 * f1 + f2 * f2;
-        if (mag2 > maxFriction * maxFriction)
+        for (int32_t k = 0; k < c->pointCount; ++k)
         {
-            m3real mag = sqrtf(mag2);
-            m3real scale = mag > 0.0f ? maxFriction / mag : 0.0f;
-            f1 *= scale;
-            f2 *= scale;
+            m3ConstraintPoint* cp = &c->points[k];
+            m3Vec3 vrel =
+                m3Sub3(VelocityAt(world, c->bodyB, cp->rB), VelocityAt(world, c->bodyA, cp->rA));
+            m3real vt1 = m3Dot3(vrel, c->t1);
+            m3real vt2 = m3Dot3(vrel, c->t2);
+            m3real f1 = cp->tangentImpulse1 - cp->tangentMass1 * vt1;
+            m3real f2 = cp->tangentImpulse2 - cp->tangentMass2 * vt2;
+            m3real maxFriction = c->friction * cp->normalImpulse;
+            m3real mag2 = f1 * f1 + f2 * f2;
+            if (mag2 > maxFriction * maxFriction)
+            {
+                m3real mag = sqrtf(mag2);
+                m3real scale = mag > 0.0f ? maxFriction / mag : 0.0f;
+                f1 *= scale;
+                f2 *= scale;
+            }
+            m3real d1 = f1 - cp->tangentImpulse1;
+            m3real d2 = f2 - cp->tangentImpulse2;
+            cp->tangentImpulse1 = f1;
+            cp->tangentImpulse2 = f2;
+            ApplyImpulse(world, c, m3Add3(m3MulSV3(d1, c->t1), m3MulSV3(d2, c->t2)), cp->rA,
+                         cp->rB);
         }
-        m3real d1 = f1 - c->tangentImpulse1;
-        m3real d2 = f2 - c->tangentImpulse2;
-        c->tangentImpulse1 = f1;
-        c->tangentImpulse2 = f2;
-        ApplyImpulse(world, c, m3Add3(m3MulSV3(d1, c->t1), m3MulSV3(d2, c->t2)), c->rA, c->rB);
     }
 }
-
 static void Restitution(m3World* world, m3ContactConstraint* constraints, int32_t count)
 {
     for (int32_t i = 0; i < count; ++i)
     {
         m3ContactConstraint* c = constraints + i;
-        if (c->restitution == 0.0f || c->relativeVelocity > -M3_RESTITUTION_THRESHOLD ||
-            c->normalImpulse == 0.0f)
+        if (c->restitution == 0.0f)
         {
             continue;
         }
-        m3real vn =
-            m3Dot3(m3Sub3(VelocityAt(world, c->bodyB, c->rB), VelocityAt(world, c->bodyA, c->rA)),
-                   c->normal);
-        m3real impulse = -c->normalMass * (vn + c->restitution * c->relativeVelocity);
-        m3real newImpulse = m3MaxF(c->normalImpulse + impulse, 0.0f);
-        impulse = newImpulse - c->normalImpulse;
-        c->normalImpulse = newImpulse;
-        ApplyImpulse(world, c, m3MulSV3(impulse, c->normal), c->rA, c->rB);
+        for (int32_t k = 0; k < c->pointCount; ++k)
+        {
+            m3ConstraintPoint* cp = &c->points[k];
+            if (cp->relativeVelocity > -M3_RESTITUTION_THRESHOLD || cp->normalImpulse == 0.0f)
+            {
+                continue;
+            }
+            m3real vn = m3Dot3(
+                m3Sub3(VelocityAt(world, c->bodyB, cp->rB), VelocityAt(world, c->bodyA, cp->rA)),
+                c->normal);
+            m3real impulse = -cp->normalMass * (vn + c->restitution * cp->relativeVelocity);
+            m3real newImpulse = m3MaxF(cp->normalImpulse + impulse, 0.0f);
+            impulse = newImpulse - cp->normalImpulse;
+            cp->normalImpulse = newImpulse;
+            ApplyImpulse(world, c, m3MulSV3(impulse, c->normal), cp->rA, cp->rB);
+        }
     }
 }
-
 static void StoreImpulses(m3World* world, m3ContactConstraint* constraints, int32_t count)
 {
     for (int32_t i = 0; i < count; ++i)
     {
         m3ContactConstraint* c = constraints + i;
-        m3ManifoldPoint* point = &world->manifolds[c->manifoldIndex].points[0];
-        point->normalImpulse = c->normalImpulse;
-        point->tangentImpulse1 = c->tangentImpulse1;
-        point->tangentImpulse2 = c->tangentImpulse2;
+        m3Manifold* manifold = &world->manifolds[c->manifoldIndex];
+        for (int32_t k = 0; k < c->pointCount; ++k)
+        {
+            manifold->points[k].normalImpulse = c->points[k].normalImpulse;
+            manifold->points[k].tangentImpulse1 = c->points[k].tangentImpulse1;
+            manifold->points[k].tangentImpulse2 = c->points[k].tangentImpulse2;
+        }
     }
 }
-
 void m3StepInternal(m3World* world, float dt, int32_t substeps)
 {
     m3StackReset(&world->scratch);

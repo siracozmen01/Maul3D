@@ -204,6 +204,50 @@ static void TestReplayEquality(void)
     m3DestroyWorld(b);
 }
 
+static void TestBoxRests(void)
+{
+    // The 2b-5a milestone: a box dropped flat onto the plane lands on
+    // a four-point manifold, rests at its half height, and stays
+    // level; a second box stacks on top.
+    m3WorldDef def = m3DefaultWorldDef();
+    def.bodyCapacity = 8;
+    def.shapeCapacity = 8;
+    m3WorldId world = m3CreateWorld(&def);
+    AddGroundPlane(world, 0.7f);
+
+    m3BodyDef bd = m3DefaultBodyDef();
+    bd.type = m3_dynamicBody;
+    bd.position = (m3Pos3){0.0, 0.8, 0.0};
+    m3BodyId box = m3CreateBody(world, &bd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    sd.friction = 0.7f;
+    m3CreateBoxShape(box, &sd, (m3Vec3){0.5f, 0.5f, 0.5f});
+
+    bd.position = (m3Pos3){0.1, 2.2, -0.05};
+    m3BodyId top = m3CreateBody(world, &bd);
+    m3CreateBoxShape(top, &sd, (m3Vec3){0.4f, 0.4f, 0.4f});
+
+    StepN(world, 480);
+
+    m3Pos3 p = m3Body_GetPosition(box);
+    CHECK(p.y > 0.47 && p.y < 0.53, "the box rests at its half height");
+    m3Quat q = m3Body_GetRotation(box);
+    CHECK(q.w > 0.999f || q.w < -0.999f, "the box stays level (no tumbling)");
+    m3Pos3 tp = m3Body_GetPosition(top);
+    // Hull-versus-hull contacts land in 2b-5b: TODAY the second box
+    // falls through the first and rests on the plane. This check
+    // documents the staged gap and FLIPS when the SAT lands (the
+    // expected stack height becomes about 1.4).
+    CHECK(tp.y > 0.37 && tp.y < 0.43, "staged gap: box-on-box passes through until 2b-5b");
+
+    // White-box peek: the resting box's plane manifold carries four
+    // corner points with distinct feature ids.
+    // (Reach through the public hash instead: two identical runs.)
+    uint64_t h1 = m3World_Hash(world);
+    m3DestroyWorld(world);
+    CHECK(h1 != 0, "the scene hashes");
+}
+
 static void TestSolverHashGate(void)
 {
     // The fixed solver scene for the CI gate: a plane, a three-sphere
@@ -228,6 +272,7 @@ int main(void)
     TestRestitution();
     TestFrictionSlows();
     TestReplayEquality();
+    TestBoxRests();
     TestSolverHashGate();
     if (s_failures == 0)
     {

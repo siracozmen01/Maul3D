@@ -22,7 +22,7 @@
 // integration order, constants). Part of the snapshot config hash, so
 // a snapshot from a different behavior revision is refused loudly
 // instead of silently diverging (the Jolt friction-model lesson).
-#define M3_SOLVER_REV 2 // rev 2: full inertia tensor and center of mass
+#define M3_SOLVER_REV 3 // rev 3: multi-point manifolds and hull contacts
 
 // Def cookies: a def that did not come from its m3Default*Def factory
 // is rejected loudly (the Maul2D pattern).
@@ -100,16 +100,19 @@ typedef struct m3ManifoldPoint
 
 _Static_assert(sizeof(m3ManifoldPoint) == 44, "manifold point must be padding-free");
 
-// Sphere and plane contacts have at most one point; the array widens
-// in 2b (hulls) with a snapshot format bump.
+// Up to four contact points (2b-5): a hull face on a plane or a face
+// pair needs four; spheres use one. Feature ids identify points across
+// rebuilds for the warm-start carry.
+#define M3_MANIFOLD_MAX_POINTS 4
+
 typedef struct m3Manifold
 {
     m3Vec3 normal; // from shape A to shape B, world frame
     int32_t pointCount;
-    m3ManifoldPoint points[1];
+    m3ManifoldPoint points[M3_MANIFOLD_MAX_POINTS];
 } m3Manifold;
 
-_Static_assert(sizeof(m3Manifold) == 60, "manifold must be padding-free");
+_Static_assert(sizeof(m3Manifold) == 192, "manifold must be padding-free");
 
 // Journal payload for shape creation (replay re-derives mass).
 typedef struct m3CreateShapeOp
