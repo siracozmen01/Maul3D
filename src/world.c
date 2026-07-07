@@ -398,12 +398,42 @@ bool m3World_JournalReplay(m3WorldId worldId, const void* data, int32_t size)
             {
                 return false;
             }
-            int32_t index =
-                m3CreateShapeInternal(world, bodyIndex, record.type, &record.geom, &record.def);
+            int32_t index = m3CreateShapeInternal(world, bodyIndex, record.type, &record.geom,
+                                                  &record.def, NULL);
             if (index < 0 || index + 1 != record.expected.index1 ||
                 world->shapePool.generations[index] != record.expected.generation)
             {
                 return false; // id determinism holds for shapes too
+            }
+            break;
+        }
+        case m3_opCreateHullShape:
+        {
+            m3CreateHullShapeOp record;
+            if (bytes != (int32_t)sizeof(record))
+            {
+                return false;
+            }
+            memcpy(&record, payload, sizeof(record));
+            record.body.world0 = world->worldIndex0;
+            int32_t bodyIndex = m3BodySlot(world, record.body);
+            if (bodyIndex < 0)
+            {
+                return false;
+            }
+            m3HullData rebuilt;
+            if (!m3ComputeHull(record.points, record.count, &rebuilt))
+            {
+                return false; // the recipe must rebuild
+            }
+            m3ShapeGeom geom;
+            memset(&geom, 0, sizeof(geom));
+            int32_t index = m3CreateShapeInternal(world, bodyIndex, (uint8_t)m3_hullShape, &geom,
+                                                  &record.def, &rebuilt);
+            if (index < 0 || index + 1 != record.expected.index1 ||
+                world->shapePool.generations[index] != record.expected.generation)
+            {
+                return false; // id determinism holds for hull shapes too
             }
             break;
         }

@@ -255,8 +255,8 @@ m3Manifold m3CollideHulls(const m3HullData* hullA, const m3HullData* hullB, m3Qu
         manifold.points[0].anchorA = cA; // frame A anchors; caller re-bases
         manifold.points[0].anchorB = cB;
         manifold.points[0].separation = edge.separation;
-        manifold.points[0].id =
-            (uint16_t)(0x8000u | ((uint32_t)edge.indexA << 6) | (uint32_t)edge.indexB);
+        manifold.points[0].id = (uint16_t)(0x8000u | (((uint32_t)edge.indexA >> 1) << 7) |
+                                           ((uint32_t)edge.indexB >> 1));
         return manifold;
     }
 

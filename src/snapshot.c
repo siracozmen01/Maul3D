@@ -22,7 +22,7 @@
 #endif
 
 #define M3_SNAPSHOT_MAGIC   0x4D33534Eu // 'M3SN'
-#define M3_SNAPSHOT_VERSION 8u          // v8: capsules, forward inertia
+#define M3_SNAPSHOT_VERSION 9u          // v9: QuickHull-sized hull blocks
 
 // The math types are canonical field data only because they are
 // provably padding-free; a change here is a format version bump.

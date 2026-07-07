@@ -11,8 +11,6 @@
 
 #include <string.h>
 
-static void BuildHalfEdges(m3HullData* hull);
-
 void m3BuildBoxHull(m3HullData* out, m3Vec3 halfExtents)
 {
     memset(out, 0, sizeof(*out));
@@ -68,13 +66,13 @@ void m3BuildBoxHull(m3HullData* out, m3Vec3 halfExtents)
     out->unitInertiaCom.cy.y = (m / 3.0f) * (hx * hx + hz * hz);
     out->unitInertiaCom.cz.z = (m / 3.0f) * (hx * hx + hy * hy);
 
-    BuildHalfEdges(out);
+    m3HullBuildHalfEdges(out);
 }
 
 // Build the half-edge adjacency and the centroid from the face loops.
-// Generic over any loop-consistent convex hull (QuickHull reuses it).
-// Twins are paired at 2k and 2k+1 by construction.
-static void BuildHalfEdges(m3HullData* hull)
+// Generic over any loop-consistent convex hull (QuickHull finishes
+// through this too). Twins are paired at 2k and 2k+1 by construction.
+void m3HullBuildHalfEdges(m3HullData* hull)
 {
     // Collect one half edge per (face, loop position), paired with its
     // twin as it is discovered. Directed edge key = origin * 256 + end.

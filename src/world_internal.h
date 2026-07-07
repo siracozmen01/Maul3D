@@ -22,7 +22,7 @@
 // integration order, constants). Part of the snapshot config hash, so
 // a snapshot from a different behavior revision is refused loudly
 // instead of silently diverging (the Jolt friction-model lesson).
-#define M3_SOLVER_REV 5 // rev 5: exact deep-overlap recovery
+#define M3_SOLVER_REV 6 // rev 6: hull caps grew, edge ids repacked
 
 // Def cookies: a def that did not come from its m3Default*Def factory
 // is rejected loudly (the Maul2D pattern).
@@ -45,16 +45,21 @@ typedef enum m3Op
     m3_opSetLinearVelocity = 4,
     m3_opSetAngularVelocity = 5,
     m3_opCreateShape = 6,
+    m3_opCreateHullShape = 7, // carries the input points (the recipe)
 } m3Op;
 
 // Immutable interned hull data (lifetime 3): vertices, face planes,
 // and face vertex loops for the SAT (2b-5), plus unit-density mass
 // properties. Content-deduplicated on intern; shapes reference by
 // index and refcount. Fixed arrays keep it one snapshot block.
+// Euler-consistent worst case for 24 vertices: a simplicial hull has
+// F = 2V - 4 = 44 faces and E = 3V - 6 = 66 edges (132 half edges).
+// Sized so no valid 24-vertex hull can ever overflow the fixed block.
 #define M3_HULL_MAX_VERTS        24
-#define M3_HULL_MAX_FACES        16
-#define M3_HULL_MAX_FACE_INDICES 64
-#define M3_HULL_MAX_HALF_EDGES   48
+#define M3_HULL_MAX_FACES        44
+#define M3_HULL_MAX_FACE_INDICES 132
+#define M3_HULL_MAX_HALF_EDGES   132
+#define M3_HULL_MAX_INPUT        64 // QuickHull input point cap
 
 // Half-edge adjacency (the Gauss-map edge query reads the two faces
 // flanking every edge). Twins sit at 2k and 2k+1 by construction.
@@ -85,7 +90,7 @@ typedef struct m3HullData
     m3Vec3 center; // vertex centroid, orients the edge separation
 } m3HullData;
 
-_Static_assert(sizeof(m3HullData) == 912, "hull data must be padding-free");
+_Static_assert(sizeof(m3HullData) == 1820, "hull data must be padding-free");
 
 // Geometry is one padding-free 32-byte record per shape, interpreted
 // by type: sphere {v=center, s=radius}, plane {v=normal, s=offset},
@@ -143,6 +148,18 @@ typedef struct m3CreateShapeOp
     uint8_t type;
     uint8_t pad[7];
 } m3CreateShapeOp;
+
+// Journal payload for general hull shapes: the raw input points are
+// the recipe; replay rebuilds through the same QuickHull, so the
+// derived hull data never has to ride the journal.
+typedef struct m3CreateHullShapeOp
+{
+    m3ShapeDef def;
+    m3BodyId body;
+    m3ShapeId expected;
+    int32_t count;
+    m3Vec3 points[M3_HULL_MAX_INPUT];
+} m3CreateHullShapeOp;
 
 typedef struct m3World
 {
@@ -240,10 +257,26 @@ int32_t m3ShapeSlot(const m3World* world, m3ShapeId shapeId);
 // Analytic box hull (canonical vertex and face order) and the intern
 // machinery. Interning dedupes by content in ascending slot order.
 void m3BuildBoxHull(m3HullData* out, m3Vec3 halfExtents);
+
+// Half-edge adjacency from the face loops (twins at 2k and 2k+1 by
+// construction, the invariant the Gauss-map edge query leans on).
+// One law for every hull source: the box builder and QuickHull both
+// finish through this.
+void m3HullBuildHalfEdges(m3HullData* hull);
+
+// QuickHull (2b-3b), adapted from the reference hull.c (Erin Catto,
+// with portions contributed by Dirk Gregorius): builds the convex
+// hull of up to M3_HULL_MAX_INPUT points into the fixed m3HullData
+// block, faces merged coplanar, unit-density mass properties
+// integrated. Returns false loudly on degenerate input (fewer than
+// four points, coplanar clouds, non-finite coordinates) or if the
+// result exceeds the fixed caps.
+bool m3ComputeHull(const m3Vec3* points, int32_t count, m3HullData* out);
 int32_t m3InternHull(m3World* world, const m3HullData* data); // -1 = pool exhausted
 void m3ReleaseHull(m3World* world, int32_t hullIndex);
 int32_t m3CreateShapeInternal(m3World* world, int32_t bodyIndex, uint8_t type,
-                              const m3ShapeGeom* geom, const m3ShapeDef* def);
+                              const m3ShapeGeom* geom, const m3ShapeDef* def,
+                              const m3HullData* prebuilt);
 void m3DestroyShapeInternal(m3World* world, int32_t index);
 void m3RecomputeMass(m3World* world, int32_t bodyIndex);
 

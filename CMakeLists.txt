@@ -14,6 +14,7 @@ add_library(maul3d STATIC
     src/dynamic_tree.c
     src/hull.c
     src/manifold.c
+    src/quickhull.c
     src/math_functions.c
     src/shape.c
     src/snapshot.c
@@ -68,6 +69,12 @@ add_executable(test_solver test/test_solver.c)
 target_link_libraries(test_solver PRIVATE maul3d)
 maul3d_apply_flags(test_solver)
 add_test(NAME solver COMMAND test_solver)
+
+add_executable(test_quickhull test/test_quickhull.c)
+target_link_libraries(test_quickhull PRIVATE maul3d)
+target_include_directories(test_quickhull PRIVATE src)
+maul3d_apply_flags(test_quickhull)
+add_test(NAME quickhull COMMAND test_quickhull)
 
 add_executable(test_journal test/test_journal.c)
 target_link_libraries(test_journal PRIVATE maul3d)

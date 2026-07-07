@@ -79,6 +79,13 @@ extern "C"
     M3_API m3ShapeId m3CreateCapsuleShape(m3BodyId bodyId, const m3ShapeDef* def,
                                           const m3Capsule* capsule);
 
+    /// A convex hull built from a point cloud (QuickHull, coplanar
+    /// faces merged, mass integrated). Between 4 and 64 finite points;
+    /// degenerate clouds (coplanar, collinear) and hulls that exceed
+    /// the 24-vertex budget return the null id, loudly.
+    M3_API m3ShapeId m3CreateHullShape(m3BodyId bodyId, const m3ShapeDef* def, const m3Vec3* points,
+                                       int32_t count);
+
     M3_API bool m3Shape_IsValid(m3ShapeId shapeId);
 
     static const m3ShapeId m3_nullShapeId = {0, 0, 0};

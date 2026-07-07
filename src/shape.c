@@ -194,7 +194,8 @@ void m3RecomputeMass(m3World* world, int32_t bodyIndex)
 }
 
 int32_t m3CreateShapeInternal(m3World* world, int32_t bodyIndex, uint8_t type,
-                              const m3ShapeGeom* geom, const m3ShapeDef* def)
+                              const m3ShapeGeom* geom, const m3ShapeDef* def,
+                              const m3HullData* prebuilt)
 {
     int32_t index = m3IdPoolAlloc(&world->shapePool);
     if (index < 0)
@@ -215,11 +216,15 @@ int32_t m3CreateShapeInternal(m3World* world, int32_t bodyIndex, uint8_t type,
     world->shapeHullIndex[index] = -1;
     if (type == (uint8_t)m3_hullShape)
     {
-        // geom.v carries the box half extents (the journaled rebuild
-        // recipe); the interned data is derived, deterministic state.
+        // Boxes rebuild from geom.v (the journaled half extents);
+        // general hulls arrive prebuilt from QuickHull (their recipe
+        // rides the dedicated journal op instead).
         m3HullData data;
-        m3BuildBoxHull(&data, geom->v);
-        world->shapeHullIndex[index] = m3InternHull(world, &data);
+        if (prebuilt == NULL)
+        {
+            m3BuildBoxHull(&data, geom->v);
+        }
+        world->shapeHullIndex[index] = m3InternHull(world, prebuilt != NULL ? prebuilt : &data);
         if (world->shapeHullIndex[index] < 0)
         {
             world->bodyShapeHead[bodyIndex] = world->shapeNext[index];
@@ -301,7 +306,7 @@ static m3ShapeId CreateShapeCommon(m3BodyId bodyId, const m3ShapeDef* def, uint8
         // Contract, not invariant: bad input returns the null id.
         return m3_nullShapeId;
     }
-    int32_t index = m3CreateShapeInternal(world, bodyIndex, type, geom, def);
+    int32_t index = m3CreateShapeInternal(world, bodyIndex, type, geom, def, NULL);
     if (index < 0)
     {
         return m3_nullShapeId;
@@ -376,6 +381,44 @@ m3ShapeId m3CreateCapsuleShape(m3BodyId bodyId, const m3ShapeDef* def, const m3C
     geom.v2 = capsule->point2;
     geom.s2 = 0.0f;
     return CreateShapeCommon(bodyId, def, (uint8_t)m3_capsuleShape, &geom);
+}
+
+m3ShapeId m3CreateHullShape(m3BodyId bodyId, const m3ShapeDef* def, const m3Vec3* points,
+                            int32_t count)
+{
+    m3World* world = m3WorldFromIndex0(bodyId.world0);
+    int32_t bodyIndex = world != NULL ? m3BodySlot(world, bodyId) : -1;
+    if (bodyIndex < 0 || def == NULL || def->internalValue != M3_SHAPE_COOKIE)
+    {
+        return m3_nullShapeId;
+    }
+    m3HullData data;
+    if (!m3ComputeHull(points, count, &data))
+    {
+        // Degenerate cloud or over the caps: contract, null id.
+        return m3_nullShapeId;
+    }
+    m3ShapeGeom geom;
+    memset(&geom, 0, sizeof(geom));
+    int32_t index =
+        m3CreateShapeInternal(world, bodyIndex, (uint8_t)m3_hullShape, &geom, def, &data);
+    if (index < 0)
+    {
+        return m3_nullShapeId;
+    }
+    m3ShapeId id = {index + 1, world->worldIndex0, world->shapePool.generations[index]};
+    if (world->journalActive != 0)
+    {
+        m3CreateHullShapeOp record;
+        memset(&record, 0, sizeof(record));
+        record.def = *def;
+        record.body = bodyId;
+        record.expected = id;
+        record.count = count;
+        memcpy(record.points, points, (size_t)count * sizeof(m3Vec3));
+        m3JournalRecord(world, m3_opCreateHullShape, &record, (int32_t)sizeof(record));
+    }
+    return id;
 }
 
 m3ShapeId m3CreateBoxShape(m3BodyId bodyId, const m3ShapeDef* def, m3Vec3 halfExtents)

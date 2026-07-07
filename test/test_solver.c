@@ -559,6 +559,56 @@ static void TestDeepFuzzDeterminism(void)
     CHECK(hashes[0] == hashes[1], "the deep fuzz is bit-deterministic");
 }
 
+static void TestQuickHullRockRests(void)
+{
+    // The 2b-3b payoff: a QuickHull rock (an irregular octahedron)
+    // drops onto the plane, settles onto a face, and a journaled
+    // session containing the hull create replays bit for bit (the
+    // recipe points ride the journal, QuickHull rebuilds them into
+    // the identical hull, id determinism included).
+    uint8_t journal[16384];
+    m3WorldDef def = m3DefaultWorldDef();
+    def.bodyCapacity = 8;
+    def.shapeCapacity = 8;
+    m3WorldId world = m3CreateWorld(&def);
+    CHECK(m3World_JournalBegin(world, journal, (int32_t)sizeof(journal)), "journal arms");
+    AddGroundPlane(world, 0.6f);
+
+    m3BodyDef bd = m3DefaultBodyDef();
+    bd.type = m3_dynamicBody;
+    bd.position = (m3Pos3){0.0, 2.0, 0.0};
+    m3BodyId rock = m3CreateBody(world, &bd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    m3Vec3 pts[7] = {{0.9f, 0.0f, 0.1f},  {-0.8f, 0.1f, 0.0f}, {0.0f, 0.7f, -0.1f},
+                     {0.1f, -0.6f, 0.0f}, {0.0f, 0.1f, 0.8f},  {-0.1f, 0.0f, -0.9f},
+                     {0.2f, 0.2f, 0.2f}};
+    m3ShapeId shape = m3CreateHullShape(rock, &sd, pts, 7);
+    CHECK(m3Shape_IsValid(shape), "the rock builds");
+
+    // A degenerate cloud is refused without touching the body.
+    m3Vec3 flat[4] = {
+        {0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 1.0f}, {1.0f, 0.0f, 1.0f}};
+    CHECK(!m3Shape_IsValid(m3CreateHullShape(rock, &sd, flat, 4)), "a coplanar cloud is refused");
+
+    StepN(world, 480);
+
+    m3Pos3 p = m3Body_GetPosition(rock);
+    CHECK(p.y > 0.05 && p.y < 1.0, "the rock settles onto a face");
+    CHECK(p.x > -2.0 && p.x < 2.0 && p.z > -2.0 && p.z < 2.0, "the rock stays near the drop");
+    m3Vec3 v = m3Body_GetLinearVelocity(rock);
+    CHECK(v.x * v.x + v.y * v.y + v.z * v.z < 0.01f, "the rock has come to rest");
+
+    int32_t bytes = m3World_JournalEnd(world);
+    CHECK(bytes > 0, "the session recorded");
+    uint64_t h1 = m3World_Hash(world);
+
+    m3WorldId twin = m3CreateWorld(&def);
+    CHECK(m3World_JournalReplay(twin, journal, bytes), "the hull session replays");
+    CHECK(m3World_Hash(twin) == h1, "the replay is bit-identical");
+    m3DestroyWorld(twin);
+    m3DestroyWorld(world);
+}
+
 static void TestSolverHashGate(void)
 {
     // The fixed solver scene for the CI gate: a plane, a three-sphere
@@ -592,6 +642,7 @@ int main(void)
     TestDeepCapsuleRecovers();
     TestCrossedCapsulesSeparate();
     TestDeepFuzzDeterminism();
+    TestQuickHullRockRests();
     TestSolverHashGate();
     if (s_failures == 0)
     {
