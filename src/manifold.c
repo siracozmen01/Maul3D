@@ -739,15 +739,20 @@ static m3TriPoint ClosestPointOnTriangle(m3Vec3 a, m3Vec3 b, m3Vec3 c, m3Vec3 q)
 
 // One triangle's local manifold: midway contact points (each anchor
 // recovers as point -/+ half the separation along the normal).
+// feature: vertex bitmask (1|2|4, 7 = triangle face) or 8 = hull
+// face contact (the hull path's special acceptance rules).
+#define M3_TRI_FEATURE_HULL_FACE 8
+
 typedef struct m3TriManifold
 {
-    m3Vec3 normal; // mesh frame, triangle toward shape
-    m3real dist2;  // closest squared distance (the tentative sort key)
+    m3Vec3 normal;    // mesh frame, triangle toward shape
+    m3Vec3 triNormal; // mesh frame (the hull-face acceptance reads it)
+    m3real dist2;     // closest squared distance (the tentative sort key)
     int32_t pointCount;
-    int32_t feature; // vertex bitmask
-    m3Vec3 point[2];
-    m3real separation[2];
-    uint16_t localId[2];
+    int32_t feature;
+    m3Vec3 point[4];
+    m3real separation[4];
+    uint16_t localId[4];
 } m3TriManifold;
 
 static void CollideSphereTriangle(m3TriManifold* out, m3Vec3 center, m3real radius,
@@ -770,6 +775,7 @@ static void CollideSphereTriangle(m3TriManifold* out, m3Vec3 center, m3real radi
     m3real dist = sqrtf(dist2);
     m3Vec3 normal = dist2 > 1000.0f * FLT_MIN ? m3MulSV3(1.0f / dist, d) : m3Normalize3(triN);
     out->normal = normal;
+    out->triNormal = m3Normalize3(triN);
     out->dist2 = dist2;
     out->feature = closest.feature;
     out->pointCount = 1;
@@ -888,6 +894,7 @@ static void CollideCapsuleTriangle(m3TriManifold* out, m3Vec3 c1, m3Vec3 c2, m3r
     {
         return; // back side cull
     }
+    out->triNormal = triN;
 
     m3Vec3 segPts[2] = {c1, c2};
     m3DistanceInput input;
@@ -1037,6 +1044,391 @@ static void CollideCapsuleTriangle(m3TriManifold* out, m3Vec3 c1, m3Vec3 c2, m3r
     }
 }
 
+#define M3_MESH_CLIP_CAP 16
+
+// Clip a polygon against one plane, carrying separations against the
+// reference plane (a generic Sutherland-Hodgman step for the hull
+// versus triangle kernel).
+typedef struct m3MeshClipVertex
+{
+    m3Vec3 position;
+    m3real separation;
+} m3MeshClipVertex;
+
+static int32_t MeshClipPolygon(m3MeshClipVertex* out, const m3MeshClipVertex* in, int32_t count,
+                               m3Vec3 clipNormal, m3real clipOffset, m3Vec3 refNormal,
+                               m3real refOffset)
+{
+    int32_t outCount = 0;
+    m3MeshClipVertex prev = in[count - 1];
+    m3real prevDist = m3Dot3(clipNormal, prev.position) - clipOffset;
+    for (int32_t i = 0; i < count; ++i)
+    {
+        m3MeshClipVertex curr = in[i];
+        m3real currDist = m3Dot3(clipNormal, curr.position) - clipOffset;
+        if (prevDist <= 0.0f)
+        {
+            out[outCount++] = prev;
+        }
+        if (prevDist * currDist < 0.0f)
+        {
+            m3real t = prevDist / (prevDist - currDist);
+            m3Vec3 p = m3Add3(prev.position, m3MulSV3(t, m3Sub3(curr.position, prev.position)));
+            out[outCount].position = p;
+            out[outCount].separation = m3Dot3(refNormal, p) - refOffset;
+            outCount += 1;
+        }
+        prev = curr;
+        prevDist = currDist;
+    }
+    return outCount;
+}
+
+// Keep the deepest four clip points (ties to the lower slot) in
+// ascending slot order, the canonical reduction the box paths use.
+static void KeepDeepestClip(m3TriManifold* out, const m3MeshClipVertex* points, int32_t count)
+{
+    int32_t kept[4];
+    int32_t keptCount = 0;
+    uint8_t used[M3_MESH_CLIP_CAP];
+    memset(used, 0, sizeof(used));
+    int32_t want = count < 4 ? count : 4;
+    for (int32_t k = 0; k < want; ++k)
+    {
+        int32_t best = -1;
+        for (int32_t c = 0; c < count; ++c)
+        {
+            if (used[c])
+            {
+                continue;
+            }
+            if (best < 0 || points[c].separation < points[best].separation)
+            {
+                best = c;
+            }
+        }
+        used[best] = 1;
+        kept[keptCount++] = best;
+    }
+    for (int32_t a = 0; a < keptCount; ++a)
+    {
+        for (int32_t b = a + 1; b < keptCount; ++b)
+        {
+            if (kept[b] < kept[a])
+            {
+                int32_t tmp = kept[a];
+                kept[a] = kept[b];
+                kept[b] = tmp;
+            }
+        }
+    }
+    out->pointCount = 0;
+    for (int32_t k = 0; k < keptCount; ++k)
+    {
+        int32_t c = kept[k];
+        if (points[c].separation > M3_SPECULATIVE_DISTANCE)
+        {
+            continue;
+        }
+        int32_t slot = out->pointCount;
+        out->point[slot] =
+            m3Sub3(points[c].position, m3MulSV3(0.5f * points[c].separation, out->normal));
+        out->separation[slot] = points[c].separation;
+        out->localId[slot] = (uint16_t)slot;
+        out->pointCount += 1;
+    }
+}
+
+// Hull versus one triangle (reference b3CollideHullAndTriangle, run
+// cacheless: the SAT cache is a per-triangle performance memo, the
+// axis selection below is identical without it and joins the BVH
+// slice). Everything in the HULL's local frame; the caller converts
+// results back to the mesh frame.
+static void CollideHullTriangle(m3TriManifold* out, const m3HullData* hull, const m3Vec3 tri[3])
+{
+    out->pointCount = 0;
+    const m3real linearSlop = 0.005f;
+
+    m3Vec3 triN = m3Normalize3(m3Cross3(m3Sub3(tri[1], tri[0]), m3Sub3(tri[2], tri[0])));
+    m3real triOff = m3Dot3(triN, tri[0]);
+    out->triNormal = triN;
+    if (m3Dot3(triN, hull->center) - triOff < -linearSlop)
+    {
+        return; // back side cull
+    }
+    m3Vec3 triCenter = m3MulSV3(1.0f / 3.0f, m3Add3(tri[0], m3Add3(tri[1], tri[2])));
+    m3Vec3 triEdge[3] = {m3Sub3(tri[1], tri[0]), m3Sub3(tri[2], tri[1]), m3Sub3(tri[0], tri[2])};
+
+    // Face query A: the triangle face against the hull support.
+    m3real sepA = 3.4e38f;
+    for (int32_t v = 0; v < hull->vertexCount; ++v)
+    {
+        m3real d = m3Dot3(triN, hull->vertices[v]) - triOff;
+        sepA = m3MinF(sepA, d);
+    }
+    if (sepA > M3_SPECULATIVE_DISTANCE)
+    {
+        return;
+    }
+
+    // Face query B: every hull face against the triangle support.
+    int32_t faceB = 0;
+    m3real sepB = -3.4e38f;
+    for (int32_t f = 0; f < hull->faceCount; ++f)
+    {
+        m3Vec3 n = hull->faceNormals[f];
+        m3real best = 3.4e38f;
+        for (int32_t k = 0; k < 3; ++k)
+        {
+            best = m3MinF(best, m3Dot3(n, tri[k]) - hull->faceOffsets[f]);
+        }
+        if (best > sepB)
+        {
+            sepB = best;
+            faceB = f;
+        }
+    }
+    if (sepB > M3_SPECULATIVE_DISTANCE)
+    {
+        return;
+    }
+
+    // Edge query, Minkowski-gated (the duality-transform test).
+    m3real edgeSep = -3.4e38f;
+    int32_t edgeTri = -1;
+    int32_t edgeHull = -1;
+    for (int32_t e = 0; e < hull->edgeCount; e += 2)
+    {
+        m3Vec3 hp = hull->vertices[hull->edges[e].origin];
+        m3Vec3 he = m3Sub3(hull->vertices[hull->edges[e + 1].origin], hp);
+        m3Vec3 hn1 = hull->faceNormals[hull->edges[e].face];
+        m3Vec3 hn2 = hull->faceNormals[hull->edges[e + 1].face];
+        for (int32_t j = 0; j < 3; ++j)
+        {
+            m3real cab = m3Dot3(hn1, triEdge[j]);
+            m3real dab = m3Dot3(hn2, triEdge[j]);
+            m3real bcd = m3Dot3(triN, he);
+            if (cab * dab >= 0.0f || cab * bcd <= 0.0f)
+            {
+                continue;
+            }
+            m3real sep = EdgeEdgeSep(tri[j], triEdge[j], triCenter, hp, he, hull->center);
+            if (sep > edgeSep)
+            {
+                edgeSep = sep;
+                edgeTri = j;
+                edgeHull = e;
+            }
+        }
+    }
+    if (edgeSep > M3_SPECULATIVE_DISTANCE)
+    {
+        return;
+    }
+
+    // Face contact: reference rule, the hull face wins only when it
+    // is meaningfully better AND pushes against the triangle normal.
+    m3real clippedSep = 3.4e38f;
+    m3Vec3 hullFaceN = hull->faceNormals[faceB];
+    int pushingUp = m3Dot3(hullFaceN, triN) < 0.0f;
+    if (sepB > sepA + linearSlop && pushingUp)
+    {
+        // Reference face = the hull face; clip the TRIANGLE against
+        // its side planes.
+        m3MeshClipVertex buf1[M3_MESH_CLIP_CAP];
+        m3MeshClipVertex buf2[M3_MESH_CLIP_CAP];
+        m3real refOff = hull->faceOffsets[faceB];
+        for (int32_t k = 0; k < 3; ++k)
+        {
+            buf1[k].position = tri[k];
+            buf1[k].separation = m3Dot3(hullFaceN, tri[k]) - refOff;
+        }
+        int32_t count = 3;
+        m3MeshClipVertex* input = buf1;
+        m3MeshClipVertex* output = buf2;
+        int32_t startEdge = -1;
+        for (int32_t e = 0; e < hull->edgeCount && startEdge < 0; ++e)
+        {
+            if (hull->edges[e].face == (uint8_t)faceB)
+            {
+                startEdge = e;
+            }
+        }
+        int32_t edgeIndex = startEdge;
+        do
+        {
+            int32_t nextIndex = hull->edges[edgeIndex].next;
+            m3Vec3 vertex1 = hull->vertices[hull->edges[edgeIndex].origin];
+            m3Vec3 vertex2 = hull->vertices[hull->edges[nextIndex].origin];
+            m3Vec3 tangent = m3Normalize3(m3Sub3(vertex2, vertex1));
+            m3Vec3 binormal = m3Cross3(tangent, hullFaceN);
+            count = MeshClipPolygon(output, input, count, binormal, m3Dot3(binormal, vertex1),
+                                    hullFaceN, refOff);
+            if (count < 3 || count > M3_MESH_CLIP_CAP - 2)
+            {
+                count = 0;
+                break;
+            }
+            m3MeshClipVertex* tmp = input;
+            input = output;
+            output = tmp;
+            edgeIndex = nextIndex;
+        } while (edgeIndex != startEdge);
+
+        if (count > 0)
+        {
+            out->normal = m3Neg3(hullFaceN); // triangle toward hull
+            out->feature = M3_TRI_FEATURE_HULL_FACE;
+            KeepDeepestClip(out, input, count);
+            clippedSep = 3.4e38f;
+            for (int32_t k = 0; k < out->pointCount; ++k)
+            {
+                clippedSep = m3MinF(clippedSep, out->separation[k]);
+            }
+        }
+    }
+    else
+    {
+        // Reference face = the triangle; clip the hull's most
+        // anti-parallel (incident) face against the triangle sides.
+        int32_t incFace = 0;
+        m3real minDot = 3.4e38f;
+        for (int32_t f = 0; f < hull->faceCount; ++f)
+        {
+            m3real d = m3Dot3(triN, hull->faceNormals[f]);
+            if (d < minDot)
+            {
+                minDot = d;
+                incFace = f;
+            }
+        }
+        m3MeshClipVertex buf1[M3_MESH_CLIP_CAP];
+        m3MeshClipVertex buf2[M3_MESH_CLIP_CAP];
+        int32_t count = 0;
+        int32_t startEdge = -1;
+        for (int32_t e = 0; e < hull->edgeCount && startEdge < 0; ++e)
+        {
+            if (hull->edges[e].face == (uint8_t)incFace)
+            {
+                startEdge = e;
+            }
+        }
+        int32_t edgeIndex = startEdge;
+        do
+        {
+            m3Vec3 p = hull->vertices[hull->edges[edgeIndex].origin];
+            buf1[count].position = p;
+            buf1[count].separation = m3Dot3(triN, p) - triOff;
+            count += 1;
+            edgeIndex = hull->edges[edgeIndex].next;
+        } while (edgeIndex != startEdge && count < M3_MESH_CLIP_CAP - 2);
+
+        m3MeshClipVertex* input = buf1;
+        m3MeshClipVertex* output = buf2;
+        for (int32_t j = 0; j < 3 && count > 0; ++j)
+        {
+            m3Vec3 sideN = m3Normalize3(m3Cross3(triEdge[j], triN));
+            count =
+                MeshClipPolygon(output, input, count, sideN, m3Dot3(sideN, tri[j]), triN, triOff);
+            if (count > M3_MESH_CLIP_CAP - 2)
+            {
+                count = 0;
+                break;
+            }
+            m3MeshClipVertex* tmp = input;
+            input = output;
+            output = tmp;
+        }
+        if (count > 0)
+        {
+            out->normal = triN;
+            out->feature = 7;
+            KeepDeepestClip(out, input, count);
+            clippedSep = 3.4e38f;
+            for (int32_t k = 0; k < out->pointCount; ++k)
+            {
+                clippedSep = m3MinF(clippedSep, out->separation[k]);
+            }
+        }
+    }
+
+    // The edge axis overrides when it is genuinely better (the two
+    // reference conditions).
+    if (edgeTri >= 0)
+    {
+        m3real maxFaceSep = m3MaxF(sepA, sepB);
+        if ((out->pointCount == 0 && edgeSep > maxFaceSep) ||
+            (out->pointCount == 1 && edgeSep > clippedSep + linearSlop))
+        {
+            m3Vec3 hp = hull->vertices[hull->edges[edgeHull].origin];
+            m3Vec3 he = m3Sub3(hull->vertices[hull->edges[edgeHull + 1].origin], hp);
+            m3Vec3 normal = m3Normalize3(m3Cross3(triEdge[edgeTri], he));
+            m3real outwardA = m3Dot3(normal, m3Sub3(tri[edgeTri], triCenter));
+            m3real outwardB = m3Dot3(normal, m3Sub3(hull->center, hp));
+            m3real aA = outwardA < 0.0f ? -outwardA : outwardA;
+            m3real aB = outwardB < 0.0f ? -outwardB : outwardB;
+            if (aA > aB ? outwardA < 0.0f : outwardB < 0.0f)
+            {
+                normal = m3Neg3(normal);
+            }
+            m3real f1;
+            m3real f2;
+            LineClosest(tri[edgeTri], triEdge[edgeTri], hp, he, &f1, &f2);
+            if (f1 >= 0.0f && f1 <= 1.0f && f2 >= 0.0f && f2 <= 1.0f)
+            {
+                m3Vec3 onTri = m3Add3(tri[edgeTri], m3MulSV3(f1, triEdge[edgeTri]));
+                m3Vec3 onHull = m3Add3(hp, m3MulSV3(f2, he));
+                m3real separation = m3Dot3(normal, m3Sub3(onHull, onTri));
+                out->pointCount = 1;
+                out->normal = normal;
+                out->feature = (1 << edgeTri) | (1 << ((edgeTri + 1) % 3));
+                out->dist2 = separation > 0.0f ? separation * separation : 0.0f;
+                out->point[0] = m3MulSV3(0.5f, m3Add3(onTri, onHull));
+                out->separation[0] = separation;
+                out->localId[0] = 0;
+            }
+        }
+    }
+
+    // GJK fallback: speculative SAT can strand a nearby pair with no
+    // points; a single witness prevents rare tunneling (reference).
+    if (out->pointCount == 0)
+    {
+        m3DistanceInput input;
+        memset(&input, 0, sizeof(input));
+        input.proxyA.points = tri;
+        input.proxyA.count = 3;
+        input.proxyA.radius = 0.0f;
+        input.proxyB.points = hull->vertices;
+        input.proxyB.count = hull->vertexCount;
+        input.proxyB.radius = 0.0f;
+        input.q = m3MakeIdentityQuat();
+        input.p = (m3Vec3){0.0f, 0.0f, 0.0f};
+        input.useRadii = false;
+        m3SimplexCache cache;
+        cache.count = 0;
+        cache.metric = 0.0f;
+        m3DistanceOutput dOut = m3ShapeDistance(&input, &cache);
+        if (dOut.distance > 0.0f && dOut.distance <= M3_SPECULATIVE_DISTANCE)
+        {
+            int32_t mask = 0;
+            for (int32_t i = 0; i < (int32_t)cache.count && i < 3; ++i)
+            {
+                mask |= 1 << cache.indexA[i];
+            }
+            out->pointCount = 1;
+            out->normal = dOut.normal;
+            out->feature = mask == 0 ? 7 : mask;
+            out->dist2 = dOut.distance * dOut.distance;
+            out->point[0] = m3MulSV3(0.5f, m3Add3(dOut.pointA, dOut.pointB));
+            out->separation[0] = dOut.distance;
+            out->localId[0] = 0;
+        }
+        return;
+    }
+    out->dist2 = clippedSep > 0.0f ? clippedSep * clippedSep : 0.0f;
+}
+
 #define M3_MESH_CANDIDATE_CAP 64
 
 typedef struct m3FeatureSet
@@ -1111,7 +1503,31 @@ static void CollideMeshConvex(m3World* world, m3Manifold* fresh, int32_t meshSha
     m3Vec3 s2 = {0.0f, 0.0f, 0.0f};
     m3Vec3 boundLo;
     m3Vec3 boundHi;
-    if (otherType == (uint8_t)m3_sphereShape)
+    const m3HullData* hull = NULL;
+    m3Quat qHull = m3MakeIdentityQuat(); // mesh frame -> hull frame
+    m3Vec3 pHull = {0.0f, 0.0f, 0.0f};
+    if (otherType == (uint8_t)m3_hullShape)
+    {
+        // The hull kernel runs in the HULL frame: triangles transform
+        // in, results transform back out with qRel/pRel.
+        hull = &world->hullData[world->shapeHullIndex[otherShape]];
+        qHull = (m3Quat){-qRel.x, -qRel.y, -qRel.z, qRel.w};
+        pHull = m3Neg3(m3InvRotateVec3(qRel, pRel));
+        boundLo = (m3Vec3){3.4e38f, 3.4e38f, 3.4e38f};
+        boundHi = (m3Vec3){-3.4e38f, -3.4e38f, -3.4e38f};
+        for (int32_t v = 0; v < hull->vertexCount; ++v)
+        {
+            m3Vec3 p = m3Add3(m3RotateVec3(qRel, hull->vertices[v]), pRel);
+            boundLo.x = m3MinF(boundLo.x, p.x);
+            boundLo.y = m3MinF(boundLo.y, p.y);
+            boundLo.z = m3MinF(boundLo.z, p.z);
+            boundHi.x = m3MaxF(boundHi.x, p.x);
+            boundHi.y = m3MaxF(boundHi.y, p.y);
+            boundHi.z = m3MaxF(boundHi.z, p.z);
+        }
+        radius = 0.0f;
+    }
+    else if (otherType == (uint8_t)m3_sphereShape)
     {
         s1 = m3Add3(m3RotateVec3(qRel, world->shapeGeom[otherShape].v), pRel);
         boundLo = s1;
@@ -1166,9 +1582,29 @@ static void CollideMeshConvex(m3World* world, m3Manifold* fresh, int32_t meshSha
         {
             CollideSphereTriangle(&local, s1, radius, tri);
         }
-        else
+        else if (otherType == (uint8_t)m3_capsuleShape)
         {
             CollideCapsuleTriangle(&local, s1, s2, radius, tri);
+        }
+        else
+        {
+            // The hull kernel wants the triangle in the hull frame;
+            // its results come back into the mesh frame here.
+            m3Vec3 triH[3];
+            for (int32_t k = 0; k < 3; ++k)
+            {
+                triH[k] = m3Add3(m3RotateVec3(qHull, tri[k]), pHull);
+            }
+            CollideHullTriangle(&local, hull, triH);
+            if (local.pointCount > 0)
+            {
+                local.normal = m3RotateVec3(qRel, local.normal);
+                local.triNormal = m3RotateVec3(qRel, local.triNormal);
+                for (int32_t k = 0; k < local.pointCount; ++k)
+                {
+                    local.point[k] = m3Add3(m3RotateVec3(qRel, local.point[k]), pRel);
+                }
+            }
         }
         if (local.pointCount == 0)
         {
@@ -1180,6 +1616,26 @@ static void CollideMeshConvex(m3World* world, m3Manifold* fresh, int32_t meshSha
         if (local.feature == 7)
         {
             faceAccepted[faceCount++] = cand;
+        }
+        else if (local.feature == M3_TRI_FEATURE_HULL_FACE)
+        {
+            // The reference acceptance for hull-face contacts: accept
+            // when the contact normal agrees with the triangle normal
+            // or the overlap is deep; otherwise tentative.
+            m3real cosAngle = m3Dot3(local.triNormal, local.normal);
+            m3real minSep = 3.4e38f;
+            for (int32_t k = 0; k < local.pointCount; ++k)
+            {
+                minSep = m3MinF(minSep, local.separation[k]);
+            }
+            if (cosAngle > 0.5f || minSep < -2.0f * 0.005f)
+            {
+                faceAccepted[faceCount++] = cand;
+            }
+            else
+            {
+                tentative[tentativeCount++] = cand;
+            }
         }
         else
         {
@@ -1256,6 +1712,13 @@ static void CollideMeshConvex(m3World* world, m3Manifold* fresh, int32_t meshSha
             break;
         case 4:
             shouldCollide = newVert3;
+            break;
+        case M3_TRI_FEATURE_HULL_FACE:
+            // A tilted hull-face contact is a ghost if any of its
+            // triangle's features already belong to a face contact
+            // (a conservative stand-in for the baked edge-convexity
+            // flags, which join the BVH slice).
+            shouldCollide = newEdge1 && newEdge2 && newEdge3 && newVert1 && newVert2 && newVert3;
             break;
         default:
             break;
@@ -1399,14 +1862,12 @@ m3Result m3UpdateContacts(m3World* world, const uint64_t* oldKeys, const m3Manif
             memset(&fresh, 0, sizeof(fresh));
             int32_t meshShape = typeA == (uint8_t)m3_meshShape ? shapeA : shapeB;
             int32_t otherShape = meshShape == shapeA ? shapeB : shapeA;
-            if (world->shapeType[otherShape] == (uint8_t)m3_sphereShape ||
-                world->shapeType[otherShape] == (uint8_t)m3_capsuleShape)
+            if (world->shapeType[otherShape] != (uint8_t)m3_planeShape)
             {
+                // Sphere, capsule, and hull all ride the welded
+                // per-triangle pipeline (2b-9a through 2b-9c).
                 CollideMeshConvex(world, &fresh, meshShape, otherShape, meshShape == shapeA);
             }
-            // Hull versus mesh lands with 2b-9c; until then that pair
-            // carries no manifold (documented staged gap, guarded by
-            // a test).
         }
         else if (planePair && hullPair)
         {

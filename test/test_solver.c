@@ -872,10 +872,9 @@ static void TestMeshContractsAndGaps(void)
     CHECK(!m3Shape_IsValid(m3CreateMeshShape(ground2, &sd, tri, 3, bad, 1)),
           "an out-of-range index is refused");
 
-    // 2b-9b FLIPPED the capsule half of the staged gap: a capsule
-    // dropped across the interior edges now lands on the two-point
-    // face clip and RESTS level on the mesh. The hull half stays a
-    // documented gap until 2b-9c.
+    // 2b-9b flipped the capsule half of the staged gap; 2b-9c flips
+    // the hull half: the box dropped over the interior edges lands on
+    // the triangle-face clip and RESTS level on the mesh.
     m3Capsule capsule = {{-0.4f, 0.0f, 0.0f}, {0.4f, 0.0f, 0.0f}, 0.3f};
     m3CreateCapsuleShape(mover, &sd, &capsule);
     bd.position = (m3Pos3){1.5, 2.0, 0.0};
@@ -886,7 +885,52 @@ static void TestMeshContractsAndGaps(void)
     CHECK(cp.y > 0.27 && cp.y < 0.33, "the capsule rests on the mesh at its radius");
     m3Quat cq = m3Body_GetRotation(mover);
     CHECK(cq.w > 0.999f || cq.w < -0.999f, "the capsule lies level across the edges");
-    CHECK(m3Body_GetPosition(boxBody).y < -1.0, "hull-mesh is the documented gap (2b-9c)");
+    m3Pos3 bp = m3Body_GetPosition(boxBody);
+    CHECK(bp.y > 0.27 && bp.y < 0.33, "the box rests on the mesh at its half height");
+    m3Quat bq = m3Body_GetRotation(boxBody);
+    CHECK(bq.w > 0.999f || bq.w < -0.999f, "the box stays level on the mesh");
+    m3DestroyWorld(world);
+}
+
+static void TestBoxSlidesAcrossMeshFloor(void)
+{
+    // The internal-edge proof for the hull path: a box slides across
+    // the interior edges of the flat mesh; the triangle-face clips
+    // must weld into one flat manifold, never a ghost edge kick.
+    m3WorldDef def = m3DefaultWorldDef();
+    def.bodyCapacity = 8;
+    def.shapeCapacity = 8;
+    m3WorldId world = m3CreateWorld(&def);
+    CHECK(m3Shape_IsValid(AddMeshFloor(world)), "the mesh floor builds");
+
+    m3BodyDef bd = m3DefaultBodyDef();
+    bd.type = m3_dynamicBody;
+    bd.position = (m3Pos3){-3.2, 0.31, 0.0};
+    bd.linearVelocity = (m3Vec3){1.2f, 0.0f, 0.0f};
+    m3BodyId box = m3CreateBody(world, &bd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    sd.friction = 0.0f;
+    m3CreateBoxShape(box, &sd, (m3Vec3){0.3f, 0.3f, 0.3f});
+
+    StepN(world, 60); // settle
+    double yMin = 1.0e30;
+    double yMax = -1.0e30;
+    double zMax = 0.0;
+    for (int32_t i = 0; i < 240; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+        m3Pos3 p = m3Body_GetPosition(box);
+        yMin = p.y < yMin ? p.y : yMin;
+        yMax = p.y > yMax ? p.y : yMax;
+        double az = p.z < 0.0 ? -p.z : p.z;
+        zMax = az > zMax ? az : zMax;
+    }
+    m3Pos3 end = m3Body_GetPosition(box);
+    CHECK(end.x > 0.0, "the box crossed the interior edges");
+    CHECK(yMin > 0.26 && yMax < 0.34, "the box ride stays flat: no ghost bumps");
+    CHECK(zMax < 0.05, "no sideways ghost kicks on the box");
+    m3Quat q = m3Body_GetRotation(box);
+    CHECK(q.w > 0.99f || q.w < -0.99f, "the box does not tumble while sliding");
     m3DestroyWorld(world);
 }
 
@@ -973,6 +1017,7 @@ int main(void)
     TestCcdDeterminism();
     TestSphereSlidesAcrossMeshFloor();
     TestMeshContractsAndGaps();
+    TestBoxSlidesAcrossMeshFloor();
     TestMeshJournalAndRollback();
     TestSolverHashGate();
     if (s_failures == 0)
