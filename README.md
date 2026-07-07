@@ -9,20 +9,28 @@ built on.
 
 ## Status
 
-Phase 2a, "the standing spine": the deterministic core, the snapshot and
-rollback machinery, and the simplest collision path are being built
-first, gate by gate. The full 3D narrowphase lands on top of a proven
-spine, not the other way around.
+Phase 2a, "the standing spine," is complete: spheres and planes
+simulate under the Soft Step solver, a five-sphere stack stands, and
+the four determinism gates below hold on every commit. Phase 2b (the
+full 3D narrowphase: hulls, capsules, boxes, meshes, real CCD) builds
+on this proven spine.
 
 ## The determinism promise
 
-Same inputs, same bits, everywhere. The simulation is bit-exact across
-platforms, compilers, and worker counts, and the world can be
-snapshotted, rolled back, and resumed bit-exactly. Every commit must
-hold the determinism gates in CI: hash lines compared across every cell,
-and from task 10 of the current plan, record and replay equality, a
-snapshot round-trip that resimulates to the identical hash, and
-worker-count twins. Fast-math is refused at configure time.
+Same inputs, same bits, everywhere. Every commit must hold four gates
+in CI, across three OSes, two ISAs, and four compilers:
+
+1. **The golden scene.** A 30-sphere pyramid plus droppers, 300 steps;
+   every cell must produce the identical state hash.
+2. **Replay.** The same run twice is bit-identical, and a journaled
+   session (creates plus steps) replays bit for bit into a fresh world.
+3. **Rollback.** Snapshot mid-flight, run on, restore, rerun: the
+   resimulated timeline is bit-identical, and a changed continuation
+   diverges (restore is total, resume is real simulation). The snapshot
+   format is portable and versioned, never a raw memory image.
+4. **Worker twins.** Different worker counts produce identical bits.
+
+Fast-math is refused at configure time.
 
 ## Build
 
