@@ -22,7 +22,7 @@
 // integration order, constants). Part of the snapshot config hash, so
 // a snapshot from a different behavior revision is refused loudly
 // instead of silently diverging (the Jolt friction-model lesson).
-#define M3_SOLVER_REV 6 // rev 6: hull caps grew, edge ids repacked
+#define M3_SOLVER_REV 7 // rev 7: continuous collision (TOI pull-back)
 
 // Def cookies: a def that did not come from its m3Default*Def factory
 // is rejected loudly (the Maul2D pattern).
@@ -188,6 +188,9 @@ typedef struct m3World
     m3real* linearDamping;
     m3real* angularDamping;
     uint8_t* types;
+    uint8_t* bulletFlags; // 1 = full continuous vs dynamics (2b-8)
+    float* minExtents;    // per body: thinnest shape measure (CCD trigger)
+    float* maxExtents;    // per body: farthest point from the COM (CCD arc bound)
     uint64_t* userData;
     int32_t* bodyShapeHead; // head of each body's shape list, -1 none
 
@@ -343,6 +346,57 @@ typedef struct m3DistanceOutput
 } m3DistanceOutput;
 
 m3DistanceOutput m3ShapeDistance(const m3DistanceInput* input, m3SimplexCache* cache);
+
+// Sweep of one body's COM and rotation across a step, in a float
+// frame the caller re-centered (the reference precision trick: TOI
+// runs relative to the fast body's begin COM so doubles never enter
+// the kernel).
+typedef struct m3Sweep
+{
+    m3Vec3 localCenter; // COM in the body frame
+    m3Vec3 c1;          // begin COM, re-centered
+    m3Vec3 c2;          // end COM, re-centered
+    m3Quat q1;
+    m3Quat q2;
+} m3Sweep;
+
+m3Transform m3GetSweepTransform(const m3Sweep* sweep, m3real time);
+
+typedef struct m3TOIInput
+{
+    m3DistanceProxy proxyA; // the target shape
+    m3DistanceProxy proxyB; // the fast shape
+    m3Sweep sweepA;
+    m3Sweep sweepB;
+    m3real maxFraction;
+} m3TOIInput;
+
+typedef enum m3TOIState
+{
+    m3_toiStateUnknown = 0,
+    m3_toiStateFailed,
+    m3_toiStateOverlapped,
+    m3_toiStateHit,
+    m3_toiStateSeparated,
+} m3TOIState;
+
+typedef struct m3TOIOutput
+{
+    m3TOIState state;
+    m3real fraction;
+} m3TOIOutput;
+
+// Time of impact by conservative advancement with root finding
+// (2b-8), adapted from the reference distance.c: separation
+// functions built from the GJK simplex cache (vertices, edge pairs,
+// faces), deepest-point push-back, mixed false-position and
+// bisection roots. Both sweeps participate: dynamic versus dynamic
+// is a first-class citizen.
+m3TOIOutput m3TimeOfImpact(const m3TOIInput* input);
+
+// GJK proxy for one shape in its local frame (spheres and capsules
+// borrow the caller's scratch for their point storage).
+m3DistanceProxy m3MakeShapeProxy(const m3World* world, int32_t shape, m3Vec3 scratch[2]);
 
 // Hull-versus-hull SAT (2b-5b): face queries both ways, the Gauss-map
 // edge query, face clipping or the edge closest-point contact. B is

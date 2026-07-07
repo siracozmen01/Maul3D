@@ -131,6 +131,8 @@ void m3RecomputeMass(m3World* world, int32_t bodyIndex)
         world->invInertiaLocal[bodyIndex] = m3MakeZeroMat3();
         world->inertiaLocal[bodyIndex] = m3MakeZeroMat3();
         world->localCenters[bodyIndex] = (m3Vec3){0.0f, 0.0f, 0.0f};
+        world->minExtents[bodyIndex] = 1.0e30f;
+        world->maxExtents[bodyIndex] = 0.0f;
         return;
     }
     // Two passes, the Maul2D lesson: first total mass and the mass
@@ -159,6 +161,8 @@ void m3RecomputeMass(m3World* world, int32_t bodyIndex)
         world->invInertiaLocal[bodyIndex] = m3MakeZeroMat3();
         world->inertiaLocal[bodyIndex] = m3MakeZeroMat3();
         world->localCenters[bodyIndex] = (m3Vec3){0.0f, 0.0f, 0.0f};
+        world->minExtents[bodyIndex] = 1.0e30f;
+        world->maxExtents[bodyIndex] = 0.0f;
         return;
     }
     center = m3MulSV3(1.0f / mass, center);
@@ -190,6 +194,48 @@ void m3RecomputeMass(m3World* world, int32_t bodyIndex)
     world->invMass[bodyIndex] = 1.0f / mass;
     world->inertiaLocal[bodyIndex] = inertia; // the gyroscopic solve reads it
     world->invInertiaLocal[bodyIndex] = InvertSymmetric(inertia);
+
+    // Extents drive continuous collision (2b-8): minExtent is the
+    // thinnest measure any shape brings (motion past half of it in
+    // one step marks the body fast), maxExtent bounds the rotation
+    // arc in the sweep advance.
+    float minExtent = 1.0e30f;
+    float maxExtent = 0.0f;
+    for (int32_t s2 = world->bodyShapeHead[bodyIndex]; s2 != -1; s2 = world->shapeNext[s2])
+    {
+        uint8_t type = world->shapeType[s2];
+        if (type == (uint8_t)m3_sphereShape)
+        {
+            float r = world->shapeGeom[s2].s;
+            m3Vec3 d = m3Sub3(world->shapeGeom[s2].v, center);
+            minExtent = m3MinF(minExtent, r);
+            maxExtent = m3MaxF(maxExtent, sqrtf(m3Dot3(d, d)) + r);
+        }
+        else if (type == (uint8_t)m3_capsuleShape)
+        {
+            float r = world->shapeGeom[s2].s;
+            m3Vec3 d1 = m3Sub3(world->shapeGeom[s2].v, center);
+            m3Vec3 d2 = m3Sub3(world->shapeGeom[s2].v2, center);
+            minExtent = m3MinF(minExtent, r);
+            maxExtent = m3MaxF(maxExtent, sqrtf(m3MaxF(m3Dot3(d1, d1), m3Dot3(d2, d2))) + r);
+        }
+        else if (type == (uint8_t)m3_hullShape)
+        {
+            const m3HullData* hull = &world->hullData[world->shapeHullIndex[s2]];
+            for (int32_t f = 0; f < hull->faceCount; ++f)
+            {
+                float dist = hull->faceOffsets[f] - m3Dot3(hull->faceNormals[f], center);
+                minExtent = m3MinF(minExtent, dist);
+            }
+            for (int32_t v = 0; v < hull->vertexCount; ++v)
+            {
+                m3Vec3 d = m3Sub3(hull->vertices[v], center);
+                maxExtent = m3MaxF(maxExtent, sqrtf(m3Dot3(d, d)));
+            }
+        }
+    }
+    world->minExtents[bodyIndex] = minExtent;
+    world->maxExtents[bodyIndex] = maxExtent;
     world->localCenters[bodyIndex] = center;
 }
 

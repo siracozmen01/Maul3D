@@ -704,3 +704,508 @@ m3DistanceOutput m3ShapeDistance(const m3DistanceInput* input, m3SimplexCache* c
     }
     return output;
 }
+
+// ---------------------------------------------------------------
+// Time of impact (2b-8), adapted from the reference distance.c.
+// ---------------------------------------------------------------
+
+m3Transform m3GetSweepTransform(const m3Sweep* sweep, m3real time)
+{
+    m3Transform transform;
+    // NLerp with hemisphere correction: step rotations are small, but
+    // the guard costs one compare and removes a whole failure class.
+    m3Quat q2 = sweep->q2;
+    if (sweep->q1.x * q2.x + sweep->q1.y * q2.y + sweep->q1.z * q2.z + sweep->q1.w * q2.w < 0.0f)
+    {
+        q2 = (m3Quat){-q2.x, -q2.y, -q2.z, -q2.w};
+    }
+    m3Quat q = {
+        sweep->q1.x + time * (q2.x - sweep->q1.x), sweep->q1.y + time * (q2.y - sweep->q1.y),
+        sweep->q1.z + time * (q2.z - sweep->q1.z), sweep->q1.w + time * (q2.w - sweep->q1.w)};
+    transform.q = m3NormalizeQuat(q);
+    m3Vec3 c = m3Add3(sweep->c1, m3MulSV3(time, m3Sub3(sweep->c2, sweep->c1)));
+    m3Vec3 r = m3RotateVec3(transform.q, sweep->localCenter);
+    transform.p.x = (double)(c.x - r.x);
+    transform.p.y = (double)(c.y - r.y);
+    transform.p.z = (double)(c.z - r.z);
+    return transform;
+}
+
+// The TOI kernel runs in floats; this lifts the double transform back
+// to the float relative frame the sweeps live in.
+static m3Vec3 ToiTransformPoint(const m3Transform* xf, m3Vec3 p)
+{
+    m3Vec3 r = m3RotateVec3(xf->q, p);
+    return (m3Vec3){(m3real)xf->p.x + r.x, (m3real)xf->p.y + r.y, (m3real)xf->p.z + r.z};
+}
+
+static int32_t ToiUniqueCount(int32_t vertexCount, const int32_t vertices[3])
+{
+    if (vertexCount == 1)
+    {
+        return 1;
+    }
+    if (vertexCount == 2)
+    {
+        return vertices[0] != vertices[1] ? 2 : 1;
+    }
+    if (vertices[0] != vertices[1] && vertices[0] != vertices[2] && vertices[1] != vertices[2])
+    {
+        return 3;
+    }
+    if (vertices[0] == vertices[1] && vertices[0] == vertices[2])
+    {
+        return 1;
+    }
+    return 2;
+}
+
+static int32_t ToiSupport(const m3DistanceProxy* proxy, m3Vec3 direction)
+{
+    int32_t best = 0;
+    m3real bestDot = m3Dot3(proxy->points[0], direction);
+    for (int32_t i = 1; i < proxy->count; ++i)
+    {
+        m3real d = m3Dot3(proxy->points[i], direction);
+        if (d > bestDot)
+        {
+            bestDot = d;
+            best = i;
+        }
+    }
+    return best;
+}
+
+// Does the edge cross product flip direction across the sweep? If so
+// the local-edge separation axis is unsafe (reference check).
+static int ToiCheckFastEdges(const m3Sweep* sweepA, const m3Sweep* sweepB, m3Vec3 localEdgeA,
+                             m3Vec3 localEdgeB, m3Vec3 axis0)
+{
+    m3Transform xfA = m3GetSweepTransform(sweepA, 1.0f);
+    m3Transform xfB = m3GetSweepTransform(sweepB, 1.0f);
+    m3Vec3 edgeA = m3RotateVec3(xfA.q, localEdgeA);
+    m3Vec3 edgeB = m3RotateVec3(xfB.q, localEdgeB);
+    m3Vec3 axis = m3Cross3(edgeA, edgeB);
+    return m3Dot3(axis, axis0) < 0.0f;
+}
+
+typedef enum m3SeparationType
+{
+    m3_separationVertices,
+    m3_separationEdges,
+    m3_separationFaceA,
+    m3_separationFaceB,
+} m3SeparationType;
+
+typedef struct m3SeparationFunction
+{
+    const m3DistanceProxy* proxyA;
+    const m3DistanceProxy* proxyB;
+    const m3Sweep* sweepA;
+    const m3Sweep* sweepB;
+    m3Vec3 witness1;
+    m3Vec3 witness2;
+    m3SeparationType type;
+} m3SeparationFunction;
+
+static m3SeparationFunction
+ToiMakeSeparationFunction(const m3SimplexCache* cache, const m3DistanceProxy* proxyA,
+                          const m3Sweep* sweepA, const m3DistanceProxy* proxyB,
+                          const m3Sweep* sweepB, m3Vec3 worldNormal, m3real t1)
+{
+    m3SeparationFunction fcn;
+    fcn.proxyA = proxyA;
+    fcn.proxyB = proxyB;
+    fcn.sweepA = sweepA;
+    fcn.sweepB = sweepB;
+    fcn.witness1 = worldNormal;
+    fcn.witness2 = (m3Vec3){0.0f, 0.0f, 0.0f};
+    fcn.type = m3_separationVertices;
+
+    int32_t indexA[3] = {cache->indexA[0], cache->indexA[1], cache->indexA[2]};
+    int32_t indexB[3] = {cache->indexB[0], cache->indexB[1], cache->indexB[2]};
+    int32_t count = cache->count < 3 ? (int32_t)cache->count : 3;
+    int32_t uniqueA = ToiUniqueCount(count, indexA);
+    int32_t uniqueB = ToiUniqueCount(count, indexB);
+
+    m3Transform xfA1 = m3GetSweepTransform(sweepA, t1);
+    m3Transform xfB1 = m3GetSweepTransform(sweepB, t1);
+    m3Vec3 deltaP = {(m3real)(xfB1.p.x - xfA1.p.x), (m3real)(xfB1.p.y - xfA1.p.y),
+                     (m3real)(xfB1.p.z - xfA1.p.z)};
+
+    if (count == 2 || (count == 3 && uniqueA <= 2 && uniqueB <= 2))
+    {
+        // Edge versus edge when both sides bring two unique vertices;
+        // anything else keeps the world-axis witness.
+        int32_t ia[2];
+        int32_t ib[2];
+        if (count == 2 && uniqueA == 2 && uniqueB == 2)
+        {
+            ia[0] = indexA[0];
+            ia[1] = indexA[1];
+            ib[0] = indexB[0];
+            ib[1] = indexB[1];
+        }
+        else if (count == 3 && uniqueA == 2 && uniqueB == 2)
+        {
+            ia[0] = indexA[0];
+            ia[1] = indexA[0] != indexA[1] ? indexA[1] : indexA[2];
+            ib[0] = indexB[0];
+            ib[1] = indexB[0] != indexB[1] ? indexB[1] : indexB[2];
+        }
+        else
+        {
+            return fcn; // vertex versus edge: world axis
+        }
+        m3Vec3 vA1 = proxyA->points[ia[0]];
+        m3Vec3 localEdgeA = m3Normalize3(m3Sub3(proxyA->points[ia[1]], vA1));
+        m3Vec3 edgeA = m3RotateVec3(xfA1.q, localEdgeA);
+        m3Vec3 vB1 = proxyB->points[ib[0]];
+        m3Vec3 localEdgeB = m3Normalize3(m3Sub3(proxyB->points[ib[1]], vB1));
+        m3Vec3 edgeB = m3RotateVec3(xfB1.q, localEdgeB);
+        m3Vec3 axis = m3Cross3(edgeA, edgeB);
+        m3real len2 = m3Dot3(axis, axis);
+        m3real tolerance2 = count == 2 ? 0.05f * 0.05f : 0.005f * 0.005f;
+        if (len2 < tolerance2)
+        {
+            return fcn; // near parallel: world axis
+        }
+        m3Vec3 delta = m3Add3(m3Sub3(m3RotateVec3(xfB1.q, vB1), m3RotateVec3(xfA1.q, vA1)), deltaP);
+        if (m3Dot3(delta, axis) < 0.0f)
+        {
+            axis = m3Neg3(axis);
+            localEdgeB = m3Neg3(localEdgeB);
+        }
+        if (ToiCheckFastEdges(sweepA, sweepB, localEdgeA, localEdgeB, axis))
+        {
+            fcn.witness1 = m3Normalize3(axis); // unsafe: fixed world axis
+            return fcn;
+        }
+        fcn.type = m3_separationEdges;
+        fcn.witness1 = localEdgeA;
+        fcn.witness2 = localEdgeB;
+        return fcn;
+    }
+
+    if (count == 3 && uniqueA == 3)
+    {
+        m3Vec3 vA1 = proxyA->points[indexA[0]];
+        m3Vec3 vA2 = proxyA->points[indexA[1]];
+        m3Vec3 vA3 = proxyA->points[indexA[2]];
+        m3Vec3 localAxisA = m3Normalize3(m3Cross3(m3Sub3(vA2, vA1), m3Sub3(vA3, vA1)));
+        m3Vec3 axisA = m3RotateVec3(xfA1.q, localAxisA);
+        m3Vec3 localPointA = m3MulSV3(1.0f / 3.0f, m3Add3(m3Add3(vA1, vA2), vA3));
+        m3Vec3 localPointB = proxyB->points[indexB[0]];
+        m3Vec3 delta = m3Add3(
+            m3Sub3(m3RotateVec3(xfB1.q, localPointB), m3RotateVec3(xfA1.q, localPointA)), deltaP);
+        if (m3Dot3(delta, axisA) < 0.0f)
+        {
+            localAxisA = m3Neg3(localAxisA);
+        }
+        fcn.type = m3_separationFaceA;
+        fcn.witness1 = localAxisA;
+        fcn.witness2 = localPointA;
+        return fcn;
+    }
+    if (count == 3 && uniqueB == 3)
+    {
+        m3Vec3 vB1 = proxyB->points[indexB[0]];
+        m3Vec3 vB2 = proxyB->points[indexB[1]];
+        m3Vec3 vB3 = proxyB->points[indexB[2]];
+        m3Vec3 localAxisB = m3Normalize3(m3Cross3(m3Sub3(vB2, vB1), m3Sub3(vB3, vB1)));
+        m3Vec3 axisB = m3RotateVec3(xfB1.q, localAxisB);
+        m3Vec3 localPointA = proxyA->points[indexA[0]];
+        m3Vec3 localPointB = m3MulSV3(1.0f / 3.0f, m3Add3(m3Add3(vB1, vB2), vB3));
+        m3Vec3 delta = m3Sub3(
+            m3Sub3(m3RotateVec3(xfA1.q, localPointA), m3RotateVec3(xfB1.q, localPointB)), deltaP);
+        if (m3Dot3(delta, axisB) < 0.0f)
+        {
+            localAxisB = m3Neg3(localAxisB);
+        }
+        fcn.type = m3_separationFaceB;
+        fcn.witness1 = localAxisB;
+        fcn.witness2 = localPointB;
+        return fcn;
+    }
+    return fcn; // count == 1 or mixed: world axis witness
+}
+
+static m3real ToiFindMinSeparation(const m3SeparationFunction* fcn, int32_t* indexA,
+                                   int32_t* indexB, m3real t)
+{
+    m3Transform xfA = m3GetSweepTransform(fcn->sweepA, t);
+    m3Transform xfB = m3GetSweepTransform(fcn->sweepB, t);
+    m3Vec3 deltaP = {(m3real)(xfB.p.x - xfA.p.x), (m3real)(xfB.p.y - xfA.p.y),
+                     (m3real)(xfB.p.z - xfA.p.z)};
+
+    switch (fcn->type)
+    {
+    case m3_separationVertices:
+    {
+        m3Vec3 axis = fcn->witness1;
+        *indexA = ToiSupport(fcn->proxyA, m3InvRotateVec3(xfA.q, axis));
+        *indexB = ToiSupport(fcn->proxyB, m3InvRotateVec3(xfB.q, m3Neg3(axis)));
+        m3Vec3 delta = m3Add3(m3Sub3(m3RotateVec3(xfB.q, fcn->proxyB->points[*indexB]),
+                                     m3RotateVec3(xfA.q, fcn->proxyA->points[*indexA])),
+                              deltaP);
+        return m3Dot3(delta, axis);
+    }
+    case m3_separationEdges:
+    {
+        m3Vec3 edgeA = m3RotateVec3(xfA.q, fcn->witness1);
+        m3Vec3 edgeB = m3RotateVec3(xfB.q, fcn->witness2);
+        m3Vec3 axis = m3Normalize3(m3Cross3(edgeA, edgeB));
+        *indexA = ToiSupport(fcn->proxyA, m3InvRotateVec3(xfA.q, axis));
+        *indexB = ToiSupport(fcn->proxyB, m3InvRotateVec3(xfB.q, m3Neg3(axis)));
+        m3Vec3 delta = m3Add3(m3Sub3(m3RotateVec3(xfB.q, fcn->proxyB->points[*indexB]),
+                                     m3RotateVec3(xfA.q, fcn->proxyA->points[*indexA])),
+                              deltaP);
+        return m3Dot3(delta, axis);
+    }
+    case m3_separationFaceA:
+    {
+        m3Vec3 normal = m3RotateVec3(xfA.q, fcn->witness1);
+        *indexA = -1;
+        m3Vec3 pointA = ToiTransformPoint(&xfA, fcn->witness2);
+        *indexB = ToiSupport(fcn->proxyB, m3InvRotateVec3(xfB.q, m3Neg3(normal)));
+        m3Vec3 pointB = ToiTransformPoint(&xfB, fcn->proxyB->points[*indexB]);
+        return m3Dot3(m3Sub3(pointB, pointA), normal);
+    }
+    case m3_separationFaceB:
+    default:
+    {
+        m3Vec3 normal = m3RotateVec3(xfB.q, fcn->witness1);
+        *indexA = ToiSupport(fcn->proxyA, m3InvRotateVec3(xfA.q, m3Neg3(normal)));
+        m3Vec3 pointA = ToiTransformPoint(&xfA, fcn->proxyA->points[*indexA]);
+        *indexB = -1;
+        m3Vec3 pointB = ToiTransformPoint(&xfB, fcn->witness2);
+        return m3Dot3(m3Sub3(pointA, pointB), normal);
+    }
+    }
+}
+
+static m3real ToiEvaluateSeparation(const m3SeparationFunction* fcn, int32_t indexA, int32_t indexB,
+                                    m3real t)
+{
+    m3Transform xfA = m3GetSweepTransform(fcn->sweepA, t);
+    m3Transform xfB = m3GetSweepTransform(fcn->sweepB, t);
+
+    switch (fcn->type)
+    {
+    case m3_separationVertices:
+    {
+        m3Vec3 pointA = ToiTransformPoint(&xfA, fcn->proxyA->points[indexA]);
+        m3Vec3 pointB = ToiTransformPoint(&xfB, fcn->proxyB->points[indexB]);
+        return m3Dot3(m3Sub3(pointB, pointA), fcn->witness1);
+    }
+    case m3_separationEdges:
+    {
+        m3Vec3 edgeA = m3RotateVec3(xfA.q, fcn->witness1);
+        m3Vec3 edgeB = m3RotateVec3(xfB.q, fcn->witness2);
+        m3Vec3 axis = m3Normalize3(m3Cross3(edgeA, edgeB));
+        m3Vec3 pointA = ToiTransformPoint(&xfA, fcn->proxyA->points[indexA]);
+        m3Vec3 pointB = ToiTransformPoint(&xfB, fcn->proxyB->points[indexB]);
+        return m3Dot3(m3Sub3(pointB, pointA), axis);
+    }
+    case m3_separationFaceA:
+    {
+        m3Vec3 axis = m3RotateVec3(xfA.q, fcn->witness1);
+        m3Vec3 pointA = ToiTransformPoint(&xfA, fcn->witness2);
+        m3Vec3 pointB = ToiTransformPoint(&xfB, fcn->proxyB->points[indexB]);
+        return m3Dot3(m3Sub3(pointB, pointA), axis);
+    }
+    case m3_separationFaceB:
+    default:
+    {
+        m3Vec3 axis = m3RotateVec3(xfB.q, fcn->witness1);
+        m3Vec3 pointA = ToiTransformPoint(&xfA, fcn->proxyA->points[indexA]);
+        m3Vec3 pointB = ToiTransformPoint(&xfB, fcn->witness2);
+        return m3Dot3(m3Sub3(pointA, pointB), axis);
+    }
+    }
+}
+
+static void ToiForceFixedAxis(m3SeparationFunction* fcn, m3real t)
+{
+    m3Transform xfA = m3GetSweepTransform(fcn->sweepA, t);
+    m3Transform xfB = m3GetSweepTransform(fcn->sweepB, t);
+    m3Vec3 edgeA = m3RotateVec3(xfA.q, fcn->witness1);
+    m3Vec3 edgeB = m3RotateVec3(xfB.q, fcn->witness2);
+    fcn->witness1 = m3Normalize3(m3Cross3(edgeA, edgeB));
+    fcn->witness2 = (m3Vec3){0.0f, 0.0f, 0.0f};
+    fcn->type = m3_separationVertices;
+}
+
+m3TOIOutput m3TimeOfImpact(const m3TOIInput* input)
+{
+    m3TOIOutput output;
+    output.state = m3_toiStateUnknown;
+    output.fraction = input->maxFraction;
+
+    m3Sweep sweepA = input->sweepA;
+    m3Sweep sweepB = input->sweepB;
+
+    // Shift both sweeps so A starts at the origin (float hygiene).
+    m3Vec3 origin = sweepA.c1;
+    sweepA.c1 = m3Sub3(sweepA.c1, origin);
+    sweepA.c2 = m3Sub3(sweepA.c2, origin);
+    sweepB.c1 = m3Sub3(sweepB.c1, origin);
+    sweepB.c2 = m3Sub3(sweepB.c2, origin);
+
+    const m3real linearSlop = 0.005f;
+    m3real totalRadius = input->proxyA.radius + input->proxyB.radius;
+    m3real target = m3MaxF(linearSlop, totalRadius - linearSlop);
+    m3real tolerance = 0.25f * linearSlop;
+    m3real tMax = input->maxFraction;
+
+    int32_t maxPushBackIterations = input->proxyA.count + input->proxyB.count;
+    m3real t1 = 0.0f;
+    const int32_t maxIterations = 25;
+    int32_t distanceIterations = 0;
+
+    m3SimplexCache cache;
+    cache.count = 0;
+    cache.metric = 0.0f;
+    m3DistanceInput distanceInput;
+    distanceInput.proxyA = input->proxyA;
+    distanceInput.proxyB = input->proxyB;
+    distanceInput.useRadii = false;
+
+    for (;;)
+    {
+        m3Transform xfA = m3GetSweepTransform(&sweepA, t1);
+        m3Transform xfB = m3GetSweepTransform(&sweepB, t1);
+        // Relative pose of B in A's frame (the GJK contract).
+        m3Quat conjA = {-xfA.q.x, -xfA.q.y, -xfA.q.z, xfA.q.w};
+        distanceInput.q = m3MulQuat(conjA, xfB.q);
+        m3Vec3 dp = {(m3real)(xfB.p.x - xfA.p.x), (m3real)(xfB.p.y - xfA.p.y),
+                     (m3real)(xfB.p.z - xfA.p.z)};
+        distanceInput.p = m3InvRotateVec3(xfA.q, dp);
+        m3DistanceOutput distanceOutput = m3ShapeDistance(&distanceInput, &cache);
+
+        distanceIterations += 1;
+
+        if (distanceOutput.distance <= 0.0f)
+        {
+            // Started overlapped: continuous gives up, the discrete
+            // deep-recovery kernels (2b-7) own this case.
+            output.state = m3_toiStateOverlapped;
+            output.fraction = 0.0f;
+            break;
+        }
+        if (distanceOutput.distance <= target + tolerance)
+        {
+            output.state = m3_toiStateHit;
+            output.fraction = t1;
+            break;
+        }
+        if (distanceIterations == maxIterations)
+        {
+            output.state = m3_toiStateFailed;
+            output.fraction = t1;
+            break;
+        }
+
+        m3Vec3 worldNormal = m3RotateVec3(xfA.q, distanceOutput.normal);
+        m3SeparationFunction function = ToiMakeSeparationFunction(
+            &cache, &input->proxyA, &sweepA, &input->proxyB, &sweepB, worldNormal, t1);
+
+        int done = 0;
+        m3real t2 = tMax;
+        int32_t pushBackIterations = 0;
+        for (;;)
+        {
+            int32_t indexA;
+            int32_t indexB;
+            m3real s2 = ToiFindMinSeparation(&function, &indexA, &indexB, t2);
+            if (s2 - target > tolerance)
+            {
+                output.state = m3_toiStateSeparated;
+                output.fraction = tMax;
+                done = 1;
+                break;
+            }
+            if (s2 >= target - tolerance)
+            {
+                t1 = t2; // advance the sweeps
+                break;
+            }
+            m3real s1 = ToiEvaluateSeparation(&function, indexA, indexB, t1);
+            if (s1 < target - tolerance)
+            {
+                output.state = m3_toiStateFailed;
+                output.fraction = t1;
+                done = 1;
+                break;
+            }
+            if (s1 <= target + tolerance)
+            {
+                output.state = m3_toiStateHit;
+                output.fraction = t1;
+                done = 1;
+                break;
+            }
+
+            // Root of f(t) - target = 0: alternate false position
+            // with bisection (the reference mix).
+            int32_t rootIterationCount = 0;
+            const int32_t maxRootIterations = 50;
+            m3real a1 = t1;
+            m3real a2 = t2;
+            for (;;)
+            {
+                m3real t;
+                if (rootIterationCount & 1)
+                {
+                    t = a1 + (target - s1) * (a2 - a1) / (s2 - s1);
+                }
+                else
+                {
+                    t = 0.5f * (a1 + a2);
+                }
+                rootIterationCount += 1;
+                m3real s = ToiEvaluateSeparation(&function, indexA, indexB, t);
+                m3real err = s - target;
+                if ((err < 0.0f ? -err : err) <= tolerance)
+                {
+                    t2 = t;
+                    break;
+                }
+                if (s > target)
+                {
+                    a1 = t;
+                    s1 = s;
+                }
+                else
+                {
+                    a2 = t;
+                    s2 = s;
+                }
+                if (rootIterationCount == maxRootIterations)
+                {
+                    break;
+                }
+            }
+
+            if (rootIterationCount == maxRootIterations - 1 && function.type == m3_separationEdges)
+            {
+                // Failing edge case: pin the axis and restart.
+                rootIterationCount = 0;
+                t2 = tMax;
+                ToiForceFixedAxis(&function, t1);
+            }
+
+            pushBackIterations += 1;
+            if (pushBackIterations == maxPushBackIterations)
+            {
+                break;
+            }
+        }
+
+        if (done)
+        {
+            break;
+        }
+    }
+    return output;
+}

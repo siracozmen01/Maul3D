@@ -28,6 +28,12 @@ extern "C"
         float linearDamping;
         float angularDamping;
         uint64_t userData; // opaque, carried verbatim
+        /// A high speed body that gets the full continuous pass
+        /// against static AND dynamic targets (2b-8). Every fast
+        /// dynamic body already sweeps against statics; the bullet
+        /// flag buys the dynamic-target sweep. Bullet versus bullet
+        /// is not resolved (the reference limitation, documented).
+        bool isBullet;
         int32_t internalValue;
     } m3BodyDef;
 

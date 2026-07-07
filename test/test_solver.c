@@ -609,6 +609,157 @@ static void TestQuickHullRockRests(void)
     m3DestroyWorld(world);
 }
 
+static void TestBulletStopsAtWall(void)
+{
+    // The 2b-8 milestone: a sphere at 200 m/s crosses 3.3 meters per
+    // step, sixty-six times its own radius; without the continuous
+    // pass it would skip the 0.1-thick wall entirely. Every FAST
+    // dynamic body sweeps against statics (the bullet flag is not
+    // needed for static targets), so both variants must stop.
+    for (int32_t variant = 0; variant < 2; ++variant)
+    {
+        m3WorldDef def = m3DefaultWorldDef();
+        def.gravity = (m3Vec3){0.0f, 0.0f, 0.0f};
+        def.bodyCapacity = 8;
+        def.shapeCapacity = 8;
+        m3WorldId world = m3CreateWorld(&def);
+
+        m3BodyDef bd = m3DefaultBodyDef();
+        bd.position = (m3Pos3){5.0, 0.0, 0.0};
+        m3BodyId wall = m3CreateBody(world, &bd);
+        m3ShapeDef sd = m3DefaultShapeDef();
+        m3CreateBoxShape(wall, &sd, (m3Vec3){0.05f, 1.0f, 1.0f});
+
+        bd.type = m3_dynamicBody;
+        bd.position = (m3Pos3){0.0, 0.0, 0.0};
+        bd.linearVelocity = (m3Vec3){200.0f, 0.0f, 0.0f};
+        bd.isBullet = variant == 1;
+        m3BodyId ball = m3CreateBody(world, &bd);
+        m3Sphere sphere = {{0.0f, 0.0f, 0.0f}, 0.1f};
+        m3CreateSphereShape(ball, &sd, &sphere);
+
+        int stayed = 1;
+        for (int32_t i = 0; i < 60; ++i)
+        {
+            m3World_Step(world, 1.0f / 60.0f, 4);
+            m3Pos3 p = m3Body_GetPosition(ball);
+            if (p.x > 4.9)
+            {
+                stayed = 0;
+            }
+        }
+        CHECK(stayed, "the fast sphere never crosses the thin wall");
+        m3DestroyWorld(world);
+    }
+}
+
+static void TestBulletVsDynamicTarget(void)
+{
+    // The flag semantics: dynamic targets are swept ONLY for bullets.
+    // A bullet fired at a floating box stops at its face (both sweeps
+    // enter the TOI: the target is free to drift). The identical
+    // non-bullet sphere tunnels straight through: the documented
+    // reason the flag exists.
+    for (int32_t variant = 0; variant < 2; ++variant)
+    {
+        m3WorldDef def = m3DefaultWorldDef();
+        def.gravity = (m3Vec3){0.0f, 0.0f, 0.0f};
+        def.bodyCapacity = 8;
+        def.shapeCapacity = 8;
+        m3WorldId world = m3CreateWorld(&def);
+
+        m3BodyDef bd = m3DefaultBodyDef();
+        bd.type = m3_dynamicBody;
+        bd.position = (m3Pos3){5.0, 0.0, 0.0};
+        m3BodyId target = m3CreateBody(world, &bd);
+        m3ShapeDef sd = m3DefaultShapeDef();
+        m3CreateBoxShape(target, &sd, (m3Vec3){0.5f, 1.0f, 1.0f});
+
+        bd.position = (m3Pos3){0.0, 0.0, 0.0};
+        bd.linearVelocity = (m3Vec3){150.0f, 0.0f, 0.0f};
+        bd.isBullet = variant == 1;
+        m3BodyId ball = m3CreateBody(world, &bd);
+        m3Sphere sphere = {{0.0f, 0.0f, 0.0f}, 0.1f};
+        m3CreateSphereShape(ball, &sd, &sphere);
+
+        int stayedBehind = 1;
+        for (int32_t i = 0; i < 40; ++i)
+        {
+            m3World_Step(world, 1.0f / 60.0f, 4);
+            m3Pos3 pb = m3Body_GetPosition(ball);
+            m3Pos3 pt = m3Body_GetPosition(target);
+            if (pb.x > pt.x)
+            {
+                stayedBehind = 0;
+            }
+        }
+        if (variant == 1)
+        {
+            CHECK(stayedBehind, "the bullet stays behind the dynamic box");
+        }
+        else
+        {
+            m3Pos3 pb = m3Body_GetPosition(ball);
+            CHECK(!stayedBehind && pb.x > 10.0,
+                  "the non-bullet tunnels through the dynamic box (why the flag exists)");
+        }
+        m3DestroyWorld(world);
+    }
+}
+
+static void TestCcdDeterminism(void)
+{
+    // The continuous pass joins the determinism contract: the bullet
+    // wall scene runs twice and hashes bit-identically, and a
+    // journaled session carrying the bullet flag replays bit for bit.
+    uint64_t hashes[2];
+    uint8_t journal[8192];
+    int32_t journalBytes = 0;
+    for (int32_t run = 0; run < 2; ++run)
+    {
+        m3WorldDef def = m3DefaultWorldDef();
+        def.gravity = (m3Vec3){0.0f, -10.0f, 0.0f};
+        def.bodyCapacity = 8;
+        def.shapeCapacity = 8;
+        m3WorldId world = m3CreateWorld(&def);
+        if (run == 0)
+        {
+            CHECK(m3World_JournalBegin(world, journal, (int32_t)sizeof(journal)), "journal arms");
+        }
+        AddGroundPlane(world, 0.6f);
+        m3BodyDef bd = m3DefaultBodyDef();
+        bd.position = (m3Pos3){6.0, 1.0, 0.0};
+        m3BodyId wall = m3CreateBody(world, &bd);
+        m3ShapeDef sd = m3DefaultShapeDef();
+        m3CreateBoxShape(wall, &sd, (m3Vec3){0.05f, 1.0f, 1.0f});
+
+        bd.type = m3_dynamicBody;
+        bd.position = (m3Pos3){0.0, 0.5, 0.0};
+        bd.linearVelocity = (m3Vec3){120.0f, 0.0f, 0.0f};
+        bd.isBullet = true;
+        m3BodyId ball = m3CreateBody(world, &bd);
+        m3Sphere sphere = {{0.0f, 0.0f, 0.0f}, 0.2f};
+        m3CreateSphereShape(ball, &sd, &sphere);
+
+        for (int32_t i = 0; i < 90; ++i)
+        {
+            m3World_Step(world, 1.0f / 60.0f, 4);
+        }
+        hashes[run] = m3World_Hash(world);
+        if (run == 0)
+        {
+            journalBytes = m3World_JournalEnd(world);
+            CHECK(journalBytes > 0, "the ccd session recorded");
+            m3WorldId twin = m3CreateWorld(&def);
+            CHECK(m3World_JournalReplay(twin, journal, journalBytes), "the ccd session replays");
+            CHECK(m3World_Hash(twin) == hashes[0], "the replay is bit-identical");
+            m3DestroyWorld(twin);
+        }
+        m3DestroyWorld(world);
+    }
+    CHECK(hashes[0] == hashes[1], "the ccd scene is bit-deterministic");
+}
+
 static void TestSolverHashGate(void)
 {
     // The fixed solver scene for the CI gate: a plane, a three-sphere
@@ -643,6 +794,9 @@ int main(void)
     TestCrossedCapsulesSeparate();
     TestDeepFuzzDeterminism();
     TestQuickHullRockRests();
+    TestBulletStopsAtWall();
+    TestBulletVsDynamicTarget();
+    TestCcdDeterminism();
     TestSolverHashGate();
     if (s_failures == 0)
     {

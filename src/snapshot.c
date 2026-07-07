@@ -22,7 +22,7 @@
 #endif
 
 #define M3_SNAPSHOT_MAGIC   0x4D33534Eu // 'M3SN'
-#define M3_SNAPSHOT_VERSION 9u          // v9: QuickHull-sized hull blocks
+#define M3_SNAPSHOT_VERSION 10u         // v10: bullet flags and extents
 
 // The math types are canonical field data only because they are
 // provably padding-free; a change here is a format version bump.
@@ -121,6 +121,9 @@ static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3Wal
     M3_BLOCK(world->linearDamping, cap * (int32_t)sizeof(m3real));
     M3_BLOCK(world->angularDamping, cap * (int32_t)sizeof(m3real));
     M3_BLOCK(world->types, cap * (int32_t)sizeof(uint8_t));
+    M3_BLOCK(world->bulletFlags, cap * (int32_t)sizeof(uint8_t));
+    M3_BLOCK(world->minExtents, cap * (int32_t)sizeof(float));
+    M3_BLOCK(world->maxExtents, cap * (int32_t)sizeof(float));
     M3_BLOCK(world->userData, cap * (int32_t)sizeof(uint64_t));
     // Identity is state: generations, liveness, and the FIFO queue
     // restore exactly, so post-rollback id minting cannot diverge.
@@ -289,6 +292,7 @@ uint64_t m3World_Hash(m3WorldId worldId)
         h = m3Hash64(h, &world->invInertiaLocal[i], (int32_t)sizeof(m3Mat3));
         h = m3Hash64(h, &world->localCenters[i], (int32_t)sizeof(m3Vec3));
         h = m3Hash64(h, &world->types[i], 1);
+        h = m3Hash64(h, &world->bulletFlags[i], 1);
     }
     int32_t maxShape = world->shapePool.maxIndex;
     for (int32_t i = 0; i < maxShape; ++i)

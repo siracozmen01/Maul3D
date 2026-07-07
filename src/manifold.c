@@ -436,7 +436,7 @@ static m3Vec3 FromCom(const m3World* world, int32_t body, double px, double py, 
 // and capsules park their point(s) in the caller's scratch (the proxy
 // only borrows the pointer); hulls point straight at the interned
 // vertex array.
-static m3DistanceProxy ShapeProxy(const m3World* world, int32_t shape, m3Vec3 scratch[2])
+m3DistanceProxy m3MakeShapeProxy(const m3World* world, int32_t shape, m3Vec3 scratch[2])
 {
     m3DistanceProxy proxy;
     uint8_t type = world->shapeType[shape];
@@ -948,8 +948,8 @@ m3Result m3UpdateContacts(m3World* world, const uint64_t* oldKeys, const m3Manif
             input.p = m3InvRotateVec3(xfA->q, dp);
             m3Vec3 pointsA[2];
             m3Vec3 pointsB[2];
-            input.proxyA = ShapeProxy(world, shapeA, pointsA);
-            input.proxyB = ShapeProxy(world, shapeB, pointsB);
+            input.proxyA = m3MakeShapeProxy(world, shapeA, pointsA);
+            input.proxyB = m3MakeShapeProxy(world, shapeB, pointsB);
             input.useRadii = false;
             m3SimplexCache cache;
             cache.count = 0;
