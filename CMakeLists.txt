@@ -11,6 +11,7 @@ add_library(maul3d STATIC
     src/broad_phase.c
     src/core.c
     src/distance.c
+    src/draw.c
     src/dynamic_tree.c
     src/hull.c
     src/manifold.c
@@ -107,3 +108,8 @@ add_executable(test_journal test/test_journal.c)
 target_link_libraries(test_journal PRIVATE maul3d)
 maul3d_apply_flags(test_journal)
 add_test(NAME journal COMMAND test_journal)
+
+add_executable(test_draw test/test_draw.c)
+target_link_libraries(test_draw PRIVATE maul3d)
+maul3d_apply_flags(test_draw)
+add_test(NAME draw COMMAND test_draw)
