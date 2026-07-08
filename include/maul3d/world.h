@@ -63,6 +63,36 @@ extern "C"
     M3_API int32_t m3World_Snapshot(m3WorldId worldId, void* out, int32_t capacity);
     M3_API bool m3World_Restore(m3WorldId worldId, const void* data, int32_t size);
 
+    /// Contact events (2b-13): begin fires on the step two shapes
+    /// first touch, end fires on the step they separate. Derived from
+    /// the canonical pair walk, so replay produces the identical
+    /// stream. Pointers are valid until the next step or restore.
+    /// Destroying a shape emits no end event (the id would be stale);
+    /// events are transient observers and never snapshot state.
+    typedef struct m3ContactEvent
+    {
+        m3ShapeId shapeA; // the lower shape index of the pair
+        m3ShapeId shapeB;
+    } m3ContactEvent;
+
+    M3_API const m3ContactEvent* m3World_ContactBeginEvents(m3WorldId worldId, int32_t* count);
+    M3_API const m3ContactEvent* m3World_ContactEndEvents(m3WorldId worldId, int32_t* count);
+
+    /// Closest-hit ray cast: origin in world doubles, translation =
+    /// direction times reach. fraction in [0, 1] along the
+    /// translation; front faces only (winding is a contract). Ties
+    /// break to the lower shape index. A zero translation misses.
+    typedef struct m3RayHit
+    {
+        m3ShapeId shape;
+        m3Pos3 point;
+        m3Vec3 normal;
+        m3real fraction;
+        bool hit;
+    } m3RayHit;
+
+    M3_API m3RayHit m3World_CastRayClosest(m3WorldId worldId, m3Pos3 origin, m3Vec3 translation);
+
     /// FNV-1a 64 over the curated deterministic state (transforms,
     /// velocities, mass, types, step count, gravity) in canonical slot
     /// order. The value every gate compares.

@@ -149,6 +149,10 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     }
 
     world->pairCapacity = 8 * shapeCap;
+    M3_ALLOC(world->beginEvents, world->pairCapacity, m3ContactEvent);
+    M3_ALLOC(world->endEvents, world->pairCapacity, m3ContactEvent);
+    world->beginEventCount = 0;
+    world->endEventCount = 0;
     M3_ALLOC(world->pairKeys, world->pairCapacity, uint64_t);
     M3_ALLOC(world->manifolds, world->pairCapacity, m3Manifold);
     world->pairCount = 0;
@@ -208,6 +212,8 @@ void m3DestroyWorld(m3WorldId worldId)
     m3Free(world->meshData);
     m3Free(world->meshRefCounts);
     m3Free(world->shapeMeshIndex);
+    m3Free(world->beginEvents);
+    m3Free(world->endEvents);
     m3TreeDestroy(&world->tree);
     m3Free(world->proxyIds);
     m3Free(world->pairKeys);
@@ -278,6 +284,36 @@ int32_t m3World_JournalEnd(m3WorldId worldId)
     world->journalActive = 0;
     world->journalOverflow = 0;
     return bytes;
+}
+
+const m3ContactEvent* m3World_ContactBeginEvents(m3WorldId worldId, int32_t* count)
+{
+    m3World* world = m3WorldFromId(worldId);
+    if (world == NULL || count == NULL)
+    {
+        if (count != NULL)
+        {
+            *count = 0;
+        }
+        return NULL;
+    }
+    *count = world->beginEventCount;
+    return world->beginEvents;
+}
+
+const m3ContactEvent* m3World_ContactEndEvents(m3WorldId worldId, int32_t* count)
+{
+    m3World* world = m3WorldFromId(worldId);
+    if (world == NULL || count == NULL)
+    {
+        if (count != NULL)
+        {
+            *count = 0;
+        }
+        return NULL;
+    }
+    *count = world->endEventCount;
+    return world->endEvents;
 }
 
 bool m3World_JournalReplay(m3WorldId worldId, const void* data, int32_t size)

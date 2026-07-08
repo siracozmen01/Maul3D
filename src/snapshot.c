@@ -278,6 +278,9 @@ bool m3World_Restore(m3WorldId worldId, const void* data, int32_t size)
     world->meshPool.freeHead = header.meshFreeHead;
     world->meshPool.freeCount = header.meshFreeCount;
     world->meshPool.retiredCount = header.meshRetiredCount;
+    // Events are transient observers: a restore clears them.
+    world->beginEventCount = 0;
+    world->endEventCount = 0;
     world->hullPool.maxIndex = header.hullMaxIndex;
     world->hullPool.freeHead = header.hullFreeHead;
     world->hullPool.freeCount = header.hullFreeCount;

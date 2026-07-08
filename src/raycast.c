@@ -1,0 +1,329 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Sirac Ozmen
+//
+// Closest-hit ray casting (2b-13). The world cast localizes the
+// double origin per shape (the hybrid precision pattern), runs an
+// analytic kernel per shape family in the body frame, and keeps the
+// smallest fraction with ties to the lower shape index. Candidates
+// come from the tree via the ray's bounding box plus the dedicated
+// plane and nothing-else passes; a descending ray traversal is a
+// performance refinement that joins the BVH work when profiles ask.
+// Front faces only, everywhere: winding is a contract.
+
+#include "world_internal.h"
+
+#include <float.h>
+#include <string.h>
+
+typedef struct m3RayLocalHit
+{
+    m3real fraction; // along the full translation
+    m3Vec3 normal;   // body frame
+    int hit;
+} m3RayLocalHit;
+
+// Sphere: |o + t*d - c|^2 = r^2, smallest root in [0, 1].
+static m3RayLocalHit RaySphere(m3Vec3 o, m3Vec3 d, m3Vec3 center, m3real radius)
+{
+    m3RayLocalHit out = {0.0f, {0.0f, 0.0f, 0.0f}, 0};
+    m3Vec3 m = m3Sub3(o, center);
+    m3real a = m3Dot3(d, d);
+    m3real b = m3Dot3(m, d);
+    m3real c = m3Dot3(m, m) - radius * radius;
+    if (c < 0.0f)
+    {
+        return out; // starts inside: no front-face hit
+    }
+    m3real disc = b * b - a * c;
+    if (!(a > 0.0f) || disc < 0.0f)
+    {
+        return out;
+    }
+    m3real t = (-b - sqrtf(disc)) / a;
+    if (t < 0.0f || t > 1.0f)
+    {
+        return out;
+    }
+    m3Vec3 p = m3Add3(o, m3MulSV3(t, d));
+    out.fraction = t;
+    out.normal = m3Normalize3(m3Sub3(p, center));
+    out.hit = 1;
+    return out;
+}
+
+// Capsule: the infinite cylinder about the segment plus both cap
+// spheres; smallest valid root wins.
+static m3RayLocalHit RayCapsule(m3Vec3 o, m3Vec3 d, m3Vec3 p1, m3Vec3 p2, m3real radius)
+{
+    m3RayLocalHit best = {0.0f, {0.0f, 0.0f, 0.0f}, 0};
+    m3Vec3 axis = m3Sub3(p2, p1);
+    m3real axisLen2 = m3Dot3(axis, axis);
+
+    // Cylinder part: components perpendicular to the axis.
+    if (axisLen2 > 0.0f)
+    {
+        m3Vec3 m = m3Sub3(o, p1);
+        m3real md = m3Dot3(m, axis);
+        m3real dd = m3Dot3(d, axis);
+        m3Vec3 mPerp = m3Sub3(m, m3MulSV3(md / axisLen2, axis));
+        m3Vec3 dPerp = m3Sub3(d, m3MulSV3(dd / axisLen2, axis));
+        m3real a = m3Dot3(dPerp, dPerp);
+        m3real b = m3Dot3(mPerp, dPerp);
+        m3real c = m3Dot3(mPerp, mPerp) - radius * radius;
+        if (c >= 0.0f && a > 0.0f)
+        {
+            m3real disc = b * b - a * c;
+            if (disc >= 0.0f)
+            {
+                m3real t = (-b - sqrtf(disc)) / a;
+                if (t >= 0.0f && t <= 1.0f)
+                {
+                    // Accept only between the cap planes.
+                    m3real s = md + t * dd;
+                    if (s >= 0.0f && s <= axisLen2)
+                    {
+                        m3Vec3 p = m3Add3(o, m3MulSV3(t, d));
+                        m3Vec3 onAxis = m3Add3(p1, m3MulSV3(s / axisLen2, axis));
+                        best.fraction = t;
+                        best.normal = m3Normalize3(m3Sub3(p, onAxis));
+                        best.hit = 1;
+                    }
+                }
+            }
+        }
+    }
+
+    // Cap spheres.
+    m3RayLocalHit cap1 = RaySphere(o, d, p1, radius);
+    if (cap1.hit && (!best.hit || cap1.fraction < best.fraction))
+    {
+        best = cap1;
+    }
+    m3RayLocalHit cap2 = RaySphere(o, d, p2, radius);
+    if (cap2.hit && (!best.hit || cap2.fraction < best.fraction))
+    {
+        best = cap2;
+    }
+    return best;
+}
+
+// Convex hull: clip the ray against every face plane (enter on
+// front-facing planes, exit on back-facing); classic slab logic.
+static m3RayLocalHit RayHull(m3Vec3 o, m3Vec3 d, const m3HullData* hull)
+{
+    m3RayLocalHit out = {0.0f, {0.0f, 0.0f, 0.0f}, 0};
+    m3real tEnter = 0.0f;
+    m3real tExit = 1.0f;
+    m3Vec3 enterNormal = {0.0f, 0.0f, 0.0f};
+    int haveEnter = 0;
+    for (int32_t f = 0; f < hull->faceCount; ++f)
+    {
+        m3Vec3 n = hull->faceNormals[f];
+        m3real dist = m3Dot3(n, o) - hull->faceOffsets[f];
+        m3real denom = m3Dot3(n, d);
+        if (denom == 0.0f)
+        {
+            if (dist > 0.0f)
+            {
+                return out; // parallel and outside this face: miss
+            }
+            continue;
+        }
+        m3real t = -dist / denom;
+        if (denom < 0.0f)
+        {
+            // Entering through this plane.
+            if (t > tEnter)
+            {
+                tEnter = t;
+                enterNormal = n;
+                haveEnter = 1;
+            }
+        }
+        else
+        {
+            // Exiting through this plane.
+            tExit = m3MinF(tExit, t);
+        }
+        if (tEnter > tExit)
+        {
+            return out;
+        }
+    }
+    if (!haveEnter)
+    {
+        return out; // started inside: no front-face hit
+    }
+    out.fraction = tEnter;
+    out.normal = enterNormal;
+    out.hit = 1;
+    return out;
+}
+
+// Mesh: bounded per-triangle scan, front faces only.
+static m3RayLocalHit RayMesh(m3Vec3 o, m3Vec3 d, const m3MeshData* mesh)
+{
+    m3RayLocalHit best = {0.0f, {0.0f, 0.0f, 0.0f}, 0};
+    for (int32_t t = 0; t < mesh->triangleCount; ++t)
+    {
+        m3Vec3 a = mesh->vertices[mesh->indices[3 * t + 0]];
+        m3Vec3 b = mesh->vertices[mesh->indices[3 * t + 1]];
+        m3Vec3 c = mesh->vertices[mesh->indices[3 * t + 2]];
+        m3Vec3 e1 = m3Sub3(b, a);
+        m3Vec3 e2 = m3Sub3(c, a);
+        m3Vec3 n = m3Cross3(e1, e2);
+        m3real denom = m3Dot3(n, d);
+        if (denom >= 0.0f)
+        {
+            continue; // back face or parallel
+        }
+        m3real dist = m3Dot3(n, m3Sub3(o, a));
+        m3real tHit = dist / -denom; // denom < 0: tHit >= 0 when o is in front
+        if (tHit < 0.0f || tHit > 1.0f)
+        {
+            continue;
+        }
+        if (best.hit && tHit >= best.fraction)
+        {
+            continue;
+        }
+        // Inside test via edge cross products.
+        m3Vec3 p = m3Add3(o, m3MulSV3(tHit, d));
+        m3Vec3 ap = m3Sub3(p, a);
+        m3Vec3 bp = m3Sub3(p, b);
+        m3Vec3 cp = m3Sub3(p, c);
+        if (m3Dot3(m3Cross3(e1, ap), n) < 0.0f || m3Dot3(m3Cross3(m3Sub3(c, b), bp), n) < 0.0f ||
+            m3Dot3(m3Cross3(m3Sub3(a, c), cp), n) < 0.0f)
+        {
+            continue;
+        }
+        best.fraction = tHit;
+        best.normal = m3Normalize3(n);
+        best.hit = 1;
+    }
+    return best;
+}
+
+typedef struct m3RayCastContext
+{
+    m3World* world;
+    m3Pos3 origin;
+    m3Vec3 translation;
+    m3RayHit best;
+    int32_t bestShape;
+} m3RayCastContext;
+
+static void RayTestShape(m3RayCastContext* ctx, int32_t shape)
+{
+    m3World* world = ctx->world;
+    int32_t body = world->shapeBody[shape];
+    const m3Transform* xf = &world->transforms[body];
+
+    // Localize the double origin into the body frame.
+    m3Vec3 rel = {(m3real)(ctx->origin.x - xf->p.x), (m3real)(ctx->origin.y - xf->p.y),
+                  (m3real)(ctx->origin.z - xf->p.z)};
+    m3Vec3 o = m3InvRotateVec3(xf->q, rel);
+    m3Vec3 d = m3InvRotateVec3(xf->q, ctx->translation);
+
+    m3RayLocalHit local = {0.0f, {0.0f, 0.0f, 0.0f}, 0};
+    uint8_t type = world->shapeType[shape];
+    if (type == (uint8_t)m3_sphereShape)
+    {
+        local = RaySphere(o, d, world->shapeGeom[shape].v, world->shapeGeom[shape].s);
+    }
+    else if (type == (uint8_t)m3_capsuleShape)
+    {
+        local = RayCapsule(o, d, world->shapeGeom[shape].v, world->shapeGeom[shape].v2,
+                           world->shapeGeom[shape].s);
+    }
+    else if (type == (uint8_t)m3_hullShape)
+    {
+        local = RayHull(o, d, &world->hullData[world->shapeHullIndex[shape]]);
+    }
+    else if (type == (uint8_t)m3_meshShape)
+    {
+        local = RayMesh(o, d, &world->meshData[world->shapeMeshIndex[shape]]);
+    }
+    else if (type == (uint8_t)m3_planeShape)
+    {
+        m3Vec3 n = world->shapeGeom[shape].v;
+        m3real dist = m3Dot3(n, o) - world->shapeGeom[shape].s;
+        m3real denom = m3Dot3(n, d);
+        if (dist >= 0.0f && denom < 0.0f)
+        {
+            m3real t = -dist / denom;
+            if (t >= 0.0f && t <= 1.0f)
+            {
+                local.fraction = t;
+                local.normal = n;
+                local.hit = 1;
+            }
+        }
+    }
+
+    if (!local.hit)
+    {
+        return;
+    }
+    if (ctx->best.hit && (local.fraction > ctx->best.fraction ||
+                          (local.fraction == ctx->best.fraction && shape >= ctx->bestShape)))
+    {
+        return; // farther, or the canonical lower-index tie loss
+    }
+    ctx->best.hit = true;
+    ctx->best.fraction = local.fraction;
+    ctx->best.normal = m3RotateVec3(xf->q, local.normal);
+    ctx->best.point.x = ctx->origin.x + (double)(local.fraction * ctx->translation.x);
+    ctx->best.point.y = ctx->origin.y + (double)(local.fraction * ctx->translation.y);
+    ctx->best.point.z = ctx->origin.z + (double)(local.fraction * ctx->translation.z);
+    ctx->best.shape =
+        (m3ShapeId){shape + 1, world->worldIndex0, world->shapePool.generations[shape]};
+    ctx->bestShape = shape;
+}
+
+static bool RayQueryCallback(int32_t shape, void* userContext)
+{
+    RayTestShape((m3RayCastContext*)userContext, shape);
+    return true;
+}
+
+m3RayHit m3World_CastRayClosest(m3WorldId worldId, m3Pos3 origin, m3Vec3 translation)
+{
+    m3RayCastContext ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.best.fraction = 1.0f;
+    m3World* world = m3WorldFromId(worldId);
+    if (world == NULL || !(m3Dot3(translation, translation) > 0.0f))
+    {
+        return ctx.best; // null world or zero ray: a clean miss
+    }
+    ctx.world = world;
+    ctx.origin = origin;
+    ctx.translation = translation;
+    ctx.bestShape = INT32_MAX;
+
+    // Candidates: the tree under the ray's bounding box (a coarse
+    // superset; the kernels decide), then the plane pass.
+    double lo[3];
+    double hi[3];
+    double ex = origin.x + (double)translation.x;
+    double ey = origin.y + (double)translation.y;
+    double ez = origin.z + (double)translation.z;
+    lo[0] = origin.x < ex ? origin.x : ex;
+    lo[1] = origin.y < ey ? origin.y : ey;
+    lo[2] = origin.z < ez ? origin.z : ez;
+    hi[0] = origin.x > ex ? origin.x : ex;
+    hi[1] = origin.y > ey ? origin.y : ey;
+    hi[2] = origin.z > ez ? origin.z : ez;
+    m3TreeQuery(&world->tree, lo, hi, RayQueryCallback, &ctx);
+
+    int32_t maxShape = world->shapePool.maxIndex;
+    for (int32_t s = 0; s < maxShape; ++s)
+    {
+        if (world->shapePool.alive[s] != 0 && world->shapeType[s] == (uint8_t)m3_planeShape)
+        {
+            RayTestShape(&ctx, s);
+        }
+    }
+    return ctx.best;
+}

@@ -915,6 +915,69 @@ void m3StepInternal(m3World* world, float dt, int32_t substeps)
         return;
     }
 
+    // Contact events: a canonical merge walk of the old and new pair
+    // lists (both sorted). Serial and after the parallel narrowphase
+    // on purpose: appends must happen in pair order, bit-stably.
+    world->beginEventCount = 0;
+    world->endEventCount = 0;
+    {
+        int32_t iNew = 0;
+        int32_t iOld = 0;
+        while (iNew < world->pairCount || iOld < oldCount)
+        {
+            uint64_t keyNew = iNew < world->pairCount ? world->pairKeys[iNew] : UINT64_MAX;
+            uint64_t keyOld = iOld < oldCount ? oldKeys[iOld] : UINT64_MAX;
+            int touchNew = 0;
+            int touchOld = 0;
+            uint64_t key;
+            if (keyNew < keyOld)
+            {
+                key = keyNew;
+                touchNew = world->manifolds[iNew].pointCount > 0;
+                iNew += 1;
+            }
+            else if (keyOld < keyNew)
+            {
+                key = keyOld;
+                touchOld = oldManifolds[iOld].pointCount > 0;
+                iOld += 1;
+            }
+            else
+            {
+                key = keyNew;
+                touchNew = world->manifolds[iNew].pointCount > 0;
+                touchOld = oldManifolds[iOld].pointCount > 0;
+                iNew += 1;
+                iOld += 1;
+            }
+            if (touchNew == touchOld)
+            {
+                continue;
+            }
+            int32_t sA = (int32_t)(key >> 32);
+            int32_t sB = (int32_t)(key & 0xFFFFFFFFu);
+            // A vanished pair whose shape died emits nothing: the id
+            // would be stale (documented on the API).
+            if (world->shapePool.alive[sA] == 0 || world->shapePool.alive[sB] == 0)
+            {
+                continue;
+            }
+            m3ContactEvent event;
+            event.shapeA =
+                (m3ShapeId){sA + 1, world->worldIndex0, world->shapePool.generations[sA]};
+            event.shapeB =
+                (m3ShapeId){sB + 1, world->worldIndex0, world->shapePool.generations[sB]};
+            if (touchNew && world->beginEventCount < world->pairCapacity)
+            {
+                world->beginEvents[world->beginEventCount++] = event;
+            }
+            else if (touchOld && world->endEventCount < world->pairCapacity)
+            {
+                world->endEvents[world->endEventCount++] = event;
+            }
+        }
+    }
+
     // Islands and wake propagation BEFORE the solve: a sleeping body
     // touched by an awake one participates in this very step.
     int32_t* islandParent = IslandWakePass(world);

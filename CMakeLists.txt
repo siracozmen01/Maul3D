@@ -15,6 +15,7 @@ add_library(maul3d STATIC
     src/hull.c
     src/manifold.c
     src/quickhull.c
+    src/raycast.c
     src/math_functions.c
     src/shape.c
     src/snapshot.c
@@ -77,6 +78,11 @@ target_link_libraries(test_quickhull PRIVATE maul3d)
 target_include_directories(test_quickhull PRIVATE src)
 maul3d_apply_flags(test_quickhull)
 add_test(NAME quickhull COMMAND test_quickhull)
+
+add_executable(test_queries test/test_queries.c)
+target_link_libraries(test_queries PRIVATE maul3d)
+maul3d_apply_flags(test_queries)
+add_test(NAME queries COMMAND test_queries)
 
 add_executable(test_journal test/test_journal.c)
 target_link_libraries(test_journal PRIVATE maul3d)

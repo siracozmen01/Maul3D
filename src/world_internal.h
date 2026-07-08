@@ -279,6 +279,13 @@ typedef struct m3World
     int32_t pairCount;
     int32_t pairCapacity;
 
+    // Contact events (transient observers, never snapshotted;
+    // cleared on step and on restore).
+    m3ContactEvent* beginEvents;
+    m3ContactEvent* endEvents;
+    int32_t beginEventCount;
+    int32_t endEventCount;
+
     // Per-step scratch (lifetime 2: never snapshotted).
     m3Stack scratch;
 
