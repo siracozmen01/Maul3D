@@ -36,6 +36,7 @@ add_library(maul3d ${MAUL3D_LIB_KIND}
     src/shape.c
     src/snapshot.c
     src/replay.c
+    src/diff.c
     src/solver.c
     src/voxel.c
     src/world.c
@@ -187,6 +188,7 @@ add_executable(m3replay tools/m3replay.c)
 target_link_libraries(m3replay PRIVATE maul3d)
 maul3d_apply_flags(m3replay)
 add_test(NAME replaytool COMMAND m3replay selftest)
+add_test(NAME replaydiff COMMAND m3replay difftest)
 
 add_executable(test_joints test/test_joints.c)
 target_link_libraries(test_joints PRIVATE maul3d)

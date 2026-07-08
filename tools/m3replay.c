@@ -29,9 +29,18 @@ static m3WorldDef DemoDef(void)
     return def;
 }
 
+static void DemoSessionEx(m3WorldId world, int32_t steps, int32_t injectStep);
+
 // A deterministic little storm: crates rain on a plane, a hinge
 // door gets a motor and a drive target, materials shift mid-run.
 static void DemoSession(m3WorldId world, int32_t steps)
+{
+    DemoSessionEx(world, steps, -1);
+}
+
+// injectStep >= 0 slips one extra impulse before that step: the
+// divergence the finder must pin to the exact step and body.
+static void DemoSessionEx(m3WorldId world, int32_t steps, int32_t injectStep)
 {
     m3BodyDef gd = m3DefaultBodyDef();
     m3BodyId ground = m3CreateBody(world, &gd);
@@ -41,6 +50,7 @@ static void DemoSession(m3WorldId world, int32_t steps)
     m3Shape_EnableHitEvents(floor, true);
 
     m3BodyId post;
+    m3BodyId injectTarget;
     m3JointId hinge;
     {
         m3BodyDef bd = m3DefaultBodyDef();
@@ -61,6 +71,7 @@ static void DemoSession(m3WorldId world, int32_t steps)
         jd.localAxisA = (m3Vec3){0.0f, 1.0f, 0.0f};
         jd.localAxisB = (m3Vec3){0.0f, 1.0f, 0.0f};
         hinge = m3CreateJoint(&jd);
+        injectTarget = door;
     }
 
     for (int32_t i = 0; i < steps; ++i)
@@ -86,6 +97,12 @@ static void DemoSession(m3WorldId world, int32_t steps)
         if (i == 150)
         {
             m3Shape_SetFriction(floor, 0.2f);
+        }
+        if (i == injectStep)
+        {
+            // The deliberate desync: a kick on the door's post
+            // partner, journaled like everything else.
+            m3Body_ApplyLinearImpulse(injectTarget, (m3Vec3){0.8f, 0.0f, 0.3f});
         }
         m3World_Step(world, 1.0f / 60.0f, 4);
     }
@@ -437,6 +454,208 @@ static int Play(const char* path, int32_t fromStep, int32_t toStep)
     return 0;
 }
 
+// Record a demo session (optionally with the injected desync)
+// into a malloc'd container.
+static uint8_t* RecordBlob(int32_t steps, int32_t injectStep, int32_t* outBytes)
+{
+    m3WorldDef def = DemoDef();
+    m3WorldId world = m3CreateWorld(&def);
+    int32_t snapBytes = m3World_SnapshotSize(world);
+    uint8_t* snap = (uint8_t*)malloc((size_t)snapBytes);
+    m3World_Snapshot(world, snap, snapBytes);
+    int32_t journalCap = 4 * 1024 * 1024;
+    uint8_t* journal = (uint8_t*)malloc((size_t)journalCap);
+    m3World_JournalBegin(world, journal, journalCap);
+    DemoSessionEx(world, steps, injectStep);
+    int32_t journalBytes = m3World_JournalEnd(world);
+    uint64_t finalHash = m3World_Hash(world);
+    int32_t need = m3ReplayEncodeSize(snapBytes, journalBytes);
+    uint8_t* blob = (uint8_t*)malloc((size_t)need);
+    m3ReplayEncode(snap, snapBytes, journal, journalBytes, finalHash, blob, need);
+    m3DestroyWorld(world);
+    free(journal);
+    free(snap);
+    *outBytes = need;
+    return blob;
+}
+
+// The finder: binary search the first step whose prefix hash
+// differs, verify the step before agrees, then diff the worlds.
+static int DiffViews(const m3ReplayView* va, const m3ReplayView* vb)
+{
+    Scrub sa;
+    Scrub sb;
+    memset(&sa, 0, sizeof(sa));
+    memset(&sb, 0, sizeof(sb));
+    if (!ScrubBuild(&sa, va) || !ScrubBuild(&sb, vb))
+    {
+        fprintf(stderr, "m3replay: diff scrub build failed\n");
+        return 1;
+    }
+    int32_t steps = sa.stepCount < sb.stepCount ? sa.stepCount : sb.stepCount;
+    uint64_t ha;
+    uint64_t hb;
+    PrefixHash(va, &sa, steps, &ha);
+    PrefixHash(vb, &sb, steps, &hb);
+    if (ha == hb && sa.stepCount == sb.stepCount)
+    {
+        printf("m3replay: no divergence across %d steps\n", steps);
+        ScrubFree(&sa);
+        ScrubFree(&sb);
+        return 0;
+    }
+    int32_t lo = 0; // known equal (step 0 = shared initial snapshot?)
+    PrefixHash(va, &sa, 0, &ha);
+    PrefixHash(vb, &sb, 0, &hb);
+    if (ha != hb)
+    {
+        printf("m3replay: the initial snapshots already differ\n");
+        ScrubFree(&sa);
+        ScrubFree(&sb);
+        return 2;
+    }
+    int32_t hi = steps; // known (or forced) different end
+    while (hi - lo > 1)
+    {
+        int32_t mid = lo + (hi - lo) / 2;
+        PrefixHash(va, &sa, mid, &ha);
+        PrefixHash(vb, &sb, mid, &hb);
+        if (ha == hb)
+        {
+            lo = mid;
+        }
+        else
+        {
+            hi = mid;
+        }
+    }
+    printf("m3replay: first divergent step %d\n", hi);
+    ScrubSeek(&sa, hi);
+    ScrubSeek(&sb, hi);
+    m3BodyDiff rows[10];
+    int32_t written = 0;
+    int32_t total = m3World_DiffReport(sa.world, sb.world, rows, 10, &written);
+    printf("m3replay: %d differing bodies, worst first:\n", total);
+    for (int32_t i = 0; i < written; ++i)
+    {
+        printf("  body %4d  pos %.6f  rot %.6f  vel %.6f%s%s\n", rows[i].body.index1,
+               (double)rows[i].positionError, (double)rows[i].rotationError,
+               (double)rows[i].velocityError, rows[i].onlyInA ? "  ONLY-A" : "",
+               rows[i].onlyInB ? "  ONLY-B" : "");
+    }
+    ScrubFree(&sa);
+    ScrubFree(&sb);
+    return 2;
+}
+
+static int Diff(const char* pathA, const char* pathB)
+{
+    int32_t bytesA = 0;
+    int32_t bytesB = 0;
+    uint8_t* dataA = ReadAll(pathA, &bytesA);
+    uint8_t* dataB = ReadAll(pathB, &bytesB);
+    m3ReplayView va;
+    m3ReplayView vb;
+    if (dataA == NULL || dataB == NULL || !m3ReplayDecode(dataA, bytesA, &va) ||
+        !m3ReplayDecode(dataB, bytesB, &vb))
+    {
+        fprintf(stderr, "m3replay: diff needs two valid M3J1 containers\n");
+        return 1;
+    }
+    int rc = DiffViews(&va, &vb);
+    free(dataA);
+    free(dataB);
+    return rc;
+}
+
+// The CI gate for the finder: identical twins stay silent; an
+// injected impulse is pinned to its exact step with the touched
+// body reported first.
+static int DiffTest(void)
+{
+    int32_t bytesA;
+    int32_t bytesB;
+    int32_t bytesC;
+    uint8_t* a = RecordBlob(300, -1, &bytesA);
+    uint8_t* b = RecordBlob(300, -1, &bytesB);
+    uint8_t* c = RecordBlob(300, 150, &bytesC);
+    m3ReplayView va;
+    m3ReplayView vb;
+    m3ReplayView vc;
+    if (!m3ReplayDecode(a, bytesA, &va) || !m3ReplayDecode(b, bytesB, &vb) ||
+        !m3ReplayDecode(c, bytesC, &vc))
+    {
+        fprintf(stderr, "difftest: decode failed\n");
+        return 1;
+    }
+    printf("difftest: twins...\n");
+    if (DiffViews(&va, &vb) != 0)
+    {
+        fprintf(stderr, "difftest: identical twins reported a divergence\n");
+        return 1;
+    }
+    printf("difftest: injected...\n");
+    Scrub sa;
+    Scrub sc;
+    memset(&sa, 0, sizeof(sa));
+    memset(&sc, 0, sizeof(sc));
+    if (!ScrubBuild(&sa, &va) || !ScrubBuild(&sc, &vc))
+    {
+        return 1;
+    }
+    // Recompute the first divergent step the same way diff does.
+    int32_t lo = 0;
+    int32_t hi = 300;
+    uint64_t ha;
+    uint64_t hc;
+    while (hi - lo > 1)
+    {
+        int32_t mid = lo + (hi - lo) / 2;
+        PrefixHash(&va, &sa, mid, &ha);
+        PrefixHash(&vc, &sc, mid, &hc);
+        if (ha == hc)
+        {
+            lo = mid;
+        }
+        else
+        {
+            hi = mid;
+        }
+    }
+    // The impulse lands before step 150's record: the first
+    // divergent post-step state is step 151 (1-based prefix 151).
+    if (hi != 151)
+    {
+        fprintf(stderr, "difftest: expected first divergence at 151, found %d\n", hi);
+        return 1;
+    }
+    ScrubSeek(&sa, hi);
+    ScrubSeek(&sc, hi);
+    m3BodyDiff rows[4];
+    int32_t written = 0;
+    int32_t total = m3World_DiffReport(sa.world, sc.world, rows, 4, &written);
+    if (total <= 0 || written <= 0)
+    {
+        fprintf(stderr, "difftest: no body diff at the divergent step\n");
+        return 1;
+    }
+    // The kicked door is body index 3 (ground, post, door, then
+    // rain), reported first by error magnitude.
+    if (rows[0].body.index1 != 3)
+    {
+        fprintf(stderr, "difftest: expected the door (body 3) first, got %d\n",
+                rows[0].body.index1);
+        return 1;
+    }
+    ScrubFree(&sa);
+    ScrubFree(&sc);
+    free(a);
+    free(b);
+    free(c);
+    printf("m3replay difftest: twins silent, injection pinned to step 151, door first\n");
+    return 0;
+}
+
 // The CI gate: record the demo in memory, scrub-thrash it with a
 // deterministic LCG, compare every landing against the straight
 // run. No files, runs everywhere.
@@ -529,7 +748,15 @@ int main(int argc, char** argv)
     {
         return SelfTest();
     }
+    if (argc == 4 && strcmp(argv[1], "diff") == 0)
+    {
+        return Diff(argv[2], argv[3]);
+    }
+    if (argc == 2 && strcmp(argv[1], "difftest") == 0)
+    {
+        return DiffTest();
+    }
     fprintf(stderr, "usage: m3replay record|info|verify <file.m3j> | seek <file> <N> | play "
-                    "<file> <A> <B> | selftest\n");
+                    "<file> <A> <B> | diff <a> <b> | selftest | difftest\n");
     return 1;
 }

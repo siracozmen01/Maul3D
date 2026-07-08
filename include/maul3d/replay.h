@@ -4,7 +4,8 @@
 #ifndef MAUL3D_REPLAY_H
 #define MAUL3D_REPLAY_H
 
-#include "maul3d/base.h"
+#include "maul3d/math.h"
+#include "maul3d/world.h"
 
 #ifdef __cplusplus
 extern "C"
@@ -59,6 +60,29 @@ extern "C"
     /// record walk). Returns false on any corruption; the view is
     /// untouched on refusal.
     M3_API bool m3ReplayDecode(const void* data, int32_t bytes, m3ReplayView* out);
+
+    /// One row of a world-versus-world body comparison (9-3). A
+    /// DEBUG READ for the divergence finder: never state, never
+    /// hashed, order is total (error magnitude descending, body
+    /// index ascending on ties).
+    typedef struct m3BodyDiff
+    {
+        m3BodyId body;        /// the id under world A's numbering
+        m3real positionError; /// |pA - pB|, meters
+        m3real rotationError; /// 1 - |dot(qA, qB)|, unitless
+        m3real velocityError; /// |vA - vB| + |wA - wB|
+        bool onlyInA;         /// alive in A, missing in B
+        bool onlyInB;         /// alive in B, missing in A
+    } m3BodyDiff;
+
+    /// Compare every body slot of two worlds (same capacities
+    /// expected; mismatched capacities refuse). Writes up to
+    /// capacity rows sorted worst-first, sets outCount to the
+    /// number written, and returns the TOTAL number of differing
+    /// slots (which may exceed capacity), or -1 on refusal. Zero
+    /// means the worlds agree body-for-body.
+    M3_API int32_t m3World_DiffReport(m3WorldId worldA, m3WorldId worldB, m3BodyDiff* out,
+                                      int32_t capacity, int32_t* outCount);
 
 #ifdef __cplusplus
 }
