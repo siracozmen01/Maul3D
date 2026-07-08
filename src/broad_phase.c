@@ -248,8 +248,23 @@ m3Result m3UpdatePairs(m3World* world)
         m3Aabb3d tight = SphereAabb(world, i);
         if (!m3TreeContains(&world->tree, world->proxyIds[i], tight.lo, tight.hi))
         {
+            // Reinsert FAT, like creation does. The first draft
+            // reinserted the tight box, which meant every moving
+            // shape escaped its own proxy again the very next step
+            // (a remove, an insert, and a rebalance per shape per
+            // step: the 6-2 profile's forty percent), and, worse,
+            // approaching bodies could not pair until their exact
+            // boxes touched: the speculative contact window the
+            // solver is built around silently vanished for every
+            // shape that had ever moved.
+            m3Aabb3d fat = tight;
+            for (int32_t k = 0; k < 3; ++k)
+            {
+                fat.lo[k] -= (double)M3_AABB_MARGIN;
+                fat.hi[k] += (double)M3_AABB_MARGIN;
+            }
             m3TreeRemove(&world->tree, world->proxyIds[i]);
-            world->proxyIds[i] = m3TreeInsert(&world->tree, tight.lo, tight.hi, i);
+            world->proxyIds[i] = m3TreeInsert(&world->tree, fat.lo, fat.hi, i);
             if (world->proxyIds[i] == M3_TREE_NULL)
             {
                 return m3_errorCapacity;

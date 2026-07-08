@@ -2518,6 +2518,30 @@ void m3StepInternal(m3World* world, float dt, int32_t substeps)
         m3StackDestroy(&world->scratch);
         world->scratch = m3StackCreate(bigger);
     }
+    // Pre-flight sizing (V-STALL, the moat item): a starved step is
+    // deterministic SIZE-DRIVEN state evolution, and struct sizes
+    // are not part of the cross-platform contract, so a stall on
+    // one compiler could land on a different tick than another.
+    // The estimate below uses PINNED per-item byte budgets chosen
+    // to dominate every platform's real sizes; counts are pure
+    // state, so every cell grows on the same tick and the reactive
+    // doubling above becomes a backstop that never fires in an
+    // honest run.
+    {
+        int64_t need = 64 * 1024 + 128 * (int64_t)world->bodyPool.maxIndex +
+                       64 * (int64_t)world->shapePool.maxIndex + 1024 * (int64_t)world->pairCount +
+                       1024 * (int64_t)world->jointPool.maxIndex;
+        if (need > (int64_t)world->scratch.capacity && world->scratch.capacity < (1 << 28))
+        {
+            int32_t grown = world->scratch.capacity;
+            while ((int64_t)grown < need && grown < (1 << 28))
+            {
+                grown *= 2;
+            }
+            m3StackDestroy(&world->scratch);
+            world->scratch = m3StackCreate(grown);
+        }
+    }
     m3StackReset(&world->scratch);
 
     // Stash the previous pairs and manifolds BEFORE the scan
