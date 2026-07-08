@@ -153,6 +153,11 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     M3_ALLOC(world->jointFlags, def->jointCapacity, uint8_t);
     M3_ALLOC(world->jointMotor, def->jointCapacity, m3Vec3);
     M3_ALLOC(world->jointLimits, def->jointCapacity, m3Vec3);
+    M3_ALLOC(world->jointGenericModes, def->jointCapacity, uint16_t);
+    M3_ALLOC(world->jointGenLinLower, def->jointCapacity, m3Vec3);
+    M3_ALLOC(world->jointGenLinUpper, def->jointCapacity, m3Vec3);
+    M3_ALLOC(world->jointGenAngLower, def->jointCapacity, m3Vec3);
+    M3_ALLOC(world->jointGenAngUpper, def->jointCapacity, m3Vec3);
     M3_ALLOC(world->jointNextA, def->jointCapacity, int32_t);
     M3_ALLOC(world->jointNextB, def->jointCapacity, int32_t);
     M3_ALLOC(world->bodyJointHead, cap, int32_t);
@@ -283,6 +288,11 @@ void m3DestroyWorld(m3WorldId worldId)
     m3Free(world->jointFlags);
     m3Free(world->jointMotor);
     m3Free(world->jointLimits);
+    m3Free(world->jointGenericModes);
+    m3Free(world->jointGenLinLower);
+    m3Free(world->jointGenLinUpper);
+    m3Free(world->jointGenAngLower);
+    m3Free(world->jointGenAngUpper);
     m3Free(world->jointNextA);
     m3Free(world->jointNextB);
     m3Free(world->bodyJointHead);

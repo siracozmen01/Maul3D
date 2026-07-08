@@ -19,6 +19,7 @@ m3JointDef m3DefaultJointDef(void)
     def.type = m3_sphericalJoint;
     def.localAxisA = (m3Vec3){0.0f, 0.0f, 1.0f};
     def.localAxisB = (m3Vec3){0.0f, 0.0f, 1.0f};
+    def.genericMotorAxis = 255; // no motor unless chosen
     def.internalValue = M3_JOINT_COOKIE;
     return def;
 }
@@ -130,6 +131,32 @@ int32_t m3CreateJointInternal(m3World* world, const m3JointDef* def, int32_t bod
     // For the spherical, z carries the cone angle (x and y stay the
     // twist range): no snapshot growth, all of it already hashed.
     world->jointLimits[index] = (m3Vec3){def->lowerLimit, def->upperLimit, def->coneAngle};
+    world->jointGenericModes[index] = 0;
+    world->jointGenLinLower[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
+    world->jointGenLinUpper[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
+    world->jointGenAngLower[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
+    world->jointGenAngUpper[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
+    if (def->type == (int32_t)m3_genericJoint)
+    {
+        // Modes pack two bits per axis: linear in bits 0..5,
+        // angular in bits 6..11, the motor axis in bits 12..15.
+        uint16_t packed = 0;
+        for (int32_t k = 0; k < 3; ++k)
+        {
+            packed |= (uint16_t)(def->genericLinear[k] & 3) << (2 * k);
+            packed |= (uint16_t)(def->genericAngular[k] & 3) << (6 + 2 * k);
+        }
+        packed |= (uint16_t)(def->genericMotorAxis == 255 ? 15 : def->genericMotorAxis) << 12;
+        world->jointGenericModes[index] = packed;
+        world->jointGenLinLower[index] = (m3Vec3){
+            def->genericLinearLower[0], def->genericLinearLower[1], def->genericLinearLower[2]};
+        world->jointGenLinUpper[index] = (m3Vec3){
+            def->genericLinearUpper[0], def->genericLinearUpper[1], def->genericLinearUpper[2]};
+        world->jointGenAngLower[index] = (m3Vec3){
+            def->genericAngularLower[0], def->genericAngularLower[1], def->genericAngularLower[2]};
+        world->jointGenAngUpper[index] = (m3Vec3){
+            def->genericAngularUpper[0], def->genericAngularUpper[1], def->genericAngularUpper[2]};
+    }
     // Push onto both bodies' joint lists (creation order recoverable:
     // replay recreates in the same order).
     world->jointNextA[index] = world->bodyJointHead[bodyA];
@@ -198,6 +225,11 @@ void m3DestroyJointInternal(m3World* world, int32_t index)
     world->jointFlags[index] = 0;
     world->jointMotor[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
     world->jointLimits[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
+    world->jointGenericModes[index] = 0;
+    world->jointGenLinLower[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
+    world->jointGenLinUpper[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
+    world->jointGenAngLower[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
+    world->jointGenAngUpper[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
     world->jointNextA[index] = -1;
     world->jointNextB[index] = -1;
     m3IdPoolFree(&world->jointPool, index);
@@ -208,7 +240,7 @@ m3JointId m3CreateJoint(const m3JointDef* def)
     if (def == NULL || def->internalValue != M3_JOINT_COOKIE ||
         (def->type != (int32_t)m3_sphericalJoint && def->type != (int32_t)m3_revoluteJoint &&
          def->type != (int32_t)m3_prismaticJoint && def->type != (int32_t)m3_fixedJoint &&
-         def->type != (int32_t)m3_distanceJoint))
+         def->type != (int32_t)m3_distanceJoint && def->type != (int32_t)m3_genericJoint))
     {
         return m3_nullJointId;
     }
@@ -217,6 +249,71 @@ m3JointId m3CreateJoint(const m3JointDef* def)
          !(m3Dot3(def->localAxisB, def->localAxisB) > 0.0f)))
     {
         return m3_nullJointId; // a hinge or slider needs real axes
+    }
+    if (def->type == (int32_t)m3_genericJoint)
+    {
+        // The generic contract (4-3): sane modes, finite ordered
+        // limits where used, one motor on a movable axis, and the
+        // v1 angular-limit rule.
+        int32_t limitedAngular = 0;
+        int32_t lockedAngular = 0;
+        int32_t freeAngular = 0;
+        for (int32_t k = 0; k < 3; ++k)
+        {
+            if (def->genericLinear[k] > 2 || def->genericAngular[k] > 2)
+            {
+                return m3_nullJointId;
+            }
+            if (def->genericLinear[k] == (uint8_t)m3_axisLimited &&
+                (!m3FiniteF(def->genericLinearLower[k]) || !m3FiniteF(def->genericLinearUpper[k]) ||
+                 def->genericLinearLower[k] > def->genericLinearUpper[k]))
+            {
+                return m3_nullJointId;
+            }
+            if (def->genericAngular[k] == (uint8_t)m3_axisLimited)
+            {
+                limitedAngular += 1;
+                if (!m3FiniteF(def->genericAngularLower[k]) ||
+                    !m3FiniteF(def->genericAngularUpper[k]) ||
+                    def->genericAngularLower[k] > def->genericAngularUpper[k])
+                {
+                    return m3_nullJointId;
+                }
+            }
+            else if (def->genericAngular[k] == (uint8_t)m3_axisLocked)
+            {
+                lockedAngular += 1;
+            }
+            else
+            {
+                freeAngular += 1;
+            }
+        }
+        if (limitedAngular > 1 || (limitedAngular == 1 && lockedAngular != 2 && freeAngular != 2))
+        {
+            return m3_nullJointId; // the v1 angular rule, documented
+        }
+        if (def->genericMotorAxis != 255)
+        {
+            if (def->genericMotorAxis > 5 || !m3FiniteF(def->motorSpeed) ||
+                !m3FiniteF(def->maxMotorEffort) || def->maxMotorEffort < 0.0f)
+            {
+                return m3_nullJointId;
+            }
+            uint8_t mode = def->genericMotorAxis < 3
+                               ? def->genericLinear[def->genericMotorAxis]
+                               : def->genericAngular[def->genericMotorAxis - 3];
+            if (mode == (uint8_t)m3_axisLocked)
+            {
+                return m3_nullJointId; // a motor on a locked axis is a
+                                       // contradiction, not a request
+            }
+        }
+        if (!(m3Dot3(def->localAxisA, def->localAxisA) > 0.0f) ||
+            !(m3Dot3(def->localAxisB, def->localAxisB) > 0.0f))
+        {
+            return m3_nullJointId; // the joint frame needs real axes
+        }
     }
     if (def->type == (int32_t)m3_distanceJoint &&
         (!def->enableLimit || def->lowerLimit < 0.0f ||

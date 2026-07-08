@@ -410,6 +410,15 @@ typedef struct m3World
     // warm-start impulse is simulation state (the architecture doc
     // names it); the body lists drive the jointed-pair contact
     // filter, the destroy cascade, and island coupling.
+    // Generic 6-DOF state (4-3): packed modes (2 bits per axis,
+    // linear 0..5, angular 6..11, motor axis 12..15) and per-axis
+    // limit vectors. Folded into the hash only for generic-typed
+    // joints (the golden rule for additive state).
+    uint16_t* jointGenericModes;
+    m3Vec3* jointGenLinLower;
+    m3Vec3* jointGenLinUpper;
+    m3Vec3* jointGenAngLower;
+    m3Vec3* jointGenAngUpper;
     m3IdPool jointPool;
     uint8_t* jointType;
     int32_t* jointBodyA;

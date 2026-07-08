@@ -22,7 +22,16 @@
 #endif
 
 #define M3_SNAPSHOT_MAGIC   0x4D33534Eu // 'M3SN'
-#define M3_SNAPSHOT_VERSION 18u         // v18: voxel chunks
+#define M3_SNAPSHOT_VERSION 20u
+// v20: generic joint state. NOTE for the ledger: v19 (voxel fill
+// fractions, 3-6) shipped MISLABELED as 18: the bump script died
+// after a partial edit, the same failure mode as the rev-17 skip
+// in 2c-5. No released pairing could misread a snapshot (the
+// config hash embeds the library version and every release differs
+// there), but the label was wrong and this comment is the honest
+// record. The 2c-8 lesson now has a second clause: after a partial
+// script failure, diff EVERY intended edit, not just the one that
+// raised.
 
 // The math types are canonical field data only because they are
 // provably padding-free; a change here is a format version bump.
@@ -202,6 +211,11 @@ static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3Wal
     M3_BLOCK(world->jointFlags, world->jointCapacity * (int32_t)sizeof(uint8_t));
     M3_BLOCK(world->jointMotor, world->jointCapacity * (int32_t)sizeof(m3Vec3));
     M3_BLOCK(world->jointLimits, world->jointCapacity * (int32_t)sizeof(m3Vec3));
+    M3_BLOCK(world->jointGenericModes, world->jointCapacity * (int32_t)sizeof(uint16_t));
+    M3_BLOCK(world->jointGenLinLower, world->jointCapacity * (int32_t)sizeof(m3Vec3));
+    M3_BLOCK(world->jointGenLinUpper, world->jointCapacity * (int32_t)sizeof(m3Vec3));
+    M3_BLOCK(world->jointGenAngLower, world->jointCapacity * (int32_t)sizeof(m3Vec3));
+    M3_BLOCK(world->jointGenAngUpper, world->jointCapacity * (int32_t)sizeof(m3Vec3));
     M3_BLOCK(world->jointNextA, world->jointCapacity * (int32_t)sizeof(int32_t));
     M3_BLOCK(world->jointNextB, world->jointCapacity * (int32_t)sizeof(int32_t));
     M3_BLOCK(world->bodyJointHead, cap * (int32_t)sizeof(int32_t));
@@ -489,6 +503,16 @@ uint64_t m3World_Hash(m3WorldId worldId)
         h = m3Hash64(h, &world->jointFrameQA[i], (int32_t)sizeof(m3Quat));
         h = m3Hash64(h, &world->jointFrameQB[i], (int32_t)sizeof(m3Quat));
         h = m3Hash64(h, &world->jointFlags[i], 1);
+        if (world->jointType[i] == (uint8_t)m3_genericJoint)
+        {
+            // Additive-state golden rule: new fields fold only for
+            // the new type.
+            h = m3Hash64(h, &world->jointGenericModes[i], 2);
+            h = m3Hash64(h, &world->jointGenLinLower[i], (int32_t)sizeof(m3Vec3));
+            h = m3Hash64(h, &world->jointGenLinUpper[i], (int32_t)sizeof(m3Vec3));
+            h = m3Hash64(h, &world->jointGenAngLower[i], (int32_t)sizeof(m3Vec3));
+            h = m3Hash64(h, &world->jointGenAngUpper[i], (int32_t)sizeof(m3Vec3));
+        }
     }
 
     // Pairs and manifolds: warm-start impulses are simulation state

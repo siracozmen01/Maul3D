@@ -1042,8 +1042,226 @@ static void TestNewJointContracts(void)
     m3DestroyWorld(world);
 }
 
+// 4-3: the generic 6-DOF reproduces its ancestors in behavioral
+// bands (bitwise agreement is neither expected nor sought: the row
+// structures differ by design).
+static m3JointDef GenericBase(m3BodyId a, m3BodyId b)
+{
+    m3JointDef jd = m3DefaultJointDef();
+    jd.type = m3_genericJoint;
+    jd.bodyA = a;
+    jd.bodyB = b;
+    jd.localAxisA = (m3Vec3){0.0f, 0.0f, 1.0f};
+    jd.localAxisB = (m3Vec3){0.0f, 0.0f, 1.0f};
+    for (int32_t k = 0; k < 3; ++k)
+    {
+        jd.genericLinear[k] = (uint8_t)m3_axisLocked;
+        jd.genericAngular[k] = (uint8_t)m3_axisFree;
+    }
+    return jd;
+}
+
+static void TestGenericAsSpherical(void)
+{
+    // All linear locked, all angular free = a ball joint: the
+    // pendulum swings inside the spherical energy band and the pin
+    // holds.
+    m3WorldDef def = m3DefaultWorldDef();
+    def.bodyCapacity = 8;
+    def.shapeCapacity = 8;
+    def.jointCapacity = 4;
+    m3WorldId world = m3CreateWorld(&def);
+    m3BodyDef ad = m3DefaultBodyDef();
+    ad.position = (m3Pos3){0.0, 6.0, 0.0};
+    m3BodyId anchor = m3CreateBody(world, &ad);
+    m3BodyDef bd = m3DefaultBodyDef();
+    bd.type = m3_dynamicBody;
+    bd.position = (m3Pos3){1.0, 6.0, 0.0};
+    m3BodyId bob = m3CreateBody(world, &bd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    m3Sphere ball = {{0.0f, 0.0f, 0.0f}, 0.2f};
+    m3CreateSphereShape(bob, &sd, &ball);
+    m3JointDef jd = GenericBase(anchor, bob);
+    jd.localAnchorB = (m3Vec3){-1.0f, 0.0f, 0.0f};
+    CHECK(m3Joint_IsValid(m3CreateJoint(&jd)), "the generic ball creates");
+    double maxSpeed2 = 0.0;
+    double maxPinDrift2 = 0.0;
+    for (int32_t i = 0; i < 480; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+        m3Vec3 v = m3Body_GetLinearVelocity(bob);
+        double s2 = (double)(v.x * v.x + v.y * v.y + v.z * v.z);
+        if (s2 > maxSpeed2)
+        {
+            maxSpeed2 = s2;
+        }
+        m3Pos3 p = m3Body_GetPosition(bob);
+        m3Quat q = m3Body_GetRotation(bob);
+        // The pinned point: bob position plus rotated (-1, 0, 0)
+        // must stay at the anchor.
+        m3Vec3 arm = m3RotateVec3(q, (m3Vec3){-1.0f, 0.0f, 0.0f});
+        double dx = p.x + (double)arm.x - 0.0;
+        double dy = p.y + (double)arm.y - 6.0;
+        double dz = p.z + (double)arm.z - 0.0;
+        double d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 > maxPinDrift2)
+        {
+            maxPinDrift2 = d2;
+        }
+    }
+    CHECK(maxSpeed2 > 15.0 && maxSpeed2 < 21.0, "the generic pendulum stays in the energy band");
+    CHECK(maxPinDrift2 < 0.005, "the generic pin holds like the spherical's");
+    m3DestroyWorld(world);
+}
+
+static void TestGenericAsHingeWithMotorAndLimits(void)
+{
+    // Angular z limited with x and y locked = a hinge with range;
+    // the motor drives it into the upper stop and holds.
+    m3WorldDef def = m3DefaultWorldDef();
+    def.gravity = (m3Vec3){0.0f, 0.0f, 0.0f};
+    def.bodyCapacity = 8;
+    def.shapeCapacity = 8;
+    def.jointCapacity = 4;
+    m3WorldId world = m3CreateWorld(&def);
+    m3BodyDef fd = m3DefaultBodyDef();
+    fd.position = (m3Pos3){0.0, 2.0, 0.0};
+    m3BodyId frame = m3CreateBody(world, &fd);
+    m3BodyDef dd = m3DefaultBodyDef();
+    dd.type = m3_dynamicBody;
+    dd.position = (m3Pos3){1.0, 2.0, 0.0};
+    m3BodyId door = m3CreateBody(world, &dd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    m3CreateBoxShape(door, &sd, (m3Vec3){0.9f, 0.5f, 0.05f});
+
+    m3JointDef jd = GenericBase(frame, door);
+    jd.localAnchorB = (m3Vec3){-1.0f, 0.0f, 0.0f};
+    jd.genericAngular[0] = (uint8_t)m3_axisLocked;
+    jd.genericAngular[1] = (uint8_t)m3_axisLocked;
+    jd.genericAngular[2] = (uint8_t)m3_axisLimited;
+    jd.genericAngularLower[2] = -0.5f;
+    jd.genericAngularUpper[2] = 1.0f;
+    jd.genericMotorAxis = 5; // angular z
+    jd.motorSpeed = 2.0f;
+    jd.maxMotorEffort = 50.0f;
+    CHECK(m3Joint_IsValid(m3CreateJoint(&jd)), "the generic hinge creates");
+    for (int32_t i = 0; i < 300; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+    }
+    m3Quat q = m3Body_GetRotation(door);
+    float angle = 2.0f * atan2f(q.z, q.w);
+    CHECK(angle > 0.93f && angle < 1.07f, "the motor parks the door at the upper stop");
+    CHECK(q.x * q.x + q.y * q.y < 0.001f, "the locked axes admit no wobble");
+    m3DestroyWorld(world);
+}
+
+static void TestGenericAsSlider(void)
+{
+    // Linear z limited with the rest locked, all angular locked =
+    // a slider on the frame's z axis; gravity along the axis rests
+    // the cart on the lower stop.
+    m3WorldDef def = m3DefaultWorldDef();
+    def.bodyCapacity = 8;
+    def.shapeCapacity = 8;
+    def.jointCapacity = 4;
+    m3WorldId world = m3CreateWorld(&def);
+    m3BodyDef rd = m3DefaultBodyDef();
+    rd.position = (m3Pos3){0.0, 5.0, 0.0};
+    m3BodyId rail = m3CreateBody(world, &rd);
+    m3BodyDef cd = m3DefaultBodyDef();
+    cd.type = m3_dynamicBody;
+    cd.position = (m3Pos3){0.0, 5.0, 0.0};
+    m3BodyId cart = m3CreateBody(world, &cd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    m3CreateBoxShape(cart, &sd, (m3Vec3){0.2f, 0.2f, 0.2f});
+
+    m3JointDef jd = GenericBase(rail, cart);
+    // The rail's z axis points down the world y: axis (0, 1, 0).
+    jd.localAxisA = (m3Vec3){0.0f, 1.0f, 0.0f};
+    jd.localAxisB = (m3Vec3){0.0f, 1.0f, 0.0f};
+    jd.genericLinear[2] = (uint8_t)m3_axisLimited; // along the rail
+    jd.genericLinearLower[2] = -2.0f;
+    jd.genericLinearUpper[2] = 2.0f;
+    for (int32_t k = 0; k < 3; ++k)
+    {
+        jd.genericAngular[k] = (uint8_t)m3_axisLocked;
+    }
+    CHECK(m3Joint_IsValid(m3CreateJoint(&jd)), "the generic slider creates");
+    for (int32_t i = 0; i < 300; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+    }
+    m3Pos3 p = m3Body_GetPosition(cart);
+    CHECK(p.y > 2.9 && p.y < 3.1, "gravity rests the cart on the lower stop");
+    CHECK(p.x * p.x + p.z * p.z < 0.001, "the perpendicular locks hold the rail line");
+
+    // The new generic state rides the rollback like everything else.
+    int32_t bytes = m3World_SnapshotSize(world);
+    uint8_t* snap = (uint8_t*)malloc((size_t)bytes);
+    CHECK(m3World_Snapshot(world, snap, bytes) == bytes, "the generic snapshot writes");
+    for (int32_t i = 0; i < 60; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+    }
+    uint64_t ahead = m3World_Hash(world);
+    CHECK(m3World_Restore(world, snap, bytes), "the generic restore lands");
+    for (int32_t i = 0; i < 60; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+    }
+    CHECK(m3World_Hash(world) == ahead, "the generic joint rolls back bit-exact");
+    free(snap);
+    m3DestroyWorld(world);
+}
+
+static void TestGenericContracts(void)
+{
+    m3WorldDef def = m3DefaultWorldDef();
+    def.bodyCapacity = 8;
+    def.shapeCapacity = 8;
+    def.jointCapacity = 4;
+    m3WorldId world = m3CreateWorld(&def);
+    m3BodyDef bd = m3DefaultBodyDef();
+    bd.type = m3_dynamicBody;
+    m3BodyId a = m3CreateBody(world, &bd);
+    bd.position = (m3Pos3){0.0, 2.0, 0.0};
+    m3BodyId b = m3CreateBody(world, &bd);
+
+    m3JointDef jd = GenericBase(a, b);
+    jd.genericAngular[0] = (uint8_t)m3_axisLimited;
+    jd.genericAngular[1] = (uint8_t)m3_axisLimited;
+    CHECK(!m3Joint_IsValid(m3CreateJoint(&jd)), "two limited angular axes refuse (the v1 rule)");
+    jd = GenericBase(a, b);
+    jd.genericAngular[0] = (uint8_t)m3_axisLimited;
+    jd.genericAngular[1] = (uint8_t)m3_axisLocked;
+    jd.genericAngular[2] = (uint8_t)m3_axisFree;
+    CHECK(!m3Joint_IsValid(m3CreateJoint(&jd)),
+          "a mixed locked-free pair beside a limited axis refuses");
+    jd = GenericBase(a, b);
+    jd.genericMotorAxis = 1; // linear y, which is locked
+    jd.motorSpeed = 1.0f;
+    jd.maxMotorEffort = 10.0f;
+    CHECK(!m3Joint_IsValid(m3CreateJoint(&jd)), "a motor on a locked axis refuses");
+    jd = GenericBase(a, b);
+    jd.genericLinear[0] = 7;
+    CHECK(!m3Joint_IsValid(m3CreateJoint(&jd)), "an unknown mode refuses");
+    jd = GenericBase(a, b);
+    jd.genericLinear[2] = (uint8_t)m3_axisLimited;
+    jd.genericLinearLower[2] = 1.0f;
+    jd.genericLinearUpper[2] = -1.0f;
+    CHECK(!m3Joint_IsValid(m3CreateJoint(&jd)), "inverted generic limits refuse");
+    jd = GenericBase(a, b);
+    CHECK(m3Joint_IsValid(m3CreateJoint(&jd)), "the plain generic ball creates");
+    m3DestroyWorld(world);
+}
+
 int main(void)
 {
+    TestGenericAsSpherical();
+    TestGenericAsHingeWithMotorAndLimits();
+    TestGenericAsSlider();
+    TestGenericContracts();
     TestWeldActsAsOneBody();
     TestRopeAndRod();
     TestDistanceSpring();

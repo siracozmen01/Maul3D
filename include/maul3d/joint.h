@@ -22,7 +22,17 @@ extern "C"
         m3_prismaticJoint = 2, // slider: one translation axis, limits, motor
         m3_fixedJoint = 3,     // weld: full 6-DOF lock at the create pose
         m3_distanceJoint = 4,  // rope/rod: anchor distance in [lower, upper]
+        m3_genericJoint = 5,   // 6-DOF: per-axis lock/free/limit + one motor
     } m3JointType;
+
+    /// Per-axis behavior of the generic joint, in the joint frame
+    /// built from localAxisA/localAxisB (the frame's z axis).
+    typedef enum m3AxisMode
+    {
+        m3_axisLocked = 0,
+        m3_axisFree = 1,
+        m3_axisLimited = 2,
+    } m3AxisMode;
 
     /// Build with m3DefaultJointDef; hand-rolled defs are rejected
     /// loudly. Anchors are body-frame points on each body.
@@ -65,6 +75,26 @@ extern "C"
         /// Jointed bodies do not collide with each other unless this
         /// is set (the classic chain-fight guard).
         bool collideConnected;
+        /// The generic joint (4-3). Modes are m3AxisMode per joint
+        /// frame axis; limits are meters (linear) and radians
+        /// (angular), used only where the mode is limited. One
+        /// motor: genericMotorAxis picks 0..2 (linear) or 3..5
+        /// (angular), 255 for none; it drives motorSpeed with the
+        /// maxMotorEffort cap on a free or limited axis. Angular
+        /// limits come with a v1 contract: at most ONE angular axis
+        /// may be limited, and the other two must be BOTH locked
+        /// (a hinge with range) or BOTH free (a twist-limited
+        /// ball); anything else refuses loudly. Growing this def
+        /// bumps the cookie: stale-compiled callers are refused
+        /// loudly instead of misread (the freeze's mechanism).
+        uint8_t genericLinear[3];
+        uint8_t genericAngular[3];
+        uint8_t genericMotorAxis;
+        uint8_t genericReserved;
+        m3real genericLinearLower[3];
+        m3real genericLinearUpper[3];
+        m3real genericAngularLower[3];
+        m3real genericAngularUpper[3];
         int32_t internalValue;
     } m3JointDef;
 
