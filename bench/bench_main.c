@@ -181,6 +181,147 @@ static m3WorldId SceneMeshField(void)
     return world;
 }
 
+// Scene 4 (3-8): voxfort, the destruction demo and the
+// constitution's consumer. A hollow voxel fort is shelled by
+// deterministic charges; the HOST reads fragment events and turns
+// recipes into dynamic bodies (small islands become QuickHull
+// bodies from their voxel corner clouds, large ones become their
+// bounds boxes with density matched to the event mass), then
+// bullets rake the breach. Public API only, front to back.
+static m3WorldId SceneVoxfort(void)
+{
+    m3WorldDef def = m3DefaultWorldDef();
+    def.bodyCapacity = 512;
+    def.shapeCapacity = 512;
+    def.voxelCapacity = 2;
+    m3WorldId world = m3CreateWorld(&def);
+    AddPlane(world);
+
+    static uint8_t voxels[16 * 16 * 16];
+    memset(voxels, 0, sizeof(voxels));
+    // A hollow keep: footprint 2..13, walls one voxel thick, eight
+    // voxels tall, on a solid base layer (the anchor).
+    for (int32_t z = 0; z < 16; ++z)
+    {
+        for (int32_t x = 0; x < 16; ++x)
+        {
+            voxels[x + 16 * (0 + 16 * z)] = 1;
+        }
+    }
+    for (int32_t y = 1; y <= 8; ++y)
+    {
+        for (int32_t i = 2; i <= 13; ++i)
+        {
+            voxels[i + 16 * (y + 16 * 2)] = 1;
+            voxels[i + 16 * (y + 16 * 13)] = 1;
+            voxels[2 + 16 * (y + 16 * i)] = 1;
+            voxels[13 + 16 * (y + 16 * i)] = 1;
+        }
+    }
+    m3BodyDef gd = m3DefaultBodyDef();
+    gd.position = (m3Pos3){-8.0, 0.0, -8.0};
+    m3BodyId keepBody = m3CreateBody(world, &gd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    sd.friction = 0.6f;
+    m3CreateVoxelChunkShape(keepBody, &sd, voxels, NULL, 1.0f);
+    return world;
+}
+
+// The host recipe: an island becomes a dynamic body. Small islands
+// get the full QuickHull treatment from their voxel corner clouds;
+// larger ones get their bounds box; density matches the event mass.
+static void SpawnFragment(m3WorldId world, const m3FragmentEvent* ev, const uint16_t* recipe)
+{
+    m3BodyDef bd = m3DefaultBodyDef();
+    bd.type = m3_dynamicBody;
+    bd.position = ev->comWorld;
+    m3BodyId body = m3CreateBody(world, &bd);
+    m3Vec3 half = {0.5f * (m3real)(ev->boundsHi[0] - ev->boundsLo[0] + 1),
+                   0.5f * (m3real)(ev->boundsHi[1] - ev->boundsLo[1] + 1),
+                   0.5f * (m3real)(ev->boundsHi[2] - ev->boundsLo[2] + 1)};
+    m3ShapeDef fd = m3DefaultShapeDef();
+    fd.friction = 0.6f;
+    fd.density = ev->mass / (8.0f * half.x * half.y * half.z);
+    if (ev->voxelCount <= 8 && ev->recipeStart >= 0)
+    {
+        m3Vec3 cloud[64];
+        int32_t points = 0;
+        for (int32_t k = 0; k < ev->recipeCount; ++k)
+        {
+            uint16_t v = recipe[ev->recipeStart + k];
+            m3real x = (m3real)(v % 16);
+            m3real y = (m3real)((v / 16) % 16);
+            m3real z = (m3real)(v / 256);
+            for (int32_t c = 0; c < 8; ++c)
+            {
+                cloud[points++] = (m3Vec3){x + ((c & 1) != 0 ? 1.0f : 0.0f) - ev->comChunk.x,
+                                           y + ((c & 2) != 0 ? 1.0f : 0.0f) - ev->comChunk.y,
+                                           z + ((c & 4) != 0 ? 1.0f : 0.0f) - ev->comChunk.z};
+            }
+        }
+        if (m3Shape_IsValid(m3CreateHullShape(body, &fd, cloud, points)))
+        {
+            return;
+        }
+        // A degenerate cloud (a lone flat island) falls back to the
+        // bounds box below, deterministically.
+    }
+    m3CreateBoxShape(body, &fd, half);
+}
+
+static void RunVoxfort(int32_t steps)
+{
+    m3WorldId world = SceneVoxfort();
+    // The chunk shape id is deterministic: the first shape after the
+    // plane (index1 = 2 in this scene).
+    m3ShapeId keep = {2, 0, 1};
+    double t0 = NowMs();
+    uint64_t rng = 0xF0F7ull;
+    int32_t shells = 0;
+    for (int32_t i = 0; i < steps; ++i)
+    {
+        if (i % 15 == 5)
+        {
+            // A shell: carve a deterministic 2x2x2 charge out of the
+            // south wall, marching along it, then spawn what fell.
+            int32_t sx = 2 + (shells * 3) % 11;
+            int32_t sy = 1 + (shells * 2) % 6;
+            int32_t lo[3] = {sx, sy, 2};
+            int32_t hi[3] = {sx + 1 < 16 ? sx + 1 : 15, sy + 1, 2};
+            m3VoxelChunk_ClearBox(keep, lo, hi);
+            shells += 1;
+            int32_t count = 0;
+            const m3FragmentEvent* events = m3World_FragmentEvents(world, &count);
+            int32_t recipeCount = 0;
+            const uint16_t* recipe = m3World_FragmentRecipe(world, &recipeCount);
+            for (int32_t e = 0; e < count && e < 16; ++e)
+            {
+                SpawnFragment(world, &events[e], recipe);
+            }
+        }
+        if (i % 45 == 20)
+        {
+            // Bullets rake the wall: stopped by standing voxels,
+            // through the breaches once the charges open them.
+            m3BodyDef bd = m3DefaultBodyDef();
+            bd.type = m3_dynamicBody;
+            bd.isBullet = true;
+            bd.position = (m3Pos3){RandRange(&rng, -4.0, 4.0), 2.5, -20.0};
+            bd.linearVelocity = (m3Vec3){0.0f, 0.0f, 150.0f};
+            m3BodyId bullet = m3CreateBody(world, &bd);
+            m3ShapeDef sd = m3DefaultShapeDef();
+            m3Sphere slug = {{0.0f, 0.0f, 0.0f}, 0.15f};
+            m3CreateSphereShape(bullet, &sd, &slug);
+        }
+        m3World_Step(world, 1.0f / 60.0f, 4);
+    }
+    double t1 = NowMs();
+    double total = t1 - t0;
+    printf("M3_BENCH %-10s steps=%d totalMs=%9.2f perStepMs=%7.4f hash=%016llx\n", "voxfort", steps,
+           total, total / (double)steps, (unsigned long long)m3World_Hash(world));
+    m3DestroyWorld(world);
+}
+
 typedef m3WorldId (*SceneFn)(void);
 
 static void RunScene(const char* name, SceneFn build, int32_t steps)
@@ -212,5 +353,6 @@ int main(int argc, char** argv)
     RunScene("pyramid", ScenePyramid, steps);
     RunScene("hulljam", SceneHullJam, steps);
     RunScene("meshfield", SceneMeshField, steps);
+    RunVoxfort(steps);
     return 0;
 }

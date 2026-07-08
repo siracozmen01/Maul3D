@@ -117,8 +117,8 @@ Deliberately NOT in the snapshot:
 - **Derived data.** Acceleration structures that are pure functions
   of content (the per-mesh BVH) are rebuilt on restore and proven
   byte-identical by test.
-- **Event streams.** Events are transient observations of the last
-  step; restore clears all four streams.
+- **Event streams.** Events are transient observations; restore
+  clears every stream (contact, sensor, and fragment alike).
 
 A snapshot restores only into a world with the same capacities and
 the same build semantics (a config hash guards both). Truncated
@@ -244,6 +244,64 @@ snapshotted, not hashed, rebuilt wherever content lands (create,
 journal replay, restore), and the rebuild must be a pure function so
 twin worlds agree bit for bit. The per-mesh BVH is the standing
 example; future acceleration caches follow the same law.
+
+## Voxel chunks
+
+A voxel chunk is a shape on a STATIC body: a dense 16x16x16 grid of
+cells anchored at the body origin, each cell carrying an occupancy
+bit, a uint16 payload (material, health, type: yours to define),
+and a fill fraction (255 a whole voxel, 1 a sliver). All of it is
+state: hashed, snapshotted, journaled, inside the rollback delta.
+
+The collision surface is derived: a deterministic greedy merge
+produces maximal boxes and a BVH over them; you never see or manage
+it. Chunks placed with bit-exact identity rotations, equal cell
+sizes, and world positions exactly one chunk extent apart WELD:
+their shared border becomes interior geometry, and bodies roll
+across it without seam impulses. Rotated or misaligned chunks
+still collide; they just do not weld.
+
+Edits are commands: set a voxel (with payload), clear a voxel,
+clear a box region, set a fill fraction. Every edit is journaled
+and replayed like any other mutation; the surface follows the grid
+as a pure function; dynamic bodies touching the edited region wake.
+Fill is mass, never geometry: a worn voxel collides at full size
+but its fragment weighs fill over 255. A chunk edited to empty
+stays a valid shape that collides with nothing.
+
+Everything sees chunks: contacts, rays (front faces, born-inside
+misses), shape casts, continuous collision (a one-voxel wall stops
+a bullet; a hole cleared last step is a real hole), point-inside
+(solid voxels are CLOSED volumes), and overlaps. A body whose
+center ends up inside the solid walks out through the nearest
+exposed face at a bounded pace instead of exploding.
+
+## Fracture
+
+The anchor convention: an island of voxels is anchored if and only
+if it has a path (six-connectivity) to the chunk's y = 0 base
+layer. Build structures at their chunk's base; a floating platform
+is a chunk whose BODY sits in the air. After every
+occupancy-clearing edit, a deterministic flood fill removes every
+unanchored island from the grid AS PART OF THE SAME STATE
+TRANSITION (rollback and replay re-derive identical grids) and
+emits one fragment event per island, in canonical order.
+
+The event carries the chunk id, voxel count, mass (fill-weighted,
+at density one), the center of mass in chunk and world frames, the
+island bounds, and a recipe: chunk-local voxel indices
+(v = x + 16 * (y + 16 * z)) in a transient buffer. The engine
+NEVER spawns bodies; what a fragment becomes is yours. The
+reference recipe feeds small islands' voxel corners to the
+built-in QuickHull and gives large ones their bounds box, with
+density matched to the event mass (see the voxfort scene in
+bench/).
+
+Fragment events and recipes are transient like every stream: the
+next step clears them, restore clears them. When one edit strands
+more islands than the event capacity (256), every island is STILL
+removed from the grid; only the reporting has a ceiling, and the
+dropped count says so loudly.
 
 ## Units and conventions
 

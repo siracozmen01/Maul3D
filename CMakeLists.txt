@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(maul3d VERSION 0.9.0 LANGUAGES C)
+project(maul3d VERSION 1.0.0 LANGUAGES C)
 
 option(MAUL3D_SANITIZE "Build with ASAN/UBSAN" OFF)
 option(MAUL3D_BUILD_SHARED "Build maul3d as a shared library" OFF)

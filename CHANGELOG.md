@@ -4,6 +4,22 @@ All notable changes to Maul3D. Versions are tags on green CI SHAs;
 every entry's determinism gates were verified across all CI cells at
 tag time.
 
+## v1.0 (2026-07-08)
+
+The destruction phase (3), and the freeze. Voxel chunk shapes
+(16x16x16 occupancy, payload, and fill fraction as journaled,
+hashed, rollback-covered state), a derived greedy-merged collision
+surface with automatic seam welding, journaled edits that wake what
+they disturb, deterministic fracture (base-layer anchoring, flood
+fill, fragment-spawn events with recipes; the engine never spawns
+bodies), voxel continuous collision (one-voxel walls stop bullets;
+cleared holes are real), fill-weighted fragment mass, bounded
+interior depenetration, and a red-team suite from negative
+coordinates to 448-island fracture storms. The voxfort bench scene
+and the installed-package consumer drive all of it through public
+API only: the constitution's freeze-when-proven condition is met,
+and the 1.x API freeze is in effect.
+
 ## v0.9 (2026-07-08) release candidate
 
 The hardening phase (2d). No new simulation features; everything
