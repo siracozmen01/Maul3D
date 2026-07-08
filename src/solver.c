@@ -2729,15 +2729,44 @@ void m3StepInternal(m3World* world, float dt, int32_t substeps)
     }
     int32_t jointCount = PrepareJoints(world, jointConstraints, h);
 
+    // The mover list (V-SELF, 6-3): one scan builds the compact
+    // list of bodies the substep loops touch (awake dynamics and
+    // kinematics), in ascending slot order so iteration stays
+    // canonical. Eight-plus full-array walks per step become one:
+    // at five thousand bodies with most of the world asleep, the
+    // integrate loops stop paying for the sleepers. Same math,
+    // same order, not one bit of simulation moves.
+    int32_t* movers = (int32_t*)m3StackAlloc(&world->scratch,
+                                             maxBody > 0 ? maxBody * (int32_t)sizeof(int32_t) : 4);
+    int32_t moverCount = 0;
+    if (movers == NULL)
+    {
+        return; // transient scratch stall, grown next step
+    }
+    for (int32_t i = 0; i < maxBody; ++i)
+    {
+        if (world->bodyPool.alive[i] == 0)
+        {
+            continue;
+        }
+        uint8_t type = world->types[i];
+        if (type == (uint8_t)m3_kinematicBody ||
+            (type == (uint8_t)m3_dynamicBody && world->awake[i] != 0))
+        {
+            movers[moverCount] = i;
+            moverCount += 1;
+        }
+    }
+
     for (int32_t sub = 0; sub < substeps; ++sub)
     {
         // Integrate velocities (fixed body order): gravity, damping.
-        for (int32_t i = 0; i < maxBody; ++i)
+        for (int32_t m = 0; m < moverCount; ++m)
         {
-            if (world->bodyPool.alive[i] == 0 || world->types[i] != (uint8_t)m3_dynamicBody ||
-                world->awake[i] == 0)
+            int32_t i = movers[m];
+            if (world->types[i] != (uint8_t)m3_dynamicBody)
             {
-                continue;
+                continue; // kinematics ride the list for positions only
             }
             m3Vec3 v = world->linearVelocities[i];
             m3Vec3 w = world->angularVelocities[i];
@@ -2756,15 +2785,9 @@ void m3StepInternal(m3World* world, float dt, int32_t substeps)
 
         // Integrate positions and accumulate the substep deltas the
         // separation tracking reads.
-        for (int32_t i = 0; i < maxBody; ++i)
+        for (int32_t m = 0; m < moverCount; ++m)
         {
-            uint8_t type = world->types[i];
-            int moves = type == (uint8_t)m3_kinematicBody ||
-                        (type == (uint8_t)m3_dynamicBody && world->awake[i] != 0);
-            if (world->bodyPool.alive[i] == 0 || !moves)
-            {
-                continue;
-            }
+            int32_t i = movers[m];
             m3Vec3 v = world->linearVelocities[i];
             m3Vec3 w = world->angularVelocities[i];
             // Rigid bodies rotate about the center of mass: advance
