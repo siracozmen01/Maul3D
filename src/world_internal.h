@@ -425,6 +425,7 @@ typedef struct m3World
     m3real* charCosSlope;
     m3real* charSnap;
     m3real* charSkin;
+    m3real* charStepHeight;
     uint8_t* charGrounded;
     m3Vec3* charGroundNormal;
 
@@ -599,6 +600,11 @@ void m3VoxelBoundsHull(m3Vec3 lo, m3Vec3 hi, m3HullData* out);
 int32_t m3CreateCharacterInternal(m3World* world, const m3CharacterDef* def);
 void m3DestroyCharacterInternal(m3World* world, int32_t slot);
 void m3CharacterMoveInternal(m3World* world, int32_t slot, m3Vec3 translation);
+// Re-evaluate grounding in place (no displacement): the voxel edit
+// path calls this so a carved floor drops its tenants the same
+// step (4-5).
+void m3CharacterRefreshGrounding(m3World* world, int32_t slot);
+m3RayHit m3RayClosestInternal(m3World* world, m3Pos3 origin, m3Vec3 translation);
 int32_t m3CharacterSlot(const m3World* world, m3CharacterId characterId);
 m3RayHit m3CastConvexClosestEx(m3World* world, m3Pos3 base, const m3Vec3* points,
                                int32_t pointCount, m3real radius, m3Vec3 translation,

@@ -26,6 +26,7 @@ m3CharacterDef m3DefaultCharacterDef(void)
     def.maxSlopeAngle = 0.8f; // ~46 degrees
     def.snapDistance = 0.3f;
     def.skin = 0.02f;
+    def.stepHeight = 0.35f;
     def.internalValue = M3_CHARACTER_COOKIE;
     return def;
 }
@@ -77,6 +78,7 @@ int32_t m3CreateCharacterInternal(m3World* world, const m3CharacterDef* def)
     world->charCosSlope[slot] = cosf(def->maxSlopeAngle);
     world->charSnap[slot] = def->snapDistance;
     world->charSkin[slot] = def->skin;
+    world->charStepHeight[slot] = def->stepHeight;
     world->charGrounded[slot] = 0;
     world->charGroundNormal[slot] = (m3Vec3){0.0f, 0.0f, 0.0f};
     return slot;
@@ -95,9 +97,30 @@ void m3DestroyCharacterInternal(m3World* world, int32_t slot)
     world->charCosSlope[slot] = 0.0f;
     world->charSnap[slot] = 0.0f;
     world->charSkin[slot] = 0.0f;
+    world->charStepHeight[slot] = 0.0f;
     world->charGrounded[slot] = 0;
     world->charGroundNormal[slot] = (m3Vec3){0.0f, 0.0f, 0.0f};
     m3IdPoolFree(&world->charPool, slot);
+}
+
+// The floor classifier (4-5): a ray straight down the capsule
+// axis. Capsule casts landing on a stair edge report the CORNER
+// normal, which reads as unwalkable; the surface under the axis is
+// the truth a walker cares about. The ray starts inside our own
+// capsule, and the ray contract (start-inside misses) filters self
+// for free.
+static bool WalkableBelow(m3World* world, int32_t slot, m3Pos3 center, m3real reach,
+                          m3Vec3* outNormal)
+{
+    m3real depth =
+        world->charHalfHeight[slot] + world->charRadius[slot] + reach + world->charSkin[slot];
+    m3RayHit hit = m3RayClosestInternal(world, center, (m3Vec3){0.0f, -depth, 0.0f});
+    if (hit.hit && hit.normal.y >= world->charCosSlope[slot])
+    {
+        *outNormal = hit.normal;
+        return true;
+    }
+    return false;
 }
 
 // One capsule cast from the character's center, excluding its own
@@ -117,7 +140,9 @@ void m3CharacterMoveInternal(m3World* world, int32_t slot, m3Vec3 translation)
     m3Vec3 remaining = translation;
     m3real skin = world->charSkin[slot];
     m3real cosSlope = world->charCosSlope[slot];
+    m3real stepHeight = world->charStepHeight[slot];
     int wasDescending = translation.y < 0.0f;
+    int wasGrounded = world->charGrounded[slot] != 0;
     world->charGrounded[slot] = 0;
     world->charGroundNormal[slot] = (m3Vec3){0.0f, 0.0f, 0.0f};
 
@@ -135,6 +160,62 @@ void m3CharacterMoveInternal(m3World* world, int32_t slot, m3Vec3 translation)
             pos.y += (double)remaining.y;
             pos.z += (double)remaining.z;
             break;
+        }
+        // The stair maneuver (4-5): a grounded walker blocked by a
+        // steep face tries the classic lift, advance, land triple.
+        // Accept only a walkable landing that clears no more than
+        // one step height; otherwise the face is a wall and the
+        // slide below owns it.
+        if (wasGrounded && stepHeight > 0.0f && hit.normal.y < cosSlope &&
+            (remaining.x != 0.0f || remaining.z != 0.0f))
+        {
+            m3RayHit up = CharacterCast(world, slot, pos, (m3Vec3){0.0f, stepHeight, 0.0f});
+            m3real lift = up.hit ? m3MaxF(up.fraction * stepHeight - skin, 0.0f) : stepHeight;
+            m3Pos3 lifted = {pos.x, pos.y + (double)lift, pos.z};
+            m3Vec3 horizontal = {remaining.x, 0.0f, remaining.z};
+            m3real hLen2 = m3Dot3(horizontal, horizontal);
+            m3RayHit fwd = CharacterCast(world, slot, lifted, horizontal);
+            m3real hLen = sqrtf(hLen2);
+            m3real go = fwd.hit ? m3MaxF(fwd.fraction * hLen - skin, 0.0f) : hLen;
+            if (go > skin)
+            {
+                m3real invH = hLen > 0.0f ? 1.0f / hLen : 0.0f;
+                m3Pos3 advanced = {lifted.x + (double)(horizontal.x * invH * go), lifted.y,
+                                   lifted.z + (double)(horizontal.z * invH * go)};
+                m3real reach = lift + stepHeight;
+                m3RayHit land = CharacterCast(world, slot, advanced, (m3Vec3){0.0f, -reach, 0.0f});
+                m3Vec3 floorNormal;
+                // Acceptance is the RAY'S alone, and the ray probes
+                // HALF A RADIUS AHEAD of the landing axis. A steep
+                // ramp rising out of a walkable floor blocks the
+                // capsule surface while the axis still hangs over
+                // the flat ground behind the crease; an axis ray
+                // would bless that landing forever, one step height
+                // per tick (the sixty-degree ramp taught this). The
+                // forward probe lets the steep face shadow the low
+                // floor, so the ramp refuses while stair landings,
+                // whose treads carry the probe, keep answering yes.
+                // The probe start stays strictly inside our capsule,
+                // so the ray's start-inside contract still filters
+                // self. And the net rise must fit one step height.
+                m3real probeAhead = 0.5f * world->charRadius[slot];
+                m3Pos3 probe = {advanced.x + (double)(horizontal.x * invH * probeAhead), advanced.y,
+                                advanced.z + (double)(horizontal.z * invH * probeAhead)};
+                m3real drop = land.hit ? m3MaxF(land.fraction * reach - skin, 0.0f) : 0.0f;
+                double landedY = advanced.y - (double)drop;
+                if (land.hit && WalkableBelow(world, slot, probe, reach, &floorNormal) &&
+                    landedY - pos.y <= (double)(stepHeight + skin))
+                {
+                    pos = (m3Pos3){advanced.x, landedY, advanced.z};
+                    world->charGrounded[slot] = 1;
+                    world->charGroundNormal[slot] = floorNormal;
+                    // The horizontal budget is spent; vertical intent
+                    // (host gravity) dissolves into the landing.
+                    m3real spent = hLen > 0.0f ? go * invH : 1.0f;
+                    remaining = m3MulSV3(1.0f - spent, horizontal);
+                    continue;
+                }
+            }
         }
         // Advance to the hit, keeping the skin along the direction
         // of travel (never park flush: the next cast would start
@@ -158,9 +239,16 @@ void m3CharacterMoveInternal(m3World* world, int32_t slot, m3Vec3 translation)
             world->charGroundNormal[slot] = n;
         }
         // Slide: everything not actually traveled stays in the
-        // budget, minus its component into the surface.
+        // budget, minus its component into the surface. A steep
+        // face is a WALL: the slide may never mint upward motion
+        // out of horizontal intent, or walkers would creep up
+        // cliffs one skin at a time (4-5).
         m3Vec3 leftover = m3MulSV3(1.0f - advance * inv, remaining);
         remaining = m3Sub3(leftover, m3MulSV3(m3Dot3(leftover, n), n));
+        if (n.y < cosSlope && remaining.y > 0.0f && translation.y <= 0.0f)
+        {
+            remaining.y = 0.0f;
+        }
     }
 
     // Snap to ground: a descending character glues to walkable
@@ -170,15 +258,21 @@ void m3CharacterMoveInternal(m3World* world, int32_t slot, m3Vec3 translation)
     {
         m3RayHit down =
             CharacterCast(world, slot, pos, (m3Vec3){0.0f, -world->charSnap[slot], 0.0f});
-        if (down.hit && down.normal.y >= cosSlope)
+        m3Vec3 floorNormal;
+        if (down.hit && (down.normal.y >= cosSlope ||
+                         WalkableBelow(world, slot, pos, world->charSnap[slot], &floorNormal)))
         {
+            if (down.normal.y >= cosSlope)
+            {
+                floorNormal = down.normal;
+            }
             m3real drop = down.fraction * world->charSnap[slot] - skin;
             if (drop > 0.0f)
             {
                 pos.y -= (double)drop;
             }
             world->charGrounded[slot] = 1;
-            world->charGroundNormal[slot] = down.normal;
+            world->charGroundNormal[slot] = floorNormal;
         }
         else if (!down.hit)
         {
@@ -193,6 +287,24 @@ void m3CharacterMoveInternal(m3World* world, int32_t slot, m3Vec3 translation)
     world->sleepTimes[body] = 0.0f;
 }
 
+void m3CharacterRefreshGrounding(m3World* world, int32_t slot)
+{
+    if (world->charGrounded[slot] == 0)
+    {
+        return; // airborne already tells the truth
+    }
+    m3Pos3 pos = world->transforms[world->charBody[slot]].p;
+    m3RayHit down = CharacterCast(world, slot, pos, (m3Vec3){0.0f, -world->charSnap[slot], 0.0f});
+    m3Vec3 floorNormal;
+    if (!down.hit || (down.normal.y < world->charCosSlope[slot] &&
+                      !WalkableBelow(world, slot, pos, world->charSnap[slot], &floorNormal)))
+    {
+        // The floor is gone: airborne the same step it vanished.
+        world->charGrounded[slot] = 0;
+        world->charGroundNormal[slot] = (m3Vec3){0.0f, 0.0f, 0.0f};
+    }
+}
+
 m3CharacterId m3CreateCharacter(m3WorldId worldId, const m3CharacterDef* def)
 {
     m3World* world = m3WorldFromId(worldId);
@@ -200,7 +312,8 @@ m3CharacterId m3CreateCharacter(m3WorldId worldId, const m3CharacterDef* def)
         !m3FinitePos3(def->position) || !m3FiniteF(def->radius) || !(def->radius > 0.0f) ||
         !m3FiniteF(def->halfHeight) || def->halfHeight < 0.0f || !m3FiniteF(def->maxSlopeAngle) ||
         def->maxSlopeAngle <= 0.0f || def->maxSlopeAngle > 1.5f || !m3FiniteF(def->snapDistance) ||
-        def->snapDistance < 0.0f || !m3FiniteF(def->skin) || !(def->skin > 0.0f))
+        def->snapDistance < 0.0f || !m3FiniteF(def->skin) || !(def->skin > 0.0f) ||
+        !m3FiniteF(def->stepHeight) || def->stepHeight < 0.0f)
     {
         return m3_nullCharacterId;
     }

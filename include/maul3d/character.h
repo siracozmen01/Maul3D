@@ -37,6 +37,8 @@ extern "C"
         m3real snapDistance;  // how far down a grounded character
                               // reaches to stay glued on descents
         m3real skin;          // the standing gap casts preserve
+        m3real stepHeight;    // the tallest riser a walking
+                              // character mounts in one move (4-5)
         uint64_t userData;
         int32_t internalValue;
     } m3CharacterDef;

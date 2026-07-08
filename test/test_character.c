@@ -275,6 +275,228 @@ static void TestCharacterContracts(void)
     m3DestroyWorld(world);
 }
 
+// 4-5: stairs, slopes, the voxel floor, and the welded seam.
+static void TestVoxelStairs(void)
+{
+    // Four quarter-meter risers climb; a half-meter riser refuses
+    // (stepHeight is 0.35). The staircase is a voxel chunk, so the
+    // whole exercise runs on the merged-box surface.
+    m3WorldDef def = m3DefaultWorldDef();
+    def.bodyCapacity = 16;
+    def.shapeCapacity = 16;
+    def.voxelCapacity = 1;
+    def.characterCapacity = 1;
+    m3WorldId world = m3CreateWorld(&def);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    static uint8_t voxels[16 * 16 * 16];
+    memset(voxels, 0, sizeof(voxels));
+    // cellSize 0.25: floor at layer 0; stairs rise one layer per
+    // two cells of x from x = 4; a double riser at x = 12.
+    for (int32_t z = 0; z < 16; ++z)
+    {
+        for (int32_t x = 0; x < 16; ++x)
+        {
+            int32_t top = 0;
+            if (x >= 4)
+            {
+                top = (x - 4) / 2 + 1;
+            }
+            if (x >= 12)
+            {
+                top += 2; // the illegal cliff: two layers at once
+            }
+            if (top > 15)
+            {
+                top = 15;
+            }
+            for (int32_t y = 0; y <= top; ++y)
+            {
+                voxels[x + 16 * (y + 16 * z)] = 1;
+            }
+        }
+    }
+    m3BodyDef gd = m3DefaultBodyDef();
+    m3BodyId ground = m3CreateBody(world, &gd);
+    CHECK(m3Shape_IsValid(m3CreateVoxelChunkShape(ground, &sd, voxels, NULL, 0.25f)),
+          "the staircase creates");
+
+    m3CharacterDef cd = m3DefaultCharacterDef();
+    cd.radius = 0.2f;
+    cd.halfHeight = 0.3f;
+    cd.position = (m3Pos3){0.5, 2.0, 2.0};
+    m3CharacterId hero = m3CreateCharacter(world, &cd);
+    for (int32_t i = 0; i < 40; ++i)
+    {
+        m3Character_Move(hero, (m3Vec3){0.0f, -0.1f, 0.0f});
+    }
+    CHECK(m3Character_IsGrounded(hero), "the character lands at the stair base");
+
+    // March up the stairs.
+    for (int32_t i = 0; i < 120; ++i)
+    {
+        m3Character_Move(hero, (m3Vec3){0.03f, -0.03f, 0.0f});
+    }
+    m3Pos3 p = m3Character_GetPosition(hero);
+    CHECK(p.x > 2.6 && p.x < 3.05, "the climb is stopped only by the double riser");
+    // Feet on the step below the cliff: the top under x ~ 2.9 is
+    // layer (2.9/0.25 - 4)/2 + 1 = 4 -> surface y = 5 * 0.25 = 1.25.
+    double stand = 1.25 + (double)(cd.halfHeight + cd.radius + cd.skin);
+    CHECK(p.y > stand - 0.05 && p.y < stand + 0.05, "the character stands on the fourth step");
+    CHECK(m3Character_IsGrounded(hero), "stairs never break grounding");
+    m3DestroyWorld(world);
+}
+
+static void TestSteepSlopeRefusal(void)
+{
+    // A sixty-degree ramp is a wall in walking terms: pressing into
+    // it must not mint height, tick after tick.
+    m3WorldId world = ArenaWorld();
+    m3ShapeDef sd = m3DefaultShapeDef();
+    m3BodyDef rd = m3DefaultBodyDef();
+    rd.position = (m3Pos3){4.0, 0.0, 0.0};
+    // Yaw the box about z by sixty degrees to make the steep face.
+    float half = 0.5235988f; // 60 degrees / 2
+    rd.rotation = (m3Quat){0.0f, 0.0f, sinf(half), cosf(half)};
+    m3BodyId rampBody = m3CreateBody(world, &rd);
+    m3CreateBoxShape(rampBody, &sd, (m3Vec3){3.0f, 3.0f, 3.0f});
+
+    m3CharacterDef cd = m3DefaultCharacterDef();
+    cd.position = (m3Pos3){0.0, 2.0, 0.0};
+    m3CharacterId hero = m3CreateCharacter(world, &cd);
+    for (int32_t i = 0; i < 40; ++i)
+    {
+        m3Character_Move(hero, (m3Vec3){0.0f, -0.1f, 0.0f});
+    }
+    double y0 = m3Character_GetPosition(hero).y;
+    for (int32_t i = 0; i < 150; ++i)
+    {
+        m3Character_Move(hero, (m3Vec3){0.05f, -0.02f, 0.0f});
+    }
+    m3Pos3 p = m3Character_GetPosition(hero);
+    CHECK(p.y - y0 < 0.08, "the steep face mints no height");
+    m3DestroyWorld(world);
+}
+
+static void TestCarvedFloorDrop(void)
+{
+    // The interplay nobody else can pose: the floor is carved out
+    // from under a grounded character, and grounding drops THE SAME
+    // step, before any move.
+    m3WorldDef def = m3DefaultWorldDef();
+    def.bodyCapacity = 16;
+    def.shapeCapacity = 16;
+    def.voxelCapacity = 1;
+    def.characterCapacity = 2; // the hero AND the bystander
+    m3WorldId world = m3CreateWorld(&def);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    static uint8_t voxels[16 * 16 * 16];
+    memset(voxels, 0, sizeof(voxels));
+    for (int32_t z = 0; z < 16; ++z)
+    {
+        for (int32_t x = 0; x < 16; ++x)
+        {
+            voxels[x + 16 * (0 + 16 * z)] = 1; // a one-layer floor
+        }
+    }
+    m3BodyDef gd = m3DefaultBodyDef();
+    m3BodyId ground = m3CreateBody(world, &gd);
+    m3ShapeId slab = m3CreateVoxelChunkShape(ground, &sd, voxels, NULL, 1.0f);
+
+    m3CharacterDef cd = m3DefaultCharacterDef();
+    cd.position = (m3Pos3){8.5, 4.0, 8.5};
+    m3CharacterId hero = m3CreateCharacter(world, &cd);
+    for (int32_t i = 0; i < 60; ++i)
+    {
+        m3Character_Move(hero, (m3Vec3){0.0f, -0.1f, 0.0f});
+    }
+    CHECK(m3Character_IsGrounded(hero), "the character stands on the voxel floor");
+
+    // Carve the tiles under foot: NO move happens after this; the
+    // grounding must drop from the edit alone.
+    int32_t lo[3] = {7, 0, 7};
+    int32_t hi[3] = {10, 0, 10};
+    CHECK(m3VoxelChunk_ClearBox(slab, lo, hi) == 16, "the floor vanishes under foot");
+    CHECK(!m3Character_IsGrounded(hero), "grounding drops the same step the floor goes");
+
+    // An edit elsewhere never touches a grounded character.
+    m3CharacterDef cd2 = m3DefaultCharacterDef();
+    cd2.position = (m3Pos3){2.5, 4.0, 2.5};
+    m3CharacterId bystander = m3CreateCharacter(world, &cd2);
+    for (int32_t i = 0; i < 60; ++i)
+    {
+        m3Character_Move(bystander, (m3Vec3){0.0f, -0.1f, 0.0f});
+    }
+    CHECK(m3Character_IsGrounded(bystander), "the bystander stands");
+    int32_t lo2[3] = {13, 0, 13};
+    int32_t hi2[3] = {14, 0, 14};
+    CHECK(m3VoxelChunk_ClearBox(slab, lo2, hi2) == 4, "the far carve lands");
+    CHECK(m3Character_IsGrounded(bystander), "a far edit never shakes the bystander");
+    m3DestroyWorld(world);
+}
+
+static void TestWeldedSeamWalk(void)
+{
+    // A character crosses the chunk border of two welded slabs:
+    // height wander stays inside the skin and grounding never
+    // flickers (the 3-4 promise, now on foot).
+    m3WorldDef def = m3DefaultWorldDef();
+    def.bodyCapacity = 16;
+    def.shapeCapacity = 16;
+    def.voxelCapacity = 2;
+    def.characterCapacity = 1;
+    m3WorldId world = m3CreateWorld(&def);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    static uint8_t voxels[16 * 16 * 16];
+    memset(voxels, 0, sizeof(voxels));
+    for (int32_t z = 0; z < 16; ++z)
+    {
+        for (int32_t x = 0; x < 16; ++x)
+        {
+            for (int32_t y = 0; y < 2; ++y)
+            {
+                voxels[x + 16 * (y + 16 * z)] = 1;
+            }
+        }
+    }
+    m3BodyDef gd = m3DefaultBodyDef();
+    gd.position = (m3Pos3){0.0, 0.0, 0.0};
+    m3BodyId groundA = m3CreateBody(world, &gd);
+    CHECK(m3Shape_IsValid(m3CreateVoxelChunkShape(groundA, &sd, voxels, NULL, 1.0f)),
+          "slab A creates");
+    gd.position = (m3Pos3){16.0, 0.0, 0.0};
+    m3BodyId groundB = m3CreateBody(world, &gd);
+    CHECK(m3Shape_IsValid(m3CreateVoxelChunkShape(groundB, &sd, voxels, NULL, 1.0f)),
+          "slab B creates and welds");
+
+    m3CharacterDef cd = m3DefaultCharacterDef();
+    cd.position = (m3Pos3){12.0, 4.0, 8.0};
+    m3CharacterId hero = m3CreateCharacter(world, &cd);
+    for (int32_t i = 0; i < 40; ++i)
+    {
+        m3Character_Move(hero, (m3Vec3){0.0f, -0.1f, 0.0f});
+    }
+    double y0 = m3Character_GetPosition(hero).y;
+    double maxWander = 0.0;
+    for (int32_t i = 0; i < 160; ++i)
+    {
+        m3Character_Move(hero, (m3Vec3){0.06f, -0.04f, 0.0f});
+        CHECK(m3Character_IsGrounded(hero), "grounding never flickers at the seam");
+        double w = m3Character_GetPosition(hero).y - y0;
+        if (w < 0.0)
+        {
+            w = -w;
+        }
+        if (w > maxWander)
+        {
+            maxWander = w;
+        }
+    }
+    m3Pos3 p = m3Character_GetPosition(hero);
+    CHECK(p.x > 20.0, "the walk crossed the welded border");
+    CHECK(maxWander < 0.03, "the seam never lifts or drops the walker");
+    m3DestroyWorld(world);
+}
+
 int main(void)
 {
     TestFlatWalk();
@@ -282,6 +504,10 @@ int main(void)
     TestLedgeDropAndSnap();
     TestMoveDeterminismAndJournal();
     TestCharacterContracts();
+    TestVoxelStairs();
+    TestSteepSlopeRefusal();
+    TestCarvedFloorDrop();
+    TestWeldedSeamWalk();
     if (s_failures == 0)
     {
         printf("test_character: all green\n");

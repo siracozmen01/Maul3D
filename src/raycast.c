@@ -400,12 +400,11 @@ static bool RayQueryCallback(int32_t shape, void* userContext)
     return true;
 }
 
-m3RayHit m3World_CastRayClosest(m3WorldId worldId, m3Pos3 origin, m3Vec3 translation)
+m3RayHit m3RayClosestInternal(m3World* world, m3Pos3 origin, m3Vec3 translation)
 {
     m3RayCastContext ctx;
     memset(&ctx, 0, sizeof(ctx));
     ctx.best.fraction = 1.0f;
-    m3World* world = m3WorldFromId(worldId);
     if (world == NULL || !(m3Dot3(translation, translation) > 0.0f))
     {
         return ctx.best; // null world or zero ray: a clean miss
@@ -439,4 +438,16 @@ m3RayHit m3World_CastRayClosest(m3WorldId worldId, m3Pos3 origin, m3Vec3 transla
         }
     }
     return ctx.best;
+}
+
+m3RayHit m3World_CastRayClosest(m3WorldId worldId, m3Pos3 origin, m3Vec3 translation)
+{
+    m3World* world = m3WorldFromId(worldId);
+    if (world == NULL)
+    {
+        m3RayHit miss;
+        memset(&miss, 0, sizeof(miss));
+        return miss;
+    }
+    return m3RayClosestInternal(world, origin, translation);
 }

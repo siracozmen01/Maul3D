@@ -251,6 +251,28 @@ static void VoxelWakeRegion(m3World* world, int32_t shape, const int32_t lo[3], 
     }
     m3VoxelWakeContext ctx = {world};
     m3TreeQuery(&world->tree, wlo, whi, VoxelWakeCallback, &ctx);
+
+    // Characters standing over the edited region lose their ground
+    // THIS step if it vanished (4-5): the destruction interplay is
+    // a contract, not a next-frame coincidence.
+    for (int32_t c = 0; c < world->charPool.maxIndex; ++c)
+    {
+        if (world->charPool.alive[c] == 0 || world->charGrounded[c] == 0)
+        {
+            continue;
+        }
+        const m3Pos3* p = &world->transforms[world->charBody[c]].p;
+        m3real reachDown =
+            world->charHalfHeight[c] + world->charRadius[c] + world->charSnap[c] + M3_AABB_MARGIN;
+        m3real reachSide = world->charRadius[c] + M3_AABB_MARGIN;
+        if (p->x + (double)reachSide < wlo[0] || p->x - (double)reachSide > whi[0] ||
+            p->z + (double)reachSide < wlo[2] || p->z - (double)reachSide > whi[2] ||
+            p->y - (double)reachDown > whi[1] || p->y + (double)reachDown < wlo[1])
+        {
+            continue;
+        }
+        m3CharacterRefreshGrounding(world, c);
+    }
 }
 
 static bool VoxelCoordsValid(int32_t x, int32_t y, int32_t z)
