@@ -315,10 +315,29 @@ typedef struct m3JointConstraint
     m3real lowerImpulse;
     m3real upperImpulse;
     m3real motorSpeed;
-    m3real maxMotorTorque;
-    m3real lowerAngle;
-    m3real upperAngle;
+    m3real maxMotorEffort;
+    m3real lowerLimit;
+    m3real upperLimit;
+    m3Vec3 angularImpulse; // prismatic rotation lock (3 DOF)
 } m3JointConstraint;
+
+// Rotation vector of a relative quaternion (robust: exact angle via
+// atan2, small angles fall back to the linear form).
+static m3Vec3 QuatToRotationVec(m3Quat relQ)
+{
+    if (relQ.w < 0.0f)
+    {
+        relQ = (m3Quat){-relQ.x, -relQ.y, -relQ.z, -relQ.w};
+    }
+    m3Vec3 v = {relQ.x, relQ.y, relQ.z};
+    m3real len = sqrtf(m3Dot3(v, v));
+    if (len < 1.0e-9f)
+    {
+        return m3MulSV3(2.0f, v);
+    }
+    m3real angle = 2.0f * m3Atan2(len, relQ.w);
+    return m3MulSV3(angle / len, v);
+}
 
 // Half-quaternion rotation of a frame axis, the reference form for
 // the collinearity Jacobian columns.
@@ -371,7 +390,7 @@ static int32_t PrepareJoints(m3World* world, m3JointConstraint* joints, m3real h
         c->impulse = world->jointImpulse[j];
         c->type = world->jointType[j];
         c->flags = world->jointFlags[j];
-        if (c->type == (uint8_t)m3_revoluteJoint)
+        if (c->type == (uint8_t)m3_revoluteJoint || c->type == (uint8_t)m3_prismaticJoint)
         {
             c->frameQA = m3MulQuat(xfA->q, world->jointFrameQA[j]);
             c->frameQB = m3MulQuat(xfB->q, world->jointFrameQB[j]);
@@ -390,9 +409,10 @@ static int32_t PrepareJoints(m3World* world, m3JointConstraint* joints, m3real h
             c->lowerImpulse = world->jointLimitImpulse[j].x;
             c->upperImpulse = world->jointLimitImpulse[j].y;
             c->motorSpeed = world->jointMotor[j].x;
-            c->maxMotorTorque = world->jointMotor[j].y;
-            c->lowerAngle = world->jointLimits[j].x;
-            c->upperAngle = world->jointLimits[j].y;
+            c->maxMotorEffort = world->jointMotor[j].y;
+            c->lowerLimit = world->jointLimits[j].x;
+            c->upperLimit = world->jointLimits[j].y;
+            c->angularImpulse = world->jointAngularImpulse[j];
         }
     }
     return count;
@@ -407,6 +427,7 @@ static void WarmStartJoints(m3World* world, m3JointConstraint* joints, int32_t c
         m3Vec3 rA = m3RotateVec3(deltaRot[c->bodyA], c->rA);
         m3Vec3 rB = m3RotateVec3(deltaRot[c->bodyB], c->rB);
         m3Vec3 angularImpulse = {0.0f, 0.0f, 0.0f};
+        m3Vec3 linearExtra = {0.0f, 0.0f, 0.0f};
         if (c->type == (uint8_t)m3_revoluteJoint)
         {
             m3real axial = c->motorImpulse + c->lowerImpulse - c->upperImpulse;
@@ -414,16 +435,29 @@ static void WarmStartJoints(m3World* world, m3JointConstraint* joints, int32_t c
                                     m3MulSV3(c->perpImpulseY, c->perpAxisY));
             angularImpulse = m3Add3(angularImpulse, m3MulSV3(axial, c->rotationAxis));
         }
+        else if (c->type == (uint8_t)m3_prismaticJoint)
+        {
+            // Linear impulses along the prepared axis and perps; the
+            // angular arms differ per body and re-derive in the solve,
+            // so the warm start uses the prepared arms (the reference
+            // does the same through its cached sA/sB).
+            m3real axial = c->motorImpulse + c->lowerImpulse - c->upperImpulse;
+            linearExtra = m3MulSV3(axial, c->rotationAxis);
+            linearExtra = m3Add3(linearExtra, m3MulSV3(c->perpImpulseX, c->perpAxisX));
+            linearExtra = m3Add3(linearExtra, m3MulSV3(c->perpImpulseY, c->perpAxisY));
+            angularImpulse = c->angularImpulse;
+        }
+        m3Vec3 totalLinear = m3Add3(c->impulse, linearExtra);
         world->linearVelocities[c->bodyA] =
-            m3Sub3(world->linearVelocities[c->bodyA], m3MulSV3(c->invMassA, c->impulse));
+            m3Sub3(world->linearVelocities[c->bodyA], m3MulSV3(c->invMassA, totalLinear));
         world->angularVelocities[c->bodyA] =
             m3Sub3(world->angularVelocities[c->bodyA],
-                   m3MulMV3(c->invIA, m3Add3(m3Cross3(rA, c->impulse), angularImpulse)));
+                   m3MulMV3(c->invIA, m3Add3(m3Cross3(rA, totalLinear), angularImpulse)));
         world->linearVelocities[c->bodyB] =
-            m3Add3(world->linearVelocities[c->bodyB], m3MulSV3(c->invMassB, c->impulse));
+            m3Add3(world->linearVelocities[c->bodyB], m3MulSV3(c->invMassB, totalLinear));
         world->angularVelocities[c->bodyB] =
             m3Add3(world->angularVelocities[c->bodyB],
-                   m3MulMV3(c->invIB, m3Add3(m3Cross3(rB, c->impulse), angularImpulse)));
+                   m3MulMV3(c->invIB, m3Add3(m3Cross3(rB, totalLinear), angularImpulse)));
     }
 }
 
@@ -463,7 +497,7 @@ static void SolveJoints(m3World* world, m3JointConstraint* joints, int32_t count
                 m3real cdot = m3Dot3(m3Sub3(wB, wA), axis) - c->motorSpeed;
                 m3real delta = -c->axialMass * cdot;
                 m3real newImpulse = c->motorImpulse + delta;
-                m3real maxImpulse = c->maxMotorTorque * hSub;
+                m3real maxImpulse = c->maxMotorEffort * hSub;
                 newImpulse = m3MaxF(-maxImpulse, m3MinF(maxImpulse, newImpulse));
                 delta = newImpulse - c->motorImpulse;
                 c->motorImpulse = newImpulse;
@@ -477,7 +511,7 @@ static void SolveJoints(m3World* world, m3JointConstraint* joints, int32_t count
                 m3real angle = 2.0f * m3Atan2(relQ.z, relQ.w);
                 // Lower limit.
                 {
-                    m3real cc = angle - c->lowerAngle;
+                    m3real cc = angle - c->lowerLimit;
                     m3real bias = 0.0f;
                     m3real massScale = 1.0f;
                     m3real impulseScale = 0.0f;
@@ -501,7 +535,7 @@ static void SolveJoints(m3World* world, m3JointConstraint* joints, int32_t count
                 }
                 // Upper limit (signs flipped, the reference form).
                 {
-                    m3real cc = c->upperAngle - angle;
+                    m3real cc = c->upperLimit - angle;
                     m3real bias = 0.0f;
                     m3real massScale = 1.0f;
                     m3real impulseScale = 0.0f;
@@ -577,6 +611,199 @@ static void SolveJoints(m3World* world, m3JointConstraint* joints, int32_t count
             vB = world->linearVelocities[c->bodyB];
             wB = world->angularVelocities[c->bodyB];
         }
+        else if (c->type == (uint8_t)m3_prismaticJoint)
+        {
+            // The reference prismatic with the FULL Jacobian arms
+            // sA = cross(rA + d, axis), sB = cross(rB, axis): the
+            // simplified arms are the author-flagged todo, and the
+            // finite-difference test in test_joints holds the full
+            // form to the numerics.
+            m3Vec3 d =
+                m3Add3(m3Add3(m3Sub3(deltaPos[c->bodyB], deltaPos[c->bodyA]), c->deltaCenter),
+                       m3Sub3(rB, rA));
+            m3Vec3 axis = m3RotateVec3(deltaRot[c->bodyA], c->rotationAxis);
+            m3Vec3 sAx = m3Cross3(m3Add3(rA, d), axis);
+            m3Vec3 sBx = m3Cross3(rB, axis);
+            m3real translation = m3Dot3(d, axis);
+
+            // Fresh axial mass every iteration (the reference note:
+            // stale masses diverge under stress).
+            m3real ka = c->invMassA + c->invMassB + m3Dot3(sAx, m3MulMV3(c->invIA, sAx)) +
+                        m3Dot3(sBx, m3MulMV3(c->invIB, sBx));
+            m3real axialMass = ka > 0.0f ? 1.0f / ka : 0.0f;
+
+            if ((c->flags & 2) != 0)
+            {
+                // Motor: velocity drive along the axis, force cap.
+                m3Vec3 vRel =
+                    m3Sub3(m3Sub3(m3Add3(vB, m3Cross3(wB, rB)), vA), m3Cross3(wA, m3Add3(rA, d)));
+                m3real cdot = m3Dot3(vRel, axis) - c->motorSpeed;
+                m3real delta = -axialMass * cdot;
+                m3real newImpulse = c->motorImpulse + delta;
+                m3real maxImpulse = c->maxMotorEffort * hSub;
+                newImpulse = m3MaxF(-maxImpulse, m3MinF(maxImpulse, newImpulse));
+                delta = newImpulse - c->motorImpulse;
+                c->motorImpulse = newImpulse;
+                vA = m3Sub3(vA, m3MulSV3(c->invMassA * delta, axis));
+                wA = m3Sub3(wA, m3MulMV3(c->invIA, m3MulSV3(delta, sAx)));
+                vB = m3Add3(vB, m3MulSV3(c->invMassB * delta, axis));
+                wB = m3Add3(wB, m3MulMV3(c->invIB, m3MulSV3(delta, sBx)));
+            }
+
+            if ((c->flags & 1) != 0)
+            {
+                // Lower limit.
+                {
+                    m3real cc = translation - c->lowerLimit;
+                    m3real bias = 0.0f;
+                    m3real massScale = 1.0f;
+                    m3real impulseScale = 0.0f;
+                    if (cc > 0.0f)
+                    {
+                        bias = cc * invHSub;
+                    }
+                    else if (useBias)
+                    {
+                        bias = c->softness.biasRate * cc;
+                        massScale = c->softness.massScale;
+                        impulseScale = c->softness.impulseScale;
+                    }
+                    m3Vec3 vRel = m3Sub3(m3Sub3(m3Add3(vB, m3Cross3(wB, rB)), vA),
+                                         m3Cross3(wA, m3Add3(rA, d)));
+                    m3real cdot = m3Dot3(vRel, axis);
+                    m3real old = c->lowerImpulse;
+                    m3real delta = -massScale * axialMass * (cdot + bias) - impulseScale * old;
+                    c->lowerImpulse = m3MaxF(old + delta, 0.0f);
+                    delta = c->lowerImpulse - old;
+                    vA = m3Sub3(vA, m3MulSV3(c->invMassA * delta, axis));
+                    wA = m3Sub3(wA, m3MulMV3(c->invIA, m3MulSV3(delta, sAx)));
+                    vB = m3Add3(vB, m3MulSV3(c->invMassB * delta, axis));
+                    wB = m3Add3(wB, m3MulMV3(c->invIB, m3MulSV3(delta, sBx)));
+                }
+                // Upper limit (signs flipped).
+                {
+                    m3real cc = c->upperLimit - translation;
+                    m3real bias = 0.0f;
+                    m3real massScale = 1.0f;
+                    m3real impulseScale = 0.0f;
+                    if (cc > 0.0f)
+                    {
+                        bias = cc * invHSub;
+                    }
+                    else if (useBias)
+                    {
+                        bias = c->softness.biasRate * cc;
+                        massScale = c->softness.massScale;
+                        impulseScale = c->softness.impulseScale;
+                    }
+                    m3Vec3 vRel = m3Sub3(m3Sub3(m3Add3(vB, m3Cross3(wB, rB)), vA),
+                                         m3Cross3(wA, m3Add3(rA, d)));
+                    m3real cdot = -m3Dot3(vRel, axis);
+                    m3real old = c->upperImpulse;
+                    m3real delta = -massScale * axialMass * (cdot + bias) - impulseScale * old;
+                    c->upperImpulse = m3MaxF(old + delta, 0.0f);
+                    m3real applied = old - c->upperImpulse;
+                    vA = m3Sub3(vA, m3MulSV3(c->invMassA * applied, axis));
+                    wA = m3Sub3(wA, m3MulMV3(c->invIA, m3MulSV3(applied, sAx)));
+                    vB = m3Add3(vB, m3MulSV3(c->invMassB * applied, axis));
+                    wB = m3Add3(wB, m3MulMV3(c->invIB, m3MulSV3(applied, sBx)));
+                }
+            }
+
+            // Rotation lock: all three angular DOF held to the
+            // prepared relative frame.
+            {
+                m3Vec3 bias = {0.0f, 0.0f, 0.0f};
+                m3real massScale = 1.0f;
+                m3real impulseScale = 0.0f;
+                if (useBias)
+                {
+                    m3Quat quatA = m3MulQuat(deltaRot[c->bodyA], c->frameQA);
+                    m3Quat quatB = m3MulQuat(deltaRot[c->bodyB], c->frameQB);
+                    m3Quat conjA = {-quatA.x, -quatA.y, -quatA.z, quatA.w};
+                    m3Quat relQ = m3MulQuat(conjA, quatB);
+                    m3Vec3 rotVec = QuatToRotationVec(relQ);
+                    m3Vec3 cErr = m3Neg3(m3RotateVec3(quatA, rotVec));
+                    bias = m3MulSV3(c->softness.biasRate, cErr);
+                    massScale = c->softness.massScale;
+                    impulseScale = c->softness.impulseScale;
+                }
+                m3Mat3 k;
+                m3Vec3 basis[3] = {{1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f}};
+                m3Vec3* cols[3] = {&k.cx, &k.cy, &k.cz};
+                for (int32_t a = 0; a < 3; ++a)
+                {
+                    *cols[a] = m3Add3(m3MulMV3(c->invIA, basis[a]), m3MulMV3(c->invIB, basis[a]));
+                }
+                m3Vec3 cdot = m3Sub3(wB, wA);
+                m3Vec3 sol = Solve3(&k, m3Add3(cdot, bias));
+                m3Vec3 delta =
+                    m3Sub3(m3MulSV3(-massScale, sol), m3MulSV3(impulseScale, c->angularImpulse));
+                c->angularImpulse = m3Add3(c->angularImpulse, delta);
+                wA = m3Sub3(wA, m3MulMV3(c->invIA, delta));
+                wB = m3Add3(wB, m3MulMV3(c->invIB, delta));
+            }
+
+            // Point-to-line: the two perpendicular translations, 2x2
+            // with the full arms.
+            {
+                m3Vec3 perpY = m3RotateVec3(deltaRot[c->bodyA], c->perpAxisX);
+                m3Vec3 perpZ = m3RotateVec3(deltaRot[c->bodyA], c->perpAxisY);
+                m3real biasY = 0.0f;
+                m3real biasZ = 0.0f;
+                m3real massScale = 1.0f;
+                m3real impulseScale = 0.0f;
+                if (useBias)
+                {
+                    biasY = c->softness.biasRate * m3Dot3(perpY, d);
+                    biasZ = c->softness.biasRate * m3Dot3(perpZ, d);
+                    massScale = c->softness.massScale;
+                    impulseScale = c->softness.impulseScale;
+                }
+                m3Vec3 sAy = m3Cross3(m3Add3(rA, d), perpY);
+                m3Vec3 sBy = m3Cross3(rB, perpY);
+                m3Vec3 sAz = m3Cross3(m3Add3(rA, d), perpZ);
+                m3Vec3 sBz = m3Cross3(rB, perpZ);
+                m3real kyy = c->invMassA + c->invMassB + m3Dot3(sAy, m3MulMV3(c->invIA, sAy)) +
+                             m3Dot3(sBy, m3MulMV3(c->invIB, sBy));
+                m3real kyz =
+                    m3Dot3(sAy, m3MulMV3(c->invIA, sAz)) + m3Dot3(sBy, m3MulMV3(c->invIB, sBz));
+                m3real kzz = c->invMassA + c->invMassB + m3Dot3(sAz, m3MulMV3(c->invIA, sAz)) +
+                             m3Dot3(sBz, m3MulMV3(c->invIB, sBz));
+                m3Vec3 vRel =
+                    m3Sub3(m3Sub3(m3Add3(vB, m3Cross3(wB, rB)), vA), m3Cross3(wA, m3Add3(rA, d)));
+                m3real cdotY = m3Dot3(vRel, perpY) + biasY;
+                m3real cdotZ = m3Dot3(vRel, perpZ) + biasZ;
+                m3real det = kyy * kzz - kyz * kyz;
+                m3real solY = 0.0f;
+                m3real solZ = 0.0f;
+                if (det != 0.0f)
+                {
+                    m3real inv = 1.0f / det;
+                    solY = inv * (kzz * cdotY - kyz * cdotZ);
+                    solZ = inv * (kyy * cdotZ - kyz * cdotY);
+                }
+                m3real deltaY = -massScale * solY - impulseScale * c->perpImpulseX;
+                m3real deltaZ = -massScale * solZ - impulseScale * c->perpImpulseY;
+                c->perpImpulseX += deltaY;
+                c->perpImpulseY += deltaZ;
+                m3Vec3 P = m3Add3(m3MulSV3(deltaY, perpY), m3MulSV3(deltaZ, perpZ));
+                m3Vec3 LA = m3Add3(m3MulSV3(deltaY, sAy), m3MulSV3(deltaZ, sAz));
+                m3Vec3 LB = m3Add3(m3MulSV3(deltaY, sBy), m3MulSV3(deltaZ, sBz));
+                vA = m3Sub3(vA, m3MulSV3(c->invMassA, P));
+                wA = m3Sub3(wA, m3MulMV3(c->invIA, LA));
+                vB = m3Add3(vB, m3MulSV3(c->invMassB, P));
+                wB = m3Add3(wB, m3MulMV3(c->invIB, LB));
+            }
+
+            // The prismatic has no free point constraint: write back
+            // and continue to the next joint.
+            world->linearVelocities[c->bodyA] = vA;
+            world->angularVelocities[c->bodyA] = wA;
+            world->linearVelocities[c->bodyB] = vB;
+            world->angularVelocities[c->bodyB] = wB;
+            continue;
+        }
 
         m3Vec3 cdot = m3Sub3(m3Add3(vB, m3Cross3(wB, rB)), m3Add3(vA, m3Cross3(wA, rA)));
 
@@ -633,6 +860,7 @@ static void StoreJointImpulses(m3World* world, m3JointConstraint* joints, int32_
         world->jointPerpImpulse[c->joint] =
             (m3Vec3){c->perpImpulseX, c->perpImpulseY, c->motorImpulse};
         world->jointLimitImpulse[c->joint] = (m3Vec3){c->lowerImpulse, c->upperImpulse, 0.0f};
+        world->jointAngularImpulse[c->joint] = c->angularImpulse;
     }
 }
 

@@ -144,6 +144,7 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     M3_ALLOC(world->jointImpulse, def->jointCapacity, m3Vec3);
     M3_ALLOC(world->jointPerpImpulse, def->jointCapacity, m3Vec3);
     M3_ALLOC(world->jointLimitImpulse, def->jointCapacity, m3Vec3);
+    M3_ALLOC(world->jointAngularImpulse, def->jointCapacity, m3Vec3);
     M3_ALLOC(world->jointFrameQA, def->jointCapacity, m3Quat);
     M3_ALLOC(world->jointFrameQB, def->jointCapacity, m3Quat);
     M3_ALLOC(world->jointFlags, def->jointCapacity, uint8_t);
@@ -249,6 +250,7 @@ void m3DestroyWorld(m3WorldId worldId)
     m3Free(world->jointImpulse);
     m3Free(world->jointPerpImpulse);
     m3Free(world->jointLimitImpulse);
+    m3Free(world->jointAngularImpulse);
     m3Free(world->jointFrameQA);
     m3Free(world->jointFrameQB);
     m3Free(world->jointFlags);

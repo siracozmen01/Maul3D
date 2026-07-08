@@ -23,7 +23,7 @@
 // integration order, constants). Part of the snapshot config hash, so
 // a snapshot from a different behavior revision is refused loudly
 // instead of silently diverging (the Jolt friction-model lesson).
-#define M3_SOLVER_REV 15 // rev 15: revolute joints
+#define M3_SOLVER_REV 16 // rev 16: prismatic joints
 
 // Def cookies: a def that did not come from its m3Default*Def factory
 // is rejected loudly (the Maul2D pattern).
@@ -299,10 +299,11 @@ typedef struct m3World
     m3Vec3* jointLocalA;
     m3Vec3* jointLocalB;
     uint8_t* jointCollide;
-    m3Vec3* jointImpulse;      // warm-start linear impulse
-    m3Vec3* jointPerpImpulse;  // x, y = collinearity rows; z = motor
-    m3Vec3* jointLimitImpulse; // x = lower, y = upper, z unused
-    m3Quat* jointFrameQA;      // joint frame in body A (axis = local z)
+    m3Vec3* jointImpulse;        // warm-start linear impulse
+    m3Vec3* jointPerpImpulse;    // x, y = collinearity rows; z = motor
+    m3Vec3* jointLimitImpulse;   // x = lower, y = upper, z unused
+    m3Vec3* jointAngularImpulse; // prismatic 3-DOF rotation lock
+    m3Quat* jointFrameQA;        // joint frame in body A (axis = local z)
     m3Quat* jointFrameQB;
     uint8_t* jointFlags; // bit0 limit, bit1 motor
     m3Vec3* jointMotor;  // x = motorSpeed, y = maxMotorTorque, z unused

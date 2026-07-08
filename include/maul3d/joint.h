@@ -19,6 +19,7 @@ extern "C"
     {
         m3_sphericalJoint = 0, // ball: pins two body-frame points together
         m3_revoluteJoint = 1,  // hinge: one rotation axis, limits, motor
+        m3_prismaticJoint = 2, // slider: one translation axis, limits, motor
     } m3JointType;
 
     /// Build with m3DefaultJointDef; hand-rolled defs are rejected
@@ -35,12 +36,15 @@ extern "C"
         /// for a well-posed hinge.
         m3Vec3 localAxisA;
         m3Vec3 localAxisB;
-        bool enableLimit; // revolute: angle range about the axis
-        m3real lowerAngle;
-        m3real upperAngle;
-        bool enableMotor; // revolute: velocity drive with a torque cap
-        m3real motorSpeed;
-        m3real maxMotorTorque;
+        /// Limits and motor share names across joint types: for the
+        /// revolute they are angles (radians) and a torque cap, for
+        /// the prismatic translations (meters) and a force cap.
+        bool enableLimit;
+        m3real lowerLimit;
+        m3real upperLimit;
+        bool enableMotor;
+        m3real motorSpeed; // rad/s or m/s by joint type
+        m3real maxMotorEffort;
         /// Jointed bodies do not collide with each other unless this
         /// is set (the classic chain-fight guard).
         bool collideConnected;

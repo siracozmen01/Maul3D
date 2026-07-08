@@ -99,11 +99,12 @@ int32_t m3CreateJointInternal(m3World* world, const m3JointDef* def, int32_t bod
     world->jointImpulse[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
     world->jointPerpImpulse[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
     world->jointLimitImpulse[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
+    world->jointAngularImpulse[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
     world->jointFrameQA[index] = QuatFromAxisZ(m3Normalize3(def->localAxisA));
     world->jointFrameQB[index] = QuatFromAxisZ(m3Normalize3(def->localAxisB));
     world->jointFlags[index] = (uint8_t)((def->enableLimit ? 1 : 0) | (def->enableMotor ? 2 : 0));
-    world->jointMotor[index] = (m3Vec3){def->motorSpeed, def->maxMotorTorque, 0.0f};
-    world->jointLimits[index] = (m3Vec3){def->lowerAngle, def->upperAngle, 0.0f};
+    world->jointMotor[index] = (m3Vec3){def->motorSpeed, def->maxMotorEffort, 0.0f};
+    world->jointLimits[index] = (m3Vec3){def->lowerLimit, def->upperLimit, 0.0f};
     // Push onto both bodies' joint lists (creation order recoverable:
     // replay recreates in the same order).
     world->jointNextA[index] = world->bodyJointHead[bodyA];
@@ -166,6 +167,7 @@ void m3DestroyJointInternal(m3World* world, int32_t index)
     world->jointImpulse[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
     world->jointPerpImpulse[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
     world->jointLimitImpulse[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
+    world->jointAngularImpulse[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
     world->jointFrameQA[index] = m3MakeIdentityQuat();
     world->jointFrameQB[index] = m3MakeIdentityQuat();
     world->jointFlags[index] = 0;
@@ -179,11 +181,12 @@ void m3DestroyJointInternal(m3World* world, int32_t index)
 m3JointId m3CreateJoint(const m3JointDef* def)
 {
     if (def == NULL || def->internalValue != M3_JOINT_COOKIE ||
-        (def->type != (int32_t)m3_sphericalJoint && def->type != (int32_t)m3_revoluteJoint))
+        (def->type != (int32_t)m3_sphericalJoint && def->type != (int32_t)m3_revoluteJoint &&
+         def->type != (int32_t)m3_prismaticJoint))
     {
         return m3_nullJointId;
     }
-    if (def->type == (int32_t)m3_revoluteJoint &&
+    if (def->type != (int32_t)m3_sphericalJoint &&
         (!(m3Dot3(def->localAxisA, def->localAxisA) > 0.0f) ||
          !(m3Dot3(def->localAxisB, def->localAxisB) > 0.0f)))
     {
