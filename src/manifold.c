@@ -99,25 +99,44 @@ static m3FaceQuery QueryFaces(const m3HullData* ref, const m3HullData* other, m3
     m3FaceQuery query;
     query.separation = -3.4e38f;
     query.faceIndex = 0;
+    // The other hull's vertices depend on the frame, not the face:
+    // transform once (2c-11, the profile's first ask). Same inputs,
+    // same operations, so every dot below sees bit-identical values.
+    m3Vec3 w[M3_HULL_MAX_VERTS];
+    for (int32_t v = 0; v < other->vertexCount; ++v)
+    {
+        w[v] = refIsA ? m3Add3(m3RotateVec3(q, other->vertices[v]), p)
+                      : m3InvRotateVec3(q, m3Sub3(other->vertices[v], p));
+    }
     for (int32_t f = 0; f < ref->faceCount; ++f)
     {
         m3Vec3 n = ref->faceNormals[f];
         m3real off = ref->faceOffsets[f];
-        // Support of the OTHER hull along -n, expressed in ref's frame.
-        m3Vec3 nOther = refIsA ? m3InvRotateVec3(q, m3Neg3(n)) : m3RotateVec3(q, m3Neg3(n));
         m3real best = 3.4e38f;
         for (int32_t v = 0; v < other->vertexCount; ++v)
         {
-            (void)nOther;
-            m3Vec3 w = refIsA ? m3Add3(m3RotateVec3(q, other->vertices[v]), p)
-                              : m3InvRotateVec3(q, m3Sub3(other->vertices[v], p));
-            m3real d = m3Dot3(n, w) - off;
+            m3real d = m3Dot3(n, w[v]) - off;
             best = m3MinF(best, d);
+            if (best <= query.separation)
+            {
+                // This face cannot win the max: the update below
+                // would not fire either way, so the break is
+                // bit-invisible.
+                break;
+            }
         }
         if (best > query.separation)
         {
             query.separation = best;
             query.faceIndex = f;
+            if (best > M3_SPECULATIVE_DISTANCE)
+            {
+                // A separating face is a verdict, not a candidate:
+                // every caller returns the empty manifold on it, so
+                // the rest of the loop can only refine a number
+                // nobody reads.
+                return query;
+            }
         }
     }
     return query;
@@ -191,6 +210,13 @@ static m3EdgeQuery QueryEdges(const m3HullData* hullA, const m3HullData* hullB, 
                 query.indexA = ia;
                 query.indexB = ib;
                 query.axis = axis;
+                if (separation > M3_SPECULATIVE_DISTANCE)
+                {
+                    // Same verdict rule as the face query: any
+                    // separating edge axis means the caller returns
+                    // empty, so stop refining.
+                    return query;
+                }
             }
         }
     }
