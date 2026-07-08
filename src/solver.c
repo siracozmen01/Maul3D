@@ -1888,6 +1888,9 @@ void m3StepInternal(m3World* world, float dt, int32_t substeps)
     world->endEventCount = 0;
     world->sensorBeginEventCount = 0;
     world->sensorEndEventCount = 0;
+    world->fragmentEventCount = 0;
+    world->fragmentRecipeCount = 0;
+    world->fragmentDropped = 0;
     {
         int32_t iNew = 0;
         int32_t iOld = 0;

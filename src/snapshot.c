@@ -343,6 +343,9 @@ bool m3World_Restore(m3WorldId worldId, const void* data, int32_t size)
     world->endEventCount = 0;
     world->sensorBeginEventCount = 0;
     world->sensorEndEventCount = 0;
+    world->fragmentEventCount = 0;
+    world->fragmentRecipeCount = 0;
+    world->fragmentDropped = 0;
     world->hullPool.maxIndex = header.hullMaxIndex;
     world->hullPool.freeHead = header.hullFreeHead;
     world->hullPool.freeCount = header.hullFreeCount;

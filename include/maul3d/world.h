@@ -87,6 +87,42 @@ extern "C"
     M3_API const m3ContactEvent* m3World_ContactBeginEvents(m3WorldId worldId, int32_t* count);
     M3_API const m3ContactEvent* m3World_ContactEndEvents(m3WorldId worldId, int32_t* count);
 
+    /// A fragment-spawn event (3-3): a voxel edit disconnected an
+    /// island from its chunk's base layer (y = 0 voxels anchor a
+    /// chunk; an island with no path to the base cannot stand). The
+    /// engine REMOVES the island from the grid as part of the edit's
+    /// state transition and emits this event; it never spawns bodies
+    /// (what a fragment becomes is the host's decision; the
+    /// reference recipe feeds the island's voxels to the built-in
+    /// QuickHull and creates a hull body). Events and recipes are
+    /// valid until the next step, restore, or edit-free frame
+    /// boundary of your choosing; the next m3World_Step clears them.
+    typedef struct m3FragmentEvent
+    {
+        m3ShapeId chunkShape;
+        int32_t voxelCount;
+        /// Range into m3World_FragmentRecipe: chunk-local linear
+        /// voxel indices (v = x + 16 * (y + 16 * z)). recipeStart is
+        /// -1 when the recipe buffer overflowed (the event and the
+        /// removal still happened; the bounds below still describe
+        /// the island).
+        int32_t recipeStart;
+        int32_t recipeCount;
+        m3Vec3 comChunk;     /// island center of mass, chunk frame
+        m3Pos3 comWorld;     /// the same point in world space at emit time
+        m3real mass;         /// at density one (cell volume times count)
+        uint8_t boundsLo[3]; /// island voxel bounds, inclusive
+        uint8_t boundsHi[3];
+        uint8_t pad[2];
+    } m3FragmentEvent;
+
+    M3_API const m3FragmentEvent* m3World_FragmentEvents(m3WorldId worldId, int32_t* count);
+    M3_API const uint16_t* m3World_FragmentRecipe(m3WorldId worldId, int32_t* count);
+    /// Islands beyond the event capacity are still removed from the
+    /// grid (state transitions stay pure); only their EVENTS drop,
+    /// and this counter says how many, loudly.
+    M3_API int32_t m3World_FragmentEventsDropped(m3WorldId worldId);
+
     /// Sensor overlap events, the same law as contact events but in
     /// their own streams (a sensor touch is not a contact). shapeA
     /// is the lower shape index; either side may be the sensor.

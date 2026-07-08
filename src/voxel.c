@@ -271,7 +271,8 @@ bool m3VoxelSetInternal(m3World* world, int32_t shape, int32_t x, int32_t y, int
         chunk->filledCount += 1;
         // Occupancy changed: the surface is stale. A payload-only
         // set falls through (the surface is a pure function of
-        // occupancy and cell size, never of payload).
+        // occupancy and cell size, never of payload). No fracture
+        // sweep here: adding a voxel can only CONNECT islands.
         m3VoxelSurfaceBuild(&world->voxelSurface[slot], chunk);
     }
     int32_t lo[3] = {x, y, z};
@@ -290,6 +291,7 @@ bool m3VoxelClearInternal(m3World* world, int32_t shape, int32_t x, int32_t y, i
         chunk->payload[v] = 0;
         chunk->filledCount -= 1;
         m3VoxelSurfaceBuild(&world->voxelSurface[slot], chunk);
+        m3VoxelFractureSweep(world, shape);
     }
     int32_t lo[3] = {x, y, z};
     VoxelWakeRegion(world, shape, lo, lo);
@@ -322,6 +324,7 @@ int32_t m3VoxelClearBoxInternal(m3World* world, int32_t shape, const int32_t lo[
     {
         chunk->filledCount -= cleared;
         m3VoxelSurfaceBuild(&world->voxelSurface[slot], chunk);
+        m3VoxelFractureSweep(world, shape);
     }
     VoxelWakeRegion(world, shape, lo, hi);
     return cleared;
@@ -426,4 +429,151 @@ int32_t m3VoxelChunk_ClearBox(m3ShapeId shapeId, const int32_t lo[3], const int3
         m3JournalRecord(world, m3_opVoxelClearBox, &record, (int32_t)sizeof(record));
     }
     return m3VoxelClearBoxInternal(world, shape, lo, hi);
+}
+
+// ---------------------------------------------------------------
+// Fracture (3-3): connectivity and fragment events.
+
+// Deterministic flood fill: seeds scan in canonical linear order,
+// the frontier grows with a fixed six-neighbor order, so island
+// labels and event order are pure functions of the grid.
+void m3VoxelFractureSweep(m3World* world, int32_t shape)
+{
+    int32_t slot = world->shapeVoxelIndex[shape];
+    m3VoxelChunkData* chunk = &world->voxelData[slot];
+    if (chunk->filledCount == 0)
+    {
+        return;
+    }
+    static const int32_t offsets[6][3] = {{-1, 0, 0}, {1, 0, 0},  {0, -1, 0},
+                                          {0, 1, 0},  {0, 0, -1}, {0, 0, 1}};
+    uint8_t visited[M3_VOXEL_COUNT];
+    memset(visited, 0, sizeof(visited));
+    uint16_t stack[M3_VOXEL_COUNT];
+    uint16_t island[M3_VOXEL_COUNT];
+
+    bool removedAny = false;
+    for (int32_t seed = 0; seed < M3_VOXEL_COUNT; ++seed)
+    {
+        int32_t sx = seed % M3_VOXEL_DIM;
+        int32_t sy = (seed / M3_VOXEL_DIM) % M3_VOXEL_DIM;
+        int32_t sz = seed / (M3_VOXEL_DIM * M3_VOXEL_DIM);
+        if (visited[seed] != 0 || !m3VoxelGet(chunk, sx, sy, sz))
+        {
+            continue;
+        }
+        // Collect the island.
+        int32_t top = 0;
+        int32_t count = 0;
+        bool anchored = false;
+        stack[top++] = (uint16_t)seed;
+        visited[seed] = 1;
+        while (top > 0)
+        {
+            uint16_t v = stack[--top];
+            island[count++] = v;
+            int32_t x = v % M3_VOXEL_DIM;
+            int32_t y = (v / M3_VOXEL_DIM) % M3_VOXEL_DIM;
+            int32_t z = v / (M3_VOXEL_DIM * M3_VOXEL_DIM);
+            if (y == 0)
+            {
+                anchored = true; // the base layer is the anchor
+            }
+            for (int32_t n = 0; n < 6; ++n)
+            {
+                int32_t nx = x + offsets[n][0];
+                int32_t ny = y + offsets[n][1];
+                int32_t nz = z + offsets[n][2];
+                if (nx < 0 || nx >= M3_VOXEL_DIM || ny < 0 || ny >= M3_VOXEL_DIM || nz < 0 ||
+                    nz >= M3_VOXEL_DIM)
+                {
+                    continue;
+                }
+                int32_t nv = nx + M3_VOXEL_DIM * (ny + M3_VOXEL_DIM * nz);
+                if (visited[nv] == 0 && m3VoxelGet(chunk, nx, ny, nz))
+                {
+                    visited[nv] = 1;
+                    stack[top++] = (uint16_t)nv;
+                }
+            }
+        }
+        if (anchored)
+        {
+            continue; // grounded islands stand
+        }
+
+        // An unanchored island: remove it from the grid (part of the
+        // edit's state transition) and emit the event.
+        m3real cell = chunk->cellSize;
+        m3Vec3 com = {0.0f, 0.0f, 0.0f};
+        uint8_t lo[3] = {255, 255, 255};
+        uint8_t hi[3] = {0, 0, 0};
+        for (int32_t k = 0; k < count; ++k)
+        {
+            uint16_t v = island[k];
+            int32_t x = v % M3_VOXEL_DIM;
+            int32_t y = (v / M3_VOXEL_DIM) % M3_VOXEL_DIM;
+            int32_t z = v / (M3_VOXEL_DIM * M3_VOXEL_DIM);
+            chunk->occupancy[v >> 3] &= (uint8_t)~(1u << (v & 7));
+            chunk->payload[v] = 0;
+            com = m3Add3(com, (m3Vec3){((m3real)x + 0.5f) * cell, ((m3real)y + 0.5f) * cell,
+                                       ((m3real)z + 0.5f) * cell});
+            lo[0] = x < lo[0] ? (uint8_t)x : lo[0];
+            lo[1] = y < lo[1] ? (uint8_t)y : lo[1];
+            lo[2] = z < lo[2] ? (uint8_t)z : lo[2];
+            hi[0] = x > hi[0] ? (uint8_t)x : hi[0];
+            hi[1] = y > hi[1] ? (uint8_t)y : hi[1];
+            hi[2] = z > hi[2] ? (uint8_t)z : hi[2];
+        }
+        chunk->filledCount -= count;
+        removedAny = true;
+        com = m3MulSV3(1.0f / (m3real)count, com);
+
+        if (world->fragmentEventCount >= M3_FRAGMENT_EVENT_CAP)
+        {
+            world->fragmentDropped += 1; // loud: the state moved, the
+                                         // event did not fit
+            continue;
+        }
+        m3FragmentEvent* ev = &world->fragmentEvents[world->fragmentEventCount];
+        memset(ev, 0, sizeof(*ev));
+        ev->chunkShape =
+            (m3ShapeId){shape + 1, world->worldIndex0, world->shapePool.generations[shape]};
+        ev->voxelCount = count;
+        if (world->fragmentRecipeCount + count <= M3_FRAGMENT_RECIPE_CAP)
+        {
+            ev->recipeStart = world->fragmentRecipeCount;
+            ev->recipeCount = count;
+            for (int32_t k = 0; k < count; ++k)
+            {
+                world->fragmentRecipe[world->fragmentRecipeCount + k] = island[k];
+            }
+            world->fragmentRecipeCount += count;
+        }
+        else
+        {
+            ev->recipeStart = -1; // recipe overflow: bounds and count
+                                  // still describe the island, loudly
+            ev->recipeCount = 0;
+        }
+        ev->comChunk = com;
+        int32_t body = world->shapeBody[shape];
+        const m3Transform* xf = &world->transforms[body];
+        m3Vec3 r = m3RotateVec3(xf->q, com);
+        ev->comWorld =
+            (m3Pos3){xf->p.x + (double)r.x, xf->p.y + (double)r.y, xf->p.z + (double)r.z};
+        ev->mass = (m3real)count * cell * cell * cell;
+        for (int32_t k = 0; k < 3; ++k)
+        {
+            ev->boundsLo[k] = lo[k];
+            ev->boundsHi[k] = hi[k];
+        }
+        world->fragmentEventCount += 1;
+    }
+
+    if (removedAny)
+    {
+        // The surface follows the grid, always (the derived law).
+        m3VoxelSurfaceBuild(&world->voxelSurface[slot], chunk);
+    }
 }

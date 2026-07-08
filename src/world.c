@@ -176,6 +176,8 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     M3_ALLOC(world->voxelRefCounts, def->voxelCapacity, int32_t);
     M3_ALLOC(world->voxelSurface, def->voxelCapacity, m3VoxelSurface);
     M3_ALLOC(world->shapeVoxelIndex, shapeCap, int32_t);
+    M3_ALLOC(world->fragmentEvents, M3_FRAGMENT_EVENT_CAP, m3FragmentEvent);
+    M3_ALLOC(world->fragmentRecipe, M3_FRAGMENT_RECIPE_CAP, uint16_t);
     for (int32_t i = 0; i < shapeCap; ++i)
     {
         world->shapeVoxelIndex[i] = -1;
@@ -283,6 +285,8 @@ void m3DestroyWorld(m3WorldId worldId)
     m3Free(world->voxelRefCounts);
     m3Free(world->voxelSurface);
     m3Free(world->shapeVoxelIndex);
+    m3Free(world->fragmentEvents);
+    m3Free(world->fragmentRecipe);
     m3Free(world->shapeMeshIndex);
     m3Free(world->shapeSensor);
     m3Free(world->beginEvents);
@@ -387,6 +391,48 @@ const m3ContactEvent* m3World_SensorEndEvents(m3WorldId worldId, int32_t* count)
     }
     *count = world->sensorEndEventCount;
     return world->sensorEndEvents;
+}
+
+const m3FragmentEvent* m3World_FragmentEvents(m3WorldId worldId, int32_t* count)
+{
+    m3World* world = m3WorldFromId(worldId);
+    if (world == NULL)
+    {
+        if (count != NULL)
+        {
+            *count = 0;
+        }
+        return NULL;
+    }
+    if (count != NULL)
+    {
+        *count = world->fragmentEventCount;
+    }
+    return world->fragmentEvents;
+}
+
+const uint16_t* m3World_FragmentRecipe(m3WorldId worldId, int32_t* count)
+{
+    m3World* world = m3WorldFromId(worldId);
+    if (world == NULL)
+    {
+        if (count != NULL)
+        {
+            *count = 0;
+        }
+        return NULL;
+    }
+    if (count != NULL)
+    {
+        *count = world->fragmentRecipeCount;
+    }
+    return world->fragmentRecipe;
+}
+
+int32_t m3World_FragmentEventsDropped(m3WorldId worldId)
+{
+    m3World* world = m3WorldFromId(worldId);
+    return world != NULL ? world->fragmentDropped : 0;
 }
 
 const m3ContactEvent* m3World_ContactBeginEvents(m3WorldId worldId, int32_t* count)

@@ -483,6 +483,137 @@ static void TestEditRefusalsAndEmptyEnd(void)
     m3DestroyWorld(world);
 }
 
+static void TestFractureBridge(void)
+{
+    // Two pillars on the base layer carry a span at y = 8. Cutting
+    // one joint leaves the span anchored through the other pillar
+    // (zero events: the negative case matters). Cutting the second
+    // joint strands the middle span: exactly one island, eight
+    // voxels, hand-counted, removed from the grid and delivered
+    // with its recipe.
+    m3WorldId world = SmallWorld();
+    m3BodyDef gd = m3DefaultBodyDef();
+    m3BodyId ground = m3CreateBody(world, &gd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    static uint8_t voxels[M3_VOXEL_COUNT];
+    memset(voxels, 0, sizeof(voxels));
+    for (int32_t y = 0; y <= 8; ++y)
+    {
+        voxels[2 + M3_VOXEL_DIM * (y + M3_VOXEL_DIM * 8)] = 1;  // pillar at x = 2
+        voxels[13 + M3_VOXEL_DIM * (y + M3_VOXEL_DIM * 8)] = 1; // pillar at x = 13
+    }
+    for (int32_t x = 3; x <= 12; ++x)
+    {
+        voxels[x + M3_VOXEL_DIM * (8 + M3_VOXEL_DIM * 8)] = 1; // the span
+    }
+    m3ShapeId bridge = m3CreateVoxelChunkShape(ground, &sd, voxels, NULL, 1.0f);
+    CHECK(m3Shape_IsValid(bridge), "the bridge creates");
+    m3World* wp = m3WorldFromId(world);
+    const m3VoxelChunkData* chunk = &wp->voxelData[wp->shapeVoxelIndex[bridge.index1 - 1]];
+    CHECK(chunk->filledCount == 28, "the bridge is twenty-eight voxels");
+
+    // Cut the left joint: still anchored through the right pillar.
+    int32_t count = 0;
+    CHECK(m3VoxelChunk_ClearVoxel(bridge, 3, 8, 8), "the left cut lands");
+    m3World_FragmentEvents(world, &count);
+    CHECK(count == 0, "a span anchored through one pillar drops nothing");
+
+    // Snapshot here: the rollback must re-derive the same fracture.
+    int32_t snapBytes = m3World_SnapshotSize(world);
+    uint8_t* snap = (uint8_t*)malloc((size_t)snapBytes);
+    CHECK(m3World_Snapshot(world, snap, snapBytes) == snapBytes, "the pre-cut snapshot writes");
+
+    uint64_t hashes[2];
+    for (int32_t run = 0; run < 2; ++run)
+    {
+        // Cut the right joint: the middle span (x = 4..11) hangs.
+        CHECK(m3VoxelChunk_ClearVoxel(bridge, 12, 8, 8), "the right cut lands");
+        const m3FragmentEvent* events = m3World_FragmentEvents(world, &count);
+        CHECK(count == 1, "the stranded span is exactly one island");
+        CHECK(events[0].voxelCount == 8, "the island is the hand-counted eight voxels");
+        CHECK(events[0].chunkShape.index1 == bridge.index1, "the event names its chunk");
+        CHECK(events[0].boundsLo[0] == 4 && events[0].boundsHi[0] == 11 &&
+                  events[0].boundsLo[1] == 8 && events[0].boundsHi[1] == 8,
+              "the island bounds are analytic");
+        CHECK(events[0].mass > 7.99f && events[0].mass < 8.01f, "unit cells weigh eight");
+        CHECK(events[0].comChunk.x > 7.99f && events[0].comChunk.x < 8.01f &&
+                  events[0].comChunk.y > 8.49f && events[0].comChunk.y < 8.51f,
+              "the island center of mass is analytic");
+        CHECK(events[0].recipeStart >= 0 && events[0].recipeCount == 8, "the recipe fits");
+        int32_t recipeTotal = 0;
+        const uint16_t* recipe = m3World_FragmentRecipe(world, &recipeTotal);
+        bool exact = true;
+        for (int32_t k = 0; k < 8; ++k)
+        {
+            uint16_t v = recipe[events[0].recipeStart + k];
+            int32_t x = v % M3_VOXEL_DIM;
+            int32_t y = (v / M3_VOXEL_DIM) % M3_VOXEL_DIM;
+            int32_t z = v / (M3_VOXEL_DIM * M3_VOXEL_DIM);
+            if (x != 4 + k || y != 8 || z != 8)
+            {
+                exact = false;
+            }
+        }
+        CHECK(exact, "the recipe decodes to exactly the stranded voxels in canonical order");
+        CHECK(chunk->filledCount == 18, "the island left the grid with the cut");
+        CHECK(m3World_FragmentEventsDropped(world) == 0, "nothing was dropped");
+
+        // The pillars remain and still collide: a ray finds one.
+        m3RayHit hit =
+            m3World_CastRayClosest(world, (m3Pos3){2.5, 20.0, 8.5}, (m3Vec3){0.0f, -15.0f, 0.0f});
+        CHECK(hit.hit, "the surviving pillar still answers rays");
+
+        hashes[run] = m3World_Hash(world);
+        if (run == 0)
+        {
+            // A step clears the transient streams.
+            m3World_Step(world, 1.0f / 60.0f, 4);
+            m3World_FragmentEvents(world, &count);
+            CHECK(count == 0, "the next step clears fragment events");
+            // Roll back to before the second cut and do it again.
+            CHECK(m3World_Restore(world, snap, snapBytes), "the fracture rollback lands");
+            m3World_FragmentEvents(world, &count);
+            CHECK(count == 0, "restore clears fragment events");
+            CHECK(chunk->filledCount == 27, "the rollback restores the pre-cut grid");
+        }
+    }
+    CHECK(hashes[0] == hashes[1], "cut, roll back, recut: the fracture is bit-identical");
+    free(snap);
+    m3DestroyWorld(world);
+}
+
+static void TestFractureTwoIslands(void)
+{
+    // A column with two arms joined through one connector voxel:
+    // clearing the connector strands BOTH arms in one edit. Two
+    // events, canonical order (the lower linear seed first).
+    m3WorldId world = SmallWorld();
+    m3BodyDef gd = m3DefaultBodyDef();
+    m3BodyId ground = m3CreateBody(world, &gd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    static uint8_t voxels[M3_VOXEL_COUNT];
+    memset(voxels, 0, sizeof(voxels));
+    for (int32_t y = 0; y <= 5; ++y)
+    {
+        voxels[8 + M3_VOXEL_DIM * (y + M3_VOXEL_DIM * 8)] = 1; // the column
+    }
+    voxels[6 + M3_VOXEL_DIM * (5 + M3_VOXEL_DIM * 8)] = 1; // arm A: x 6..7
+    voxels[7 + M3_VOXEL_DIM * (5 + M3_VOXEL_DIM * 8)] = 1;
+    voxels[9 + M3_VOXEL_DIM * (5 + M3_VOXEL_DIM * 8)] = 1; // arm B: x 9..10
+    voxels[10 + M3_VOXEL_DIM * (5 + M3_VOXEL_DIM * 8)] = 1;
+    m3ShapeId tee = m3CreateVoxelChunkShape(ground, &sd, voxels, NULL, 1.0f);
+    CHECK(m3Shape_IsValid(tee), "the tee creates");
+
+    CHECK(m3VoxelChunk_ClearVoxel(tee, 8, 5, 8), "the connector clears");
+    int32_t count = 0;
+    const m3FragmentEvent* events = m3World_FragmentEvents(world, &count);
+    CHECK(count == 2, "both arms strand in one edit");
+    CHECK(events[0].voxelCount == 2 && events[1].voxelCount == 2, "each arm is two voxels");
+    CHECK(events[0].boundsLo[0] == 6 && events[1].boundsLo[0] == 9,
+          "events arrive in canonical seed order: the lower island first");
+    m3DestroyWorld(world);
+}
+
 int main(void)
 {
     TestGreedyMergeAnalytics();
@@ -493,6 +624,8 @@ int main(void)
     TestEditsCarveAndWake();
     TestEditRollbackReedit();
     TestEditRefusalsAndEmptyEnd();
+    TestFractureBridge();
+    TestFractureTwoIslands();
     if (s_failures == 0)
     {
         printf("test_voxel: all green\n");

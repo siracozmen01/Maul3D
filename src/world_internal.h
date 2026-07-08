@@ -417,6 +417,13 @@ typedef struct m3World
     m3ContactEvent* sensorEndEvents;
     int32_t beginEventCount;
     int32_t endEventCount;
+    // Fragment events (3-3): transient like every event stream;
+    // cleared by the next step and by restore, never snapshotted.
+    struct m3FragmentEvent* fragmentEvents;
+    uint16_t* fragmentRecipe;
+    int32_t fragmentEventCount;
+    int32_t fragmentRecipeCount;
+    int32_t fragmentDropped;
     int32_t sensorBeginEventCount;
     int32_t sensorEndEventCount;
 
@@ -514,6 +521,15 @@ m3Result m3UpdatePairsBruteForce(m3World* world);
 // Fat world bounds of a sphere shape (double, margin included).
 void m3ShapeFatAabb(const m3World* world, int32_t shape, double lo[3], double hi[3]);
 int32_t m3ShapeSlot(const m3World* world, m3ShapeId shapeId);
+
+// Fracture (3-3): after a clearing edit, flood fill the chunk in
+// canonical order; islands with no voxel in the y = 0 base layer
+// are removed from the grid (part of the SAME state transition, so
+// replay and rollback re-derive identical grids) and emitted as
+// fragment events with their recipes.
+#define M3_FRAGMENT_EVENT_CAP  256
+#define M3_FRAGMENT_RECIPE_CAP 8192
+void m3VoxelFractureSweep(m3World* world, int32_t shape);
 
 // Voxel edit internals (3-2): apply without journaling (replay
 // drives these); the public entries validate, journal, then call.
