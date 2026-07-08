@@ -1,0 +1,28 @@
+name: testbed
+# On-demand packaging of the interactive testbed (the Maul2D road):
+# never part of the gated CI, dispatched when a playable build is
+# wanted.
+on:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    name: windows testbed zip
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build -DMAUL3D_BUILD_TESTBED=ON
+      - name: Build
+        run: cmake --build build --config Release --target testbed
+      - name: Package
+        shell: bash
+        run: |
+          mkdir pkg
+          cp build/testbed/Release/testbed.exe pkg/
+          cp README.md LICENSE MANUAL.md pkg/
+          cd pkg && 7z a ../maul3d-testbed-windows.zip .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: maul3d-testbed-windows
+          path: maul3d-testbed-windows.zip
