@@ -300,6 +300,189 @@ static void TestVoxelRefusals(void)
     m3DestroyWorld(world);
 }
 
+static void TestEditsCarveAndWake(void)
+{
+    // The headline of 3-2: a crate sleeps on a voxel floor, the
+    // floor under it is carved away, the crate wakes and falls to
+    // the lower level. Analytic before and after heights.
+    m3WorldId world = SmallWorld();
+    m3BodyDef gd = m3DefaultBodyDef();
+    m3BodyId ground = m3CreateBody(world, &gd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    static uint8_t voxels[M3_VOXEL_COUNT];
+    FillSlab(voxels, 4); // floor top at y = 4 with cell 1
+    m3ShapeId chunkShape = m3CreateVoxelChunkShape(ground, &sd, voxels, NULL, 1.0f);
+    CHECK(m3Shape_IsValid(chunkShape), "the carve floor creates");
+
+    m3BodyDef bd = m3DefaultBodyDef();
+    bd.type = m3_dynamicBody;
+    bd.position = (m3Pos3){8.0, 4.6, 8.0};
+    m3BodyId crate = m3CreateBody(world, &bd);
+    m3CreateBoxShape(crate, &sd, (m3Vec3){0.5f, 0.5f, 0.5f});
+
+    for (int32_t i = 0; i < 240; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+    }
+    m3Pos3 p = m3Body_GetPosition(crate);
+    CHECK(p.y > 4.45 && p.y < 4.55, "the crate rests on the intact floor");
+    m3World* wp = m3WorldFromId(world);
+    int32_t crateSlot = crate.index1 - 1;
+    CHECK(wp->awake[crateSlot] == 0, "the crate fell asleep");
+
+    // Carve a 4x1x4 pocket in the top layer under the crate.
+    int32_t lo[3] = {6, 3, 6};
+    int32_t hi[3] = {9, 3, 9};
+    CHECK(m3VoxelChunk_ClearBox(chunkShape, lo, hi) == 16, "the carve clears sixteen voxels");
+    CHECK(wp->awake[crateSlot] == 1, "the vanishing floor wakes the sleeper");
+
+    for (int32_t i = 0; i < 240; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+    }
+    p = m3Body_GetPosition(crate);
+    CHECK(p.y > 3.45 && p.y < 3.55, "the crate settles one voxel lower in the pocket");
+
+    // Single-voxel edits reshape the surface analytically: refill
+    // one pocket voxel and the surface gains a box.
+    int32_t before = SurfaceOf(world, chunkShape)->boxCount;
+    CHECK(m3VoxelChunk_SetVoxel(chunkShape, 6, 3, 6, 42), "a refill lands");
+    CHECK(SurfaceOf(world, chunkShape)->boxCount == before + 1, "the refill adds one box");
+    const m3VoxelChunkData* chunk = &wp->voxelData[wp->shapeVoxelIndex[chunkShape.index1 - 1]];
+    CHECK(chunk->payload[6 + M3_VOXEL_DIM * (3 + M3_VOXEL_DIM * 6)] == 42,
+          "the refill carries its payload");
+
+    // A payload-only set changes state but not one derived byte.
+    static m3VoxelSurface surfBefore;
+    memcpy(&surfBefore, SurfaceOf(world, chunkShape), sizeof(m3VoxelSurface));
+    uint64_t hashBefore = m3World_Hash(world);
+    CHECK(m3VoxelChunk_SetVoxel(chunkShape, 6, 3, 6, 43), "the payload update lands");
+    CHECK(m3World_Hash(world) != hashBefore, "payload is state: the hash moves");
+    CHECK(memcmp(&surfBefore, SurfaceOf(world, chunkShape), sizeof(m3VoxelSurface)) == 0,
+          "payload is not geometry: the surface does not move");
+    m3DestroyWorld(world);
+}
+
+static void TestEditRollbackReedit(void)
+{
+    // Gap 9's core promise: edits are state transitions inside the
+    // rollback delta. Edit, snapshot, diverge with MORE edits, roll
+    // back, redo the divergence, and land on the identical bits
+    // with a byte-identical derived surface.
+    static uint8_t journal[262144];
+    m3WorldId world = SmallWorld();
+    CHECK(m3World_JournalBegin(world, journal, (int32_t)sizeof(journal)), "the journal arms");
+    m3BodyDef gd = m3DefaultBodyDef();
+    m3BodyId ground = m3CreateBody(world, &gd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    static uint8_t voxels[M3_VOXEL_COUNT];
+    FillSlab(voxels, 5);
+    m3ShapeId chunkShape = m3CreateVoxelChunkShape(ground, &sd, voxels, NULL, 0.5f);
+
+    m3BodyDef bd = m3DefaultBodyDef();
+    bd.type = m3_dynamicBody;
+    bd.position = (m3Pos3){4.0, 4.0, 4.0};
+    m3BodyId ball = m3CreateBody(world, &bd);
+    m3Sphere sphere = {{0.0f, 0.0f, 0.0f}, 0.3f};
+    m3CreateSphereShape(ball, &sd, &sphere);
+
+    CHECK(m3VoxelChunk_ClearVoxel(chunkShape, 8, 4, 8), "the first carve lands");
+    for (int32_t i = 0; i < 60; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+    }
+
+    // The composition rule (the manual states it, this test honors
+    // it): the journal closes BEFORE the rollback block. A restore
+    // is not an op, so a journal spanning one would replay a longer
+    // history than the world lived. The first draft of this test
+    // violated the rule and the engine correctly refused to make
+    // the mismatched timelines agree.
+    int32_t bytes = m3World_JournalEnd(world);
+    CHECK(bytes > 0, "the edit session records");
+    m3WorldId replayed = SmallWorld();
+    CHECK(m3World_JournalReplay(replayed, journal, bytes), "the edit session replays");
+    CHECK(m3World_Hash(replayed) == m3World_Hash(world), "the edit replay is bit-identical");
+    m3DestroyWorld(replayed);
+
+    int32_t snapBytes = m3World_SnapshotSize(world);
+    uint8_t* snap = (uint8_t*)malloc((size_t)snapBytes);
+    CHECK(m3World_Snapshot(world, snap, snapBytes) == snapBytes, "the mid-edit snapshot writes");
+
+    // The divergence, twice.
+    uint64_t firstTimeline = 0;
+    static m3VoxelSurface firstSurface;
+    for (int32_t run = 0; run < 2; ++run)
+    {
+        int32_t lo[3] = {7, 4, 7};
+        int32_t hi[3] = {9, 4, 9};
+        CHECK(m3VoxelChunk_ClearBox(chunkShape, lo, hi) >= 0, "the divergent carve lands");
+        CHECK(m3VoxelChunk_SetVoxel(chunkShape, 0, 5, 0, 7), "the divergent build lands");
+        for (int32_t i = 0; i < 90; ++i)
+        {
+            m3World_Step(world, 1.0f / 60.0f, 4);
+        }
+        if (run == 0)
+        {
+            firstTimeline = m3World_Hash(world);
+            memcpy(&firstSurface, SurfaceOf(world, chunkShape), sizeof(m3VoxelSurface));
+            CHECK(m3World_Restore(world, snap, snapBytes), "the rollback lands");
+        }
+        else
+        {
+            CHECK(m3World_Hash(world) == firstTimeline,
+                  "edit, roll back, reedit: bit-identical timelines");
+            CHECK(memcmp(&firstSurface, SurfaceOf(world, chunkShape), sizeof(m3VoxelSurface)) == 0,
+                  "the re-derived surface is byte-identical");
+        }
+    }
+
+    free(snap);
+    m3DestroyWorld(world);
+}
+
+static void TestEditRefusalsAndEmptyEnd(void)
+{
+    m3WorldId world = SmallWorld();
+    m3BodyDef gd = m3DefaultBodyDef();
+    m3BodyId ground = m3CreateBody(world, &gd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    static uint8_t voxels[M3_VOXEL_COUNT];
+    memset(voxels, 0, sizeof(voxels));
+    voxels[0] = 1;
+    m3ShapeId chunkShape = m3CreateVoxelChunkShape(ground, &sd, voxels, NULL, 1.0f);
+    m3BodyDef bd = m3DefaultBodyDef();
+    bd.type = m3_dynamicBody;
+    bd.position = (m3Pos3){0.5, 3.0, 0.5};
+    m3BodyId ball = m3CreateBody(world, &bd);
+    m3Sphere sphere = {{0.0f, 0.0f, 0.0f}, 0.4f};
+    m3ShapeId ballShape = m3CreateSphereShape(ball, &sd, &sphere);
+
+    CHECK(!m3VoxelChunk_SetVoxel(chunkShape, 16, 0, 0, 0), "out-of-range x refuses");
+    CHECK(!m3VoxelChunk_ClearVoxel(chunkShape, 0, -1, 0), "negative y refuses");
+    CHECK(!m3VoxelChunk_SetVoxel(ballShape, 0, 0, 0, 0), "a non-voxel shape refuses edits");
+    int32_t lo[3] = {2, 0, 0};
+    int32_t hi[3] = {1, 0, 0};
+    CHECK(m3VoxelChunk_ClearBox(chunkShape, lo, hi) == -1, "an inverted region refuses");
+    m3ShapeId stale = chunkShape;
+    stale.generation += 1;
+    CHECK(!m3VoxelChunk_ClearVoxel(stale, 0, 0, 0), "a stale id refuses edits");
+
+    // Clear the last voxel: the chunk stays a valid shape that
+    // collides with nothing, and the ball falls straight through
+    // where the floor voxel used to be.
+    CHECK(m3VoxelChunk_ClearVoxel(chunkShape, 0, 0, 0), "the last voxel clears");
+    CHECK(m3Shape_IsValid(chunkShape), "the empty chunk stays a valid shape");
+    CHECK(SurfaceOf(world, chunkShape)->boxCount == 0, "the empty surface has no boxes");
+    for (int32_t i = 0; i < 90; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+    }
+    m3Pos3 p = m3Body_GetPosition(ball);
+    CHECK(p.y < -5.0, "the ball falls through the vanished floor");
+    m3DestroyWorld(world);
+}
+
 int main(void)
 {
     TestGreedyMergeAnalytics();
@@ -307,6 +490,9 @@ int main(void)
     TestSnapshotJournalAndDerivedRebuild();
     TestQueriesAgainstVoxels();
     TestVoxelRefusals();
+    TestEditsCarveAndWake();
+    TestEditRollbackReedit();
+    TestEditRefusalsAndEmptyEnd();
     if (s_failures == 0)
     {
         printf("test_voxel: all green\n");

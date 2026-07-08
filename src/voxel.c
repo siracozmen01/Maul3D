@@ -197,3 +197,233 @@ void m3VoxelBoxHull(const m3VoxelSurface* surface, m3real cellSize, int32_t box,
     }
     out->center = m3Add3(out->center, center);
 }
+
+// ---------------------------------------------------------------
+// Edits (3-2): deterministic state transitions.
+
+// Wake every dynamic body whose fat bounds touch the edited region
+// (world frame): a disturbance is a disturbance even for sleepers.
+typedef struct m3VoxelWakeContext
+{
+    m3World* world;
+} m3VoxelWakeContext;
+
+static bool VoxelWakeCallback(int32_t shape, void* userContext)
+{
+    m3World* world = ((m3VoxelWakeContext*)userContext)->world;
+    int32_t body = world->shapeBody[shape];
+    if (world->types[body] == (uint8_t)m3_dynamicBody)
+    {
+        world->awake[body] = 1;
+        world->sleepTimes[body] = 0.0f;
+    }
+    return true;
+}
+
+static void VoxelWakeRegion(m3World* world, int32_t shape, const int32_t lo[3], const int32_t hi[3])
+{
+    int32_t slot = world->shapeVoxelIndex[shape];
+    m3real cell = world->voxelData[slot].cellSize;
+    int32_t body = world->shapeBody[shape];
+    const m3Transform* xf = &world->transforms[body];
+    // The region's eight corners in the chunk frame, rotated out,
+    // padded by the speculative margin so grazing sleepers wake too.
+    double wlo[3] = {1.0e30, 1.0e30, 1.0e30};
+    double whi[3] = {-1.0e30, -1.0e30, -1.0e30};
+    for (int32_t c = 0; c < 8; ++c)
+    {
+        m3Vec3 corner = {(m3real)((c & 1) != 0 ? hi[0] + 1 : lo[0]) * cell,
+                         (m3real)((c & 2) != 0 ? hi[1] + 1 : lo[1]) * cell,
+                         (m3real)((c & 4) != 0 ? hi[2] + 1 : lo[2]) * cell};
+        m3Vec3 r = m3RotateVec3(xf->q, corner);
+        double p[3] = {xf->p.x + (double)r.x, xf->p.y + (double)r.y, xf->p.z + (double)r.z};
+        for (int32_t k = 0; k < 3; ++k)
+        {
+            wlo[k] = p[k] < wlo[k] ? p[k] : wlo[k];
+            whi[k] = p[k] > whi[k] ? p[k] : whi[k];
+        }
+    }
+    for (int32_t k = 0; k < 3; ++k)
+    {
+        wlo[k] -= (double)M3_AABB_MARGIN;
+        whi[k] += (double)M3_AABB_MARGIN;
+    }
+    m3VoxelWakeContext ctx = {world};
+    m3TreeQuery(&world->tree, wlo, whi, VoxelWakeCallback, &ctx);
+}
+
+static bool VoxelCoordsValid(int32_t x, int32_t y, int32_t z)
+{
+    return x >= 0 && x < M3_VOXEL_DIM && y >= 0 && y < M3_VOXEL_DIM && z >= 0 && z < M3_VOXEL_DIM;
+}
+
+bool m3VoxelSetInternal(m3World* world, int32_t shape, int32_t x, int32_t y, int32_t z,
+                        uint16_t payload)
+{
+    int32_t slot = world->shapeVoxelIndex[shape];
+    m3VoxelChunkData* chunk = &world->voxelData[slot];
+    int32_t v = x + M3_VOXEL_DIM * (y + M3_VOXEL_DIM * z);
+    bool wasFilled = m3VoxelGet(chunk, x, y, z);
+    chunk->occupancy[v >> 3] |= (uint8_t)(1u << (v & 7));
+    chunk->payload[v] = payload;
+    if (!wasFilled)
+    {
+        chunk->filledCount += 1;
+        // Occupancy changed: the surface is stale. A payload-only
+        // set falls through (the surface is a pure function of
+        // occupancy and cell size, never of payload).
+        m3VoxelSurfaceBuild(&world->voxelSurface[slot], chunk);
+    }
+    int32_t lo[3] = {x, y, z};
+    VoxelWakeRegion(world, shape, lo, lo);
+    return true;
+}
+
+bool m3VoxelClearInternal(m3World* world, int32_t shape, int32_t x, int32_t y, int32_t z)
+{
+    int32_t slot = world->shapeVoxelIndex[shape];
+    m3VoxelChunkData* chunk = &world->voxelData[slot];
+    int32_t v = x + M3_VOXEL_DIM * (y + M3_VOXEL_DIM * z);
+    if (m3VoxelGet(chunk, x, y, z))
+    {
+        chunk->occupancy[v >> 3] &= (uint8_t)~(1u << (v & 7));
+        chunk->payload[v] = 0;
+        chunk->filledCount -= 1;
+        m3VoxelSurfaceBuild(&world->voxelSurface[slot], chunk);
+    }
+    int32_t lo[3] = {x, y, z};
+    VoxelWakeRegion(world, shape, lo, lo);
+    return true;
+}
+
+int32_t m3VoxelClearBoxInternal(m3World* world, int32_t shape, const int32_t lo[3],
+                                const int32_t hi[3])
+{
+    int32_t slot = world->shapeVoxelIndex[shape];
+    m3VoxelChunkData* chunk = &world->voxelData[slot];
+    int32_t cleared = 0;
+    for (int32_t z = lo[2]; z <= hi[2]; ++z)
+    {
+        for (int32_t y = lo[1]; y <= hi[1]; ++y)
+        {
+            for (int32_t x = lo[0]; x <= hi[0]; ++x)
+            {
+                if (m3VoxelGet(chunk, x, y, z))
+                {
+                    int32_t v = x + M3_VOXEL_DIM * (y + M3_VOXEL_DIM * z);
+                    chunk->occupancy[v >> 3] &= (uint8_t)~(1u << (v & 7));
+                    chunk->payload[v] = 0;
+                    cleared += 1;
+                }
+            }
+        }
+    }
+    if (cleared > 0)
+    {
+        chunk->filledCount -= cleared;
+        m3VoxelSurfaceBuild(&world->voxelSurface[slot], chunk);
+    }
+    VoxelWakeRegion(world, shape, lo, hi);
+    return cleared;
+}
+
+// Public entries: validate, journal, apply (the command pattern).
+static m3World* ResolveVoxelShape(m3ShapeId shapeId, int32_t* shapeOut)
+{
+    m3World* world = m3WorldFromIndex0(shapeId.world0);
+    int32_t shape = world != NULL ? m3ShapeSlot(world, shapeId) : -1;
+    if (shape < 0 || world->shapeType[shape] != (uint8_t)m3_voxelShape)
+    {
+        return NULL; // stale, foreign, or not a voxel chunk: contract
+    }
+    *shapeOut = shape;
+    return world;
+}
+
+bool m3VoxelChunk_SetVoxel(m3ShapeId shapeId, int32_t x, int32_t y, int32_t z, uint16_t payload)
+{
+    int32_t shape;
+    m3World* world = ResolveVoxelShape(shapeId, &shape);
+    if (world == NULL || !VoxelCoordsValid(x, y, z))
+    {
+        return false;
+    }
+    if (world->journalActive != 0)
+    {
+        struct
+        {
+            m3ShapeId id;
+            int32_t x, y, z;
+            uint16_t payload;
+            uint16_t pad;
+        } record;
+        memset(&record, 0, sizeof(record));
+        record.id = shapeId;
+        record.x = x;
+        record.y = y;
+        record.z = z;
+        record.payload = payload;
+        m3JournalRecord(world, m3_opVoxelSet, &record, (int32_t)sizeof(record));
+    }
+    return m3VoxelSetInternal(world, shape, x, y, z, payload);
+}
+
+bool m3VoxelChunk_ClearVoxel(m3ShapeId shapeId, int32_t x, int32_t y, int32_t z)
+{
+    int32_t shape;
+    m3World* world = ResolveVoxelShape(shapeId, &shape);
+    if (world == NULL || !VoxelCoordsValid(x, y, z))
+    {
+        return false;
+    }
+    if (world->journalActive != 0)
+    {
+        struct
+        {
+            m3ShapeId id;
+            int32_t x, y, z;
+        } record;
+        memset(&record, 0, sizeof(record));
+        record.id = shapeId;
+        record.x = x;
+        record.y = y;
+        record.z = z;
+        m3JournalRecord(world, m3_opVoxelClear, &record, (int32_t)sizeof(record));
+    }
+    return m3VoxelClearInternal(world, shape, x, y, z);
+}
+
+int32_t m3VoxelChunk_ClearBox(m3ShapeId shapeId, const int32_t lo[3], const int32_t hi[3])
+{
+    int32_t shape;
+    m3World* world = ResolveVoxelShape(shapeId, &shape);
+    if (world == NULL || lo == NULL || hi == NULL)
+    {
+        return -1;
+    }
+    for (int32_t k = 0; k < 3; ++k)
+    {
+        if (lo[k] < 0 || hi[k] >= M3_VOXEL_DIM || lo[k] > hi[k])
+        {
+            return -1; // bad region: contract, loud
+        }
+    }
+    if (world->journalActive != 0)
+    {
+        struct
+        {
+            m3ShapeId id;
+            int32_t lo[3];
+            int32_t hi[3];
+        } record;
+        memset(&record, 0, sizeof(record));
+        record.id = shapeId;
+        for (int32_t k = 0; k < 3; ++k)
+        {
+            record.lo[k] = lo[k];
+            record.hi[k] = hi[k];
+        }
+        m3JournalRecord(world, m3_opVoxelClearBox, &record, (int32_t)sizeof(record));
+    }
+    return m3VoxelClearBoxInternal(world, shape, lo, hi);
+}

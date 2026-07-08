@@ -132,6 +132,26 @@ extern "C"
                                              const uint8_t* voxels, const uint16_t* payload,
                                              m3real cellSize);
 
+    /// Voxel edits (3-2): deterministic state transitions, journaled
+    /// and replayed like every other mutation, fully inside the
+    /// rollback delta. The collision surface rebuilds as a pure
+    /// function of the grid after any occupancy change (a
+    /// payload-only set touches no geometry), and dynamic bodies
+    /// whose bounds touch the edited region are woken (a floor
+    /// vanishing under a sleeper is a disturbance). Coordinates are
+    /// voxel indices in [0, 15]; out-of-range and inverted regions
+    /// refuse loudly. A chunk edited down to empty stays a valid
+    /// shape that collides with nothing (the natural end state of
+    /// destruction).
+    M3_API bool m3VoxelChunk_SetVoxel(m3ShapeId shapeId, int32_t x, int32_t y, int32_t z,
+                                      uint16_t payload);
+    M3_API bool m3VoxelChunk_ClearVoxel(m3ShapeId shapeId, int32_t x, int32_t y, int32_t z);
+    /// Clears the inclusive box [lo, hi] per axis. Returns the
+    /// number of voxels that were actually cleared (zero is legal),
+    /// or -1 on a stale id, a non-voxel shape, or a bad region.
+    M3_API int32_t m3VoxelChunk_ClearBox(m3ShapeId shapeId, const int32_t lo[3],
+                                         const int32_t hi[3]);
+
     M3_API bool m3Shape_IsValid(m3ShapeId shapeId);
 
     static const m3ShapeId m3_nullShapeId = {0, 0, 0};

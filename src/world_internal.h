@@ -55,6 +55,9 @@ typedef enum m3Op
     m3_opCreateJoint = 9,
     m3_opDestroyJoint = 10,
     m3_opCreateVoxelChunkShape = 11, // header + packed grid payload
+    m3_opVoxelSet = 12,              // shape id + coords + payload
+    m3_opVoxelClear = 13,            // shape id + coords
+    m3_opVoxelClearBox = 14,         // shape id + inclusive region
 } m3Op;
 
 // Immutable interned hull data (lifetime 3): vertices, face planes,
@@ -447,8 +450,6 @@ void m3DestroyBodyInternal(m3World* world, int32_t index);
 void m3SetLinearVelocityInternal(m3World* world, int32_t index, m3Vec3 velocity);
 void m3SetAngularVelocityInternal(m3World* world, int32_t index, m3Vec3 velocity);
 
-int32_t m3ShapeSlot(const m3World* world, m3ShapeId shapeId);
-
 // Analytic box hull (canonical vertex and face order) and the intern
 // machinery. Interning dedupes by content in ascending slot order.
 void m3BuildBoxHull(m3HullData* out, m3Vec3 halfExtents);
@@ -512,6 +513,15 @@ m3Result m3UpdatePairsBruteForce(m3World* world);
 
 // Fat world bounds of a sphere shape (double, margin included).
 void m3ShapeFatAabb(const m3World* world, int32_t shape, double lo[3], double hi[3]);
+int32_t m3ShapeSlot(const m3World* world, m3ShapeId shapeId);
+
+// Voxel edit internals (3-2): apply without journaling (replay
+// drives these); the public entries validate, journal, then call.
+bool m3VoxelSetInternal(m3World* world, int32_t shape, int32_t x, int32_t y, int32_t z,
+                        uint16_t payload);
+bool m3VoxelClearInternal(m3World* world, int32_t shape, int32_t x, int32_t y, int32_t z);
+int32_t m3VoxelClearBoxInternal(m3World* world, int32_t shape, const int32_t lo[3],
+                                const int32_t hi[3]);
 
 // Narrowphase v1: rebuild manifolds for the current pairs in pair
 // order, carrying warm-start impulses forward by feature id from the

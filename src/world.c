@@ -740,6 +740,79 @@ static bool JournalReplayApply(m3World* world, const void* data, int32_t size)
             }
             break;
         }
+        case m3_opVoxelSet:
+        {
+            struct
+            {
+                m3ShapeId id;
+                int32_t x, y, z;
+                uint16_t payload;
+                uint16_t pad;
+            } record;
+            if (bytes != (int32_t)sizeof(record))
+            {
+                return false;
+            }
+            memcpy(&record, payload, sizeof(record));
+            record.id.world0 = world->worldIndex0;
+            int32_t shape = m3ShapeSlot(world, record.id);
+            if (shape < 0 || world->shapeType[shape] != (uint8_t)m3_voxelShape)
+            {
+                return false;
+            }
+            m3VoxelSetInternal(world, shape, record.x, record.y, record.z, record.payload);
+            break;
+        }
+        case m3_opVoxelClear:
+        {
+            struct
+            {
+                m3ShapeId id;
+                int32_t x, y, z;
+            } record;
+            if (bytes != (int32_t)sizeof(record))
+            {
+                return false;
+            }
+            memcpy(&record, payload, sizeof(record));
+            record.id.world0 = world->worldIndex0;
+            int32_t shape = m3ShapeSlot(world, record.id);
+            if (shape < 0 || world->shapeType[shape] != (uint8_t)m3_voxelShape)
+            {
+                return false;
+            }
+            m3VoxelClearInternal(world, shape, record.x, record.y, record.z);
+            break;
+        }
+        case m3_opVoxelClearBox:
+        {
+            struct
+            {
+                m3ShapeId id;
+                int32_t lo[3];
+                int32_t hi[3];
+            } record;
+            if (bytes != (int32_t)sizeof(record))
+            {
+                return false;
+            }
+            memcpy(&record, payload, sizeof(record));
+            record.id.world0 = world->worldIndex0;
+            int32_t shape = m3ShapeSlot(world, record.id);
+            if (shape < 0 || world->shapeType[shape] != (uint8_t)m3_voxelShape)
+            {
+                return false;
+            }
+            for (int32_t k = 0; k < 3; ++k)
+            {
+                if (record.lo[k] < 0 || record.hi[k] >= M3_VOXEL_DIM || record.lo[k] > record.hi[k])
+                {
+                    return false;
+                }
+            }
+            m3VoxelClearBoxInternal(world, shape, record.lo, record.hi);
+            break;
+        }
         default:
             return false; // unknown op: reject loudly, never skip
         }
