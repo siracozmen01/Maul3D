@@ -63,8 +63,175 @@ static m3VehicleId MakeCar(m3WorldId world, m3Pos3 at, m3BodyId* outChassis)
     {
         vd.wheels[w].anchor =
             (m3Vec3){(w & 1) != 0 ? 0.8f : -0.8f, -0.25f, (w & 2) != 0 ? 0.45f : -0.45f};
+        vd.wheels[w].driven = true;
+        vd.wheels[w].steerable = (w & 1) != 0; // the +x pair steers
     }
     return m3CreateVehicle(world, &vd);
+}
+
+static void TestStraightLine(void)
+{
+    // Full throttle on a settled car: four driven wheels at 800 N
+    // on 300 kg accelerate inside the analytic band, dead straight,
+    // and the wheels visibly spin. Setting commands wakes a
+    // sleeping chassis (the settle is long enough to sleep one).
+    m3WorldId world = PlaneWorld();
+    m3BodyId chassis;
+    m3VehicleId car = MakeCar(world, (m3Pos3){0.0, 1.0, 0.0}, &chassis);
+    for (int32_t i = 0; i < 300; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+    }
+    m3Pos3 start = m3Body_GetPosition(chassis);
+    m3Vehicle_SetCommands(car, 1.0f, 0.0f, 0.0f);
+    for (int32_t i = 0; i < 120; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+    }
+    m3Vec3 v = m3Body_GetLinearVelocity(chassis);
+    m3Pos3 p = m3Body_GetPosition(chassis);
+    // 3200 N / 300 kg for two seconds is 21.3 m/s in vacuum; the
+    // damper phase and tire losses eat some of it.
+    CHECK(v.x > 10.0f && v.x < 23.0f, "the car accelerates inside the analytic band");
+    CHECK(fabsf(v.z) < 0.01f, "the run is dead straight in velocity");
+    CHECK(fabs(p.z - start.z) < 0.01, "the run is dead straight in position");
+    CHECK(m3Vehicle_GetWheelSpin(car, 0) > 10.0f, "the wheels spin as they roll");
+    m3DestroyWorld(world);
+}
+
+static void TestSteerCircle(void)
+{
+    // A steady steer at modest speed circles with the turning
+    // radius in the Ackermann neighborhood: R is wheelbase over
+    // tan(steer angle), 1.6 / tan(0.6) = 2.3 m, and slip widens it.
+    m3WorldId world = PlaneWorld();
+    m3BodyId chassis;
+    m3VehicleId car = MakeCar(world, (m3Pos3){0.0, 1.0, 0.0}, &chassis);
+    for (int32_t i = 0; i < 120; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+    }
+    m3Vehicle_SetCommands(car, 0.4f, 1.0f, 0.0f);
+    for (int32_t i = 0; i < 600; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+    }
+    m3Vec3 v = m3Body_GetLinearVelocity(chassis);
+    m3Vec3 w = m3Body_GetAngularVelocity(chassis);
+    m3real speed = sqrtf(v.x * v.x + v.z * v.z);
+    CHECK(speed > 1.0f, "the circling car keeps real speed");
+    CHECK(fabsf(w.y) > 0.3f, "the steer turns the car");
+    m3real radius = speed / fabsf(w.y);
+    CHECK(radius > 1.4f && radius < 5.0f, "the turning radius sits near Ackermann");
+    m3DestroyWorld(world);
+}
+
+static void TestBrakeStop(void)
+{
+    // Full brake from speed: 1600 N on 300 kg stops a 15 m/s car
+    // in under three seconds, and a stopped car STAYS stopped (the
+    // brake clamp never reverses rolling).
+    m3WorldId world = PlaneWorld();
+    m3BodyId chassis;
+    m3VehicleId car = MakeCar(world, (m3Pos3){0.0, 1.0, 0.0}, &chassis);
+    for (int32_t i = 0; i < 120; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+    }
+    m3Vehicle_SetCommands(car, 1.0f, 0.0f, 0.0f);
+    for (int32_t i = 0; i < 120; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+    }
+    CHECK(m3Body_GetLinearVelocity(chassis).x > 8.0f, "the car reaches braking speed");
+    m3Vehicle_SetCommands(car, 0.0f, 0.0f, 1.0f);
+    for (int32_t i = 0; i < 240; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+    }
+    m3Vec3 v = m3Body_GetLinearVelocity(chassis);
+    CHECK(fabsf(v.x) < 0.2f, "full brake stops the car");
+    m3Pos3 before = m3Body_GetPosition(chassis);
+    for (int32_t i = 0; i < 60; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+    }
+    m3Pos3 after = m3Body_GetPosition(chassis);
+    CHECK(fabs(after.x - before.x) < 0.05, "the stopped car stays stopped");
+    m3DestroyWorld(world);
+}
+
+static void TestDriveDeterminism(void)
+{
+    // Twin worlds drive the same script (accelerate, corner, brake,
+    // hostile and out-of-range commands included) onto identical
+    // bits; a mid-drive rollback re-drives the tail bit-exact; the
+    // journaled session replays with every command in the record.
+    static uint8_t journal[65536];
+    static uint8_t snap[393216];
+    uint64_t hashes[2];
+    for (int32_t run = 0; run < 2; ++run)
+    {
+        m3WorldId world = PlaneWorld();
+        bool recording = run == 0 && m3World_JournalBegin(world, journal, (int32_t)sizeof(journal));
+        m3VehicleId car = MakeCar(world, (m3Pos3){0.0, 1.0, 0.0}, NULL);
+        float bad;
+        uint32_t nanBits = 0x7FC00000u;
+        memcpy(&bad, &nanBits, sizeof(bad));
+        int32_t snapBytes = 0;
+        for (int32_t i = 0; i < 240; ++i)
+        {
+            if (i == 30)
+            {
+                m3Vehicle_SetCommands(car, 5.0f, 0.0f, 0.0f); // clamps to 1
+            }
+            if (i == 90)
+            {
+                m3Vehicle_SetCommands(car, 0.5f, -0.7f, 0.0f);
+            }
+            if (i == 120)
+            {
+                m3Vehicle_SetCommands(car, bad, 0.0f, 0.0f); // hostile no-op
+            }
+            if (i == 180)
+            {
+                m3Vehicle_SetCommands(car, 0.0f, 0.0f, 1.0f);
+            }
+            m3World_Step(world, 1.0f / 60.0f, 4);
+            if (i == 100 && run == 0)
+            {
+                snapBytes = m3World_Snapshot(world, snap, (int32_t)sizeof(snap));
+                CHECK(snapBytes > 0, "the mid-drive snapshot fits");
+            }
+        }
+        hashes[run] = m3World_Hash(world);
+        if (recording)
+        {
+            int32_t bytes = m3World_JournalEnd(world);
+            CHECK(bytes > 0, "the drive session records");
+            m3WorldId replayed = PlaneWorld();
+            CHECK(m3World_JournalReplay(replayed, journal, bytes), "the drive session replays");
+            CHECK(m3World_Hash(replayed) == hashes[0], "the replayed drive is bit-identical");
+            m3DestroyWorld(replayed);
+
+            CHECK(m3World_Restore(world, snap, snapBytes), "the mid-drive restore lands");
+            for (int32_t i = 101; i < 240; ++i)
+            {
+                if (i == 120)
+                {
+                    m3Vehicle_SetCommands(car, bad, 0.0f, 0.0f);
+                }
+                if (i == 180)
+                {
+                    m3Vehicle_SetCommands(car, 0.0f, 0.0f, 1.0f);
+                }
+                m3World_Step(world, 1.0f / 60.0f, 4);
+            }
+            CHECK(m3World_Hash(world) == hashes[0], "the re-drive is bit-identical");
+        }
+        m3DestroyWorld(world);
+    }
+    CHECK(hashes[0] == hashes[1], "twin drives are bit-identical");
 }
 
 static void TestSuspensionSettle(void)
@@ -245,6 +412,10 @@ static void TestVehicleContracts(void)
 int main(void)
 {
     TestSuspensionSettle();
+    TestStraightLine();
+    TestSteerCircle();
+    TestBrakeStop();
+    TestDriveDeterminism();
     TestBounceTwinsAndRollback();
     TestPoolAndCascade();
     TestVehicleContracts();

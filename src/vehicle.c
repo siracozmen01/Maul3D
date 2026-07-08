@@ -35,6 +35,7 @@ m3VehicleDef m3DefaultVehicleDef(void)
     def.maxSteerAngle = 0.6f;
     def.driveForce = 800.0f;
     def.brakeForce = 1600.0f;
+    def.tireGrip = 1.5f;
     def.internalValue = M3_VEHICLE_COOKIE;
     return def;
 }
@@ -70,6 +71,10 @@ int32_t m3CreateVehicleInternal(m3World* world, const m3VehicleDef* def)
     world->vehMaxSteer[slot] = def->maxSteerAngle;
     world->vehDriveForce[slot] = def->driveForce;
     world->vehBrakeForce[slot] = def->brakeForce;
+    world->vehTireGrip[slot] = def->tireGrip;
+    world->vehThrottle[slot] = 0.0f;
+    world->vehSteer[slot] = 0.0f;
+    world->vehBrake[slot] = 0.0f;
     world->vehUserData[slot] = def->userData;
     for (int32_t w = 0; w < M3_VEHICLE_MAX_WHEELS; ++w)
     {
@@ -103,6 +108,7 @@ int32_t m3CreateVehicleInternal(m3World* world, const m3VehicleDef* def)
         }
         world->vehWheelCompression[k] = 0.0f;
         world->vehWheelContact[k] = 0;
+        world->vehWheelSpin[k] = 0.0f;
     }
     return slot;
 }
@@ -115,6 +121,10 @@ void m3DestroyVehicleInternal(m3World* world, int32_t slot)
     world->vehMaxSteer[slot] = 0.0f;
     world->vehDriveForce[slot] = 0.0f;
     world->vehBrakeForce[slot] = 0.0f;
+    world->vehTireGrip[slot] = 0.0f;
+    world->vehThrottle[slot] = 0.0f;
+    world->vehSteer[slot] = 0.0f;
+    world->vehBrake[slot] = 0.0f;
     world->vehUserData[slot] = 0;
     for (int32_t w = 0; w < M3_VEHICLE_MAX_WHEELS; ++w)
     {
@@ -130,6 +140,7 @@ void m3DestroyVehicleInternal(m3World* world, int32_t slot)
         world->vehWheelBrake[k] = 0.0f;
         world->vehWheelCompression[k] = 0.0f;
         world->vehWheelContact[k] = 0;
+        world->vehWheelSpin[k] = 0.0f;
     }
     m3IdPoolFree(&world->vehPool, slot);
 }
@@ -214,9 +225,93 @@ void m3VehicleApplySuspension(m3World* world, float dt)
             {
                 force = 0.0f; // suspension pushes, never pulls
             }
-            impulses[applied] = m3MulSV3(-force * dt, dir);
-            arms[applied] = (m3Vec3){(m3real)(hit.point.x - com.x), (m3real)(hit.point.y - com.y),
-                                     (m3real)(hit.point.z - com.z)};
+            m3Vec3 total = m3MulSV3(-force * dt, dir);
+            // Impulses apply at the WHEEL HUB, not the ground
+            // contact. Along the suspension axis the two points
+            // torque identically (the offset is parallel to the
+            // normal impulse), but for tangent impulses the ground
+            // point adds a wheel radius of fake pitch lever: the
+            // first probe showed full throttle unloading the front
+            // axle to an eighth of its share, the friction circle
+            // strangling the front tires, and a yaw instability
+            // walking the car sideways at zero steer.
+            m3Vec3 hubArm = {arm.x + dir.x * suspLen, arm.y + dir.y * suspLen,
+                             arm.z + dir.z * suspLen};
+
+            // The tire (5-2): drive, brake, and lateral impulses in
+            // the contact plane, all clamped by one friction circle
+            // against this wheel's suspension load. The chassis
+            // local +x axis is forward by convention; a steerable
+            // wheel's frame rotates about its suspension axis.
+            m3Vec3 fLocal = {1.0f, 0.0f, 0.0f};
+            if ((world->vehWheelFlags[k] & 1u) != 0 && world->vehSteer[slot] != 0.0f)
+            {
+                m3real a = world->vehSteer[slot] * world->vehMaxSteer[slot];
+                m3real half = 0.5f * a;
+                m3Vec3 up = m3MulSV3(-1.0f, world->vehWheelDir[k]);
+                m3real sn = sinf(half);
+                m3Quat qa = {up.x * sn, up.y * sn, up.z * sn, cosf(half)};
+                fLocal = m3RotateVec3(qa, fLocal);
+            }
+            m3Vec3 fWorld = m3RotateVec3(xf->q, fLocal);
+            m3Vec3 n = hit.normal;
+            m3Vec3 forward = m3Sub3(fWorld, m3MulSV3(m3Dot3(fWorld, n), n));
+            m3real fLen2 = m3Dot3(forward, forward);
+            if (fLen2 > 1.0e-8f)
+            {
+                forward = m3MulSV3(1.0f / sqrtf(fLen2), forward);
+                m3Vec3 side = m3Cross3(n, forward);
+                m3Vec3 vContact = m3Add3(v0, m3Cross3(w0, hubArm));
+                m3real vLon = m3Dot3(vContact, forward);
+                m3real vLat = m3Dot3(vContact, side);
+
+                // Velocity kills use the solver's own effective
+                // mass (linear plus angular response at the hub),
+                // split by wheel count: four wheels each killing
+                // the SHARED lateral velocity in full is a fourfold
+                // overcorrection, and the hub's angular feedback
+                // pushes the loop gain past one. The first probe
+                // watched that pump grow a 1e-9 yaw seed into a
+                // full sideways walk at 2.3x per step.
+                m3Vec3 rxf = m3Cross3(hubArm, forward);
+                m3real kLon = world->invMass[chassis] + m3Dot3(rxf, m3MulMV3(invI, rxf));
+                m3real effLon = kLon > 0.0f ? 1.0f / kLon : 0.0f;
+                m3Vec3 rxs = m3Cross3(hubArm, side);
+                m3real kLat = world->invMass[chassis] + m3Dot3(rxs, m3MulMV3(invI, rxs));
+                m3real effLat = kLat > 0.0f ? 1.0f / kLat : 0.0f;
+                m3real share = 1.0f / (m3real)world->vehWheelCount[slot];
+
+                m3real lon = 0.0f;
+                if ((world->vehWheelFlags[k] & 2u) != 0)
+                {
+                    lon += world->vehThrottle[slot] * world->vehDriveForce[slot] * dt;
+                }
+                if (world->vehBrake[slot] > 0.0f)
+                {
+                    // A brake opposes rolling and never reverses it.
+                    m3real budget = world->vehBrake[slot] * world->vehBrakeForce[slot] *
+                                    world->vehWheelBrake[k] * dt;
+                    m3real want = -vLon * effLon * share;
+                    lon += want > budget ? budget : (want < -budget ? -budget : want);
+                }
+                // The tire kills its share of lateral slip; the
+                // friction circle decides how much survives (that
+                // surrender is the drift).
+                m3real lat = -vLat * effLat * share;
+                m3real budget2 = world->vehTireGrip[slot] * force * dt;
+                m3real mag2 = lon * lon + lat * lat;
+                if (mag2 > budget2 * budget2 && mag2 > 0.0f)
+                {
+                    m3real scale = budget2 / sqrtf(mag2);
+                    lon *= scale;
+                    lat *= scale;
+                }
+                total = m3Add3(total, m3Add3(m3MulSV3(lon, forward), m3MulSV3(lat, side)));
+                world->vehWheelSpin[k] += (vLon / world->vehWheelRadius[k]) * dt;
+            }
+
+            impulses[applied] = total;
+            arms[applied] = hubArm;
             applied += 1;
         }
         for (int32_t a = 0; a < applied; ++a)
@@ -229,6 +324,21 @@ void m3VehicleApplySuspension(m3World* world, float dt)
     }
 }
 
+void m3VehicleCommandsInternal(m3World* world, int32_t slot, m3real throttle, m3real steer,
+                               m3real brake)
+{
+    world->vehThrottle[slot] = throttle < -1.0f ? -1.0f : (throttle > 1.0f ? 1.0f : throttle);
+    world->vehSteer[slot] = steer < -1.0f ? -1.0f : (steer > 1.0f ? 1.0f : steer);
+    world->vehBrake[slot] = brake < 0.0f ? 0.0f : (brake > 1.0f ? 1.0f : brake);
+    int32_t chassis = world->vehChassis[slot];
+    if (chassis >= 0 && world->bodyPool.alive[chassis] != 0 &&
+        world->bodyPool.generations[chassis] == world->vehChassisGen[slot])
+    {
+        world->awake[chassis] = 1; // a commanded car always wakes
+        world->sleepTimes[chassis] = 0.0f;
+    }
+}
+
 m3VehicleId m3CreateVehicle(m3WorldId worldId, const m3VehicleDef* def)
 {
     m3World* world = m3WorldFromId(worldId);
@@ -236,7 +346,7 @@ m3VehicleId m3CreateVehicle(m3WorldId worldId, const m3VehicleDef* def)
         def->wheelCount < 1 || def->wheelCount > M3_VEHICLE_MAX_WHEELS ||
         !m3FiniteF(def->maxSteerAngle) || def->maxSteerAngle < 0.0f ||
         !m3FiniteF(def->driveForce) || def->driveForce < 0.0f || !m3FiniteF(def->brakeForce) ||
-        def->brakeForce < 0.0f)
+        def->brakeForce < 0.0f || !m3FiniteF(def->tireGrip) || def->tireGrip < 0.0f)
     {
         return m3_nullVehicleId;
     }
@@ -305,6 +415,44 @@ m3real m3Vehicle_GetCompression(m3VehicleId vehicleId, int32_t wheel)
         return 0.0f;
     }
     return world->vehWheelCompression[slot * M3_VEHICLE_MAX_WHEELS + wheel];
+}
+
+void m3Vehicle_SetCommands(m3VehicleId vehicleId, m3real throttle, m3real steer, m3real brake)
+{
+    m3World* world = m3WorldFromIndex0(vehicleId.world0);
+    int32_t slot = world != NULL ? m3VehicleSlot(world, vehicleId) : -1;
+    if (slot < 0 || !m3FiniteF(throttle) || !m3FiniteF(steer) || !m3FiniteF(brake))
+    {
+        return; // stale id or hostile command: a documented no-op
+    }
+    if (world->journalActive != 0)
+    {
+        struct
+        {
+            m3VehicleId id;
+            m3real throttle;
+            m3real steer;
+            m3real brake;
+        } record;
+        memset(&record, 0, sizeof(record));
+        record.id = vehicleId;
+        record.throttle = throttle;
+        record.steer = steer;
+        record.brake = brake;
+        m3JournalRecord(world, m3_opVehicleCommands, &record, (int32_t)sizeof(record));
+    }
+    m3VehicleCommandsInternal(world, slot, throttle, steer, brake);
+}
+
+m3real m3Vehicle_GetWheelSpin(m3VehicleId vehicleId, int32_t wheel)
+{
+    m3World* world = m3WorldFromIndex0(vehicleId.world0);
+    int32_t slot = world != NULL ? m3VehicleSlot(world, vehicleId) : -1;
+    if (slot < 0 || wheel < 0 || wheel >= world->vehWheelCount[slot])
+    {
+        return 0.0f;
+    }
+    return world->vehWheelSpin[slot * M3_VEHICLE_MAX_WHEELS + wheel];
 }
 
 bool m3Vehicle_IsWheelGrounded(m3VehicleId vehicleId, int32_t wheel)

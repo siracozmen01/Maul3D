@@ -22,7 +22,8 @@
 #endif
 
 #define M3_SNAPSHOT_MAGIC   0x4D33534Eu // 'M3SN'
-#define M3_SNAPSHOT_VERSION 24u
+#define M3_SNAPSHOT_VERSION 25u
+// v25: tire grip, drive commands, and wheel spin (5-2).
 // v24: the vehicle pool and wheel arrays (5-1 raycast vehicles).
 // v23: character mass, push ratio, and the ground-body reference
 // (4-6 riders). v22: stepHeight. v21: the character pool.
@@ -245,6 +246,12 @@ static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3Wal
              world->vehicleCapacity * M3_VEHICLE_MAX_WHEELS * (int32_t)sizeof(m3real));
     M3_BLOCK(world->vehWheelContact,
              world->vehicleCapacity * M3_VEHICLE_MAX_WHEELS * (int32_t)sizeof(uint8_t));
+    M3_BLOCK(world->vehTireGrip, world->vehicleCapacity * (int32_t)sizeof(m3real));
+    M3_BLOCK(world->vehThrottle, world->vehicleCapacity * (int32_t)sizeof(m3real));
+    M3_BLOCK(world->vehSteer, world->vehicleCapacity * (int32_t)sizeof(m3real));
+    M3_BLOCK(world->vehBrake, world->vehicleCapacity * (int32_t)sizeof(m3real));
+    M3_BLOCK(world->vehWheelSpin,
+             world->vehicleCapacity * M3_VEHICLE_MAX_WHEELS * (int32_t)sizeof(m3real));
     M3_BLOCK(world->vehPool.generations, world->vehicleCapacity * (int32_t)sizeof(uint16_t));
     M3_BLOCK(world->vehPool.alive, world->vehicleCapacity * (int32_t)sizeof(uint8_t));
     M3_BLOCK(world->vehPool.freeQueue, world->vehicleCapacity * (int32_t)sizeof(int32_t));
@@ -565,6 +572,10 @@ uint64_t m3World_Hash(m3WorldId worldId)
         h = m3Hash64(h, &world->vehMaxSteer[i], 4);
         h = m3Hash64(h, &world->vehDriveForce[i], 4);
         h = m3Hash64(h, &world->vehBrakeForce[i], 4);
+        h = m3Hash64(h, &world->vehTireGrip[i], 4);
+        h = m3Hash64(h, &world->vehThrottle[i], 4);
+        h = m3Hash64(h, &world->vehSteer[i], 4);
+        h = m3Hash64(h, &world->vehBrake[i], 4);
         for (int32_t w = 0; w < world->vehWheelCount[i]; ++w)
         {
             int32_t k = i * M3_VEHICLE_MAX_WHEELS + w;
@@ -579,6 +590,7 @@ uint64_t m3World_Hash(m3WorldId worldId)
             h = m3Hash64(h, &world->vehWheelBrake[k], 4);
             h = m3Hash64(h, &world->vehWheelCompression[k], 4);
             h = m3Hash64(h, &world->vehWheelContact[k], 1);
+            h = m3Hash64(h, &world->vehWheelSpin[k], 4);
         }
     }
 

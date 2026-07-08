@@ -194,6 +194,11 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     M3_ALLOC(world->vehWheelBrake, def->vehicleCapacity * M3_VEHICLE_MAX_WHEELS, m3real);
     M3_ALLOC(world->vehWheelCompression, def->vehicleCapacity * M3_VEHICLE_MAX_WHEELS, m3real);
     M3_ALLOC(world->vehWheelContact, def->vehicleCapacity * M3_VEHICLE_MAX_WHEELS, uint8_t);
+    M3_ALLOC(world->vehTireGrip, def->vehicleCapacity, m3real);
+    M3_ALLOC(world->vehThrottle, def->vehicleCapacity, m3real);
+    M3_ALLOC(world->vehSteer, def->vehicleCapacity, m3real);
+    M3_ALLOC(world->vehBrake, def->vehicleCapacity, m3real);
+    M3_ALLOC(world->vehWheelSpin, def->vehicleCapacity * M3_VEHICLE_MAX_WHEELS, m3real);
     for (int32_t v = 0; v < def->vehicleCapacity; ++v)
     {
         world->vehChassis[v] = -1;
@@ -370,6 +375,11 @@ void m3DestroyWorld(m3WorldId worldId)
     m3Free(world->vehWheelBrake);
     m3Free(world->vehWheelCompression);
     m3Free(world->vehWheelContact);
+    m3Free(world->vehTireGrip);
+    m3Free(world->vehThrottle);
+    m3Free(world->vehSteer);
+    m3Free(world->vehBrake);
+    m3Free(world->vehWheelSpin);
     m3Free(world->charGrounded);
     m3Free(world->charGroundNormal);
     m3Free(world->jointNextA);
@@ -1080,6 +1090,29 @@ static bool JournalReplayApply(m3World* world, const void* data, int32_t size)
                 return false;
             }
             m3DestroyVehicleInternal(world, slot);
+            break;
+        }
+        case m3_opVehicleCommands:
+        {
+            struct
+            {
+                m3VehicleId id;
+                m3real throttle;
+                m3real steer;
+                m3real brake;
+            } record;
+            if (bytes != (int32_t)sizeof(record))
+            {
+                return false;
+            }
+            memcpy(&record, payload, sizeof(record));
+            record.id.world0 = world->worldIndex0;
+            int32_t slot = m3VehicleSlot(world, record.id);
+            if (slot < 0)
+            {
+                return false;
+            }
+            m3VehicleCommandsInternal(world, slot, record.throttle, record.steer, record.brake);
             break;
         }
         default:

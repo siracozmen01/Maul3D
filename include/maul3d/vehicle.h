@@ -51,9 +51,15 @@ extern "C"
                           // the vehicle (the cascade rule)
         int32_t wheelCount;
         m3WheelDef wheels[M3_VEHICLE_MAX_WHEELS];
-        m3real maxSteerAngle; // radians; consumed by the drive slice
-        m3real driveForce;    // per driven wheel; consumed by 5-2
-        m3real brakeForce;    // total; consumed by 5-2
+        m3real maxSteerAngle; // radians; full steer command turns
+                              // every steerable wheel this far
+        m3real driveForce;    // newtons per driven wheel at full
+                              // throttle (the flat force model)
+        m3real brakeForce;    // newtons total at full brake, split
+                              // by each wheel's brakeShare
+        m3real tireGrip;      // friction circle scale: tangent
+                              // impulses never exceed grip times
+                              // the wheel's suspension load
         uint64_t userData;
         int32_t internalValue;
     } m3VehicleDef;
@@ -74,6 +80,21 @@ extern "C"
     M3_API m3real m3Vehicle_GetCompression(m3VehicleId vehicleId, int32_t wheel);
     /// Whether the wheel's suspension cast found ground last step.
     M3_API bool m3Vehicle_IsWheelGrounded(m3VehicleId vehicleId, int32_t wheel);
+
+    /// Drive commands (5-2): journaled STATE, not per-step
+    /// parameters, so replay and rollback hold to the bit. Values
+    /// clamp to their ranges (throttle and steer to [-1, 1], brake
+    /// to [0, 1]); non-finite commands are hostile no-ops that
+    /// never journal. Setting commands wakes the chassis. The
+    /// chassis-local +x axis is the vehicle's forward by
+    /// convention; steer rotates each steerable wheel's frame
+    /// about its suspension axis by steer * maxSteerAngle.
+    M3_API void m3Vehicle_SetCommands(m3VehicleId vehicleId, m3real throttle, m3real steer,
+                                      m3real brake);
+
+    /// Accumulated spin angle of one wheel in radians (rendering
+    /// state: hosts spin their wheel meshes with it).
+    M3_API m3real m3Vehicle_GetWheelSpin(m3VehicleId vehicleId, int32_t wheel);
 
     static const m3VehicleId m3_nullVehicleId = {0, 0, 0};
 

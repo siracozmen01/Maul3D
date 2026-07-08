@@ -71,6 +71,7 @@ typedef enum m3Op
     m3_opCharacterMove = 18,         // id + translation
     m3_opCreateVehicle = 19,         // def + expected id (5-1)
     m3_opDestroyVehicle = 20,        // id
+    m3_opVehicleCommands = 21,       // id + throttle, steer, brake (5-2)
 } m3Op;
 
 // Immutable interned hull data (lifetime 3): vertices, face planes,
@@ -460,6 +461,11 @@ typedef struct m3World
     m3real* vehWheelBrake;
     m3real* vehWheelCompression; // last step's suspension state
     uint8_t* vehWheelContact;
+    m3real* vehTireGrip; // friction circle scale (5-2)
+    m3real* vehThrottle; // command state, journaled (5-2)
+    m3real* vehSteer;
+    m3real* vehBrake;
+    m3real* vehWheelSpin; // accumulated spin angle, render state
 
     // Generic 6-DOF state (4-3): packed modes (2 bits per axis,
     // linear 0..5, angular 6..11, motor axis 12..15) and per-axis
@@ -792,6 +798,8 @@ int32_t m3VehicleSlot(const m3World* world, m3VehicleId vehicleId);
 int32_t m3CreateVehicleInternal(m3World* world, const m3VehicleDef* def);
 void m3DestroyVehicleInternal(m3World* world, int32_t slot);
 void m3VehicleApplySuspension(m3World* world, float dt);
+void m3VehicleCommandsInternal(m3World* world, int32_t slot, m3real throttle, m3real steer,
+                               m3real brake);
 m3RayHit m3RayClosestInternalEx(m3World* world, m3Pos3 origin, m3Vec3 translation,
                                 int32_t ignoreBody);
 
