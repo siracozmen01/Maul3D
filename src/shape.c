@@ -308,6 +308,7 @@ int32_t m3CreateShapeInternal(m3World* world, int32_t bodyIndex, uint8_t type,
     world->shapeDensity[index] = def->density;
     world->shapeFriction[index] = def->friction;
     world->shapeRestitution[index] = def->restitution;
+    world->shapeRollingResistance[index] = def->rollingResistance;
     world->shapeUserData[index] = def->userData;
     world->shapeSensor[index] = def->isSensor ? 1 : 0;
     // Push onto the body's list head (canonical: creation order is
@@ -428,6 +429,7 @@ void m3DestroyShapeInternal(m3World* world, int32_t index)
     world->shapeDensity[index] = 0.0f;
     world->shapeFriction[index] = 0.0f;
     world->shapeRestitution[index] = 0.0f;
+    world->shapeRollingResistance[index] = 0.0f;
     world->shapeUserData[index] = 0;
     world->shapeSensor[index] = 0;
     world->shapeNext[index] = -1;
@@ -487,7 +489,8 @@ static m3ShapeId CreateShapeCommon(m3BodyId bodyId, const m3ShapeDef* def, uint8
         return m3_nullShapeId;
     }
     if (!m3FiniteF(def->density) || !(def->density > 0.0f) || !m3FiniteF(def->friction) ||
-        def->friction < 0.0f || !m3FiniteF(def->restitution) || def->restitution < 0.0f)
+        def->friction < 0.0f || !m3FiniteF(def->restitution) || def->restitution < 0.0f ||
+        !m3FiniteF(def->rollingResistance) || def->rollingResistance < 0.0f)
     {
         return m3_nullShapeId; // hostile material: refused loudly
     }

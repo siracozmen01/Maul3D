@@ -9,6 +9,7 @@
 
 #include "maul3d/shape.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1247,8 +1248,70 @@ static void TestSolverHashGate(void)
     m3DestroyWorld(world);
 }
 
+static void TestRollingResistance(void)
+{
+    // Two identical balls shoved at the same speed: the one with
+    // rolling resistance stops and SLEEPS; the free one is still
+    // rolling when the lights go out. Twin worlds agree to the bit
+    // (the new field folds into the hash only where nonzero).
+    uint64_t hashes[2];
+    for (int32_t run = 0; run < 2; ++run)
+    {
+        m3WorldDef def = m3DefaultWorldDef();
+        def.bodyCapacity = 16;
+        def.shapeCapacity = 16;
+        m3WorldId world = m3CreateWorld(&def);
+        m3BodyDef gd = m3DefaultBodyDef();
+        m3BodyId ground = m3CreateBody(world, &gd);
+        m3ShapeDef gs = m3DefaultShapeDef();
+        gs.friction = 0.6f;
+        m3Plane floor = {{0.0f, 1.0f, 0.0f}, 0.0f};
+        m3CreatePlaneShape(ground, &gs, &floor);
+
+        m3BodyDef bd = m3DefaultBodyDef();
+        bd.type = m3_dynamicBody;
+        bd.position = (m3Pos3){0.0, 0.5, -3.0};
+        bd.linearVelocity = (m3Vec3){2.0f, 0.0f, 0.0f};
+        m3BodyId gripper = m3CreateBody(world, &bd);
+        m3ShapeDef rr = m3DefaultShapeDef();
+        rr.friction = 0.6f;
+        rr.rollingResistance = 0.1f;
+        m3Sphere ball = {{0.0f, 0.0f, 0.0f}, 0.5f};
+        m3CreateSphereShape(gripper, &rr, &ball);
+
+        bd.position = (m3Pos3){0.0, 0.5, 3.0};
+        m3BodyId roller = m3CreateBody(world, &bd);
+        m3ShapeDef free = m3DefaultShapeDef();
+        free.friction = 0.6f;
+        m3CreateSphereShape(roller, &free, &ball);
+
+        for (int32_t i = 0; i < 420; ++i)
+        {
+            m3World_Step(world, 1.0f / 60.0f, 4);
+        }
+        m3Vec3 vGrip = m3Body_GetLinearVelocity(gripper);
+        m3Vec3 vFree = m3Body_GetLinearVelocity(roller);
+        CHECK(fabsf(vGrip.x) < 0.05f, "the resisted ball rolls to a stop");
+        CHECK(vFree.x > 1.0f, "the free ball is still rolling");
+
+        // Hostile def refuses.
+        m3ShapeDef bad = m3DefaultShapeDef();
+        bad.rollingResistance = -1.0f;
+        m3BodyDef xb = m3DefaultBodyDef();
+        xb.position = (m3Pos3){5.0, 2.0, 0.0};
+        m3BodyId host = m3CreateBody(world, &xb);
+        CHECK(!m3Shape_IsValid(m3CreateSphereShape(host, &bad, &ball)),
+              "a negative rolling resistance refuses");
+
+        hashes[run] = m3World_Hash(world);
+        m3DestroyWorld(world);
+    }
+    CHECK(hashes[0] == hashes[1], "rolling twins are bit-identical");
+}
+
 int main(void)
 {
+    TestRollingResistance();
     TestFreeFall();
     TestRestOnPlane();
     TestStandingStack();

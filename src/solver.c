@@ -84,6 +84,9 @@ typedef struct m3ContactConstraint
     m3Mat3 invIA; // world-space inverse inertia, frozen at prepare
     m3Mat3 invIB;
     m3Softness softness;
+    m3real rollingResistance; // max-mixed, extent-scaled (6-3)
+    m3Vec3 rollingImpulse;    // per-step accumulator, cold each prepare
+    m3Mat3 rollingK;          // iA + iB, solved per relax iteration
     m3ConstraintPoint points[M3_MANIFOLD_MAX_POINTS];
 } m3ContactConstraint;
 
@@ -183,9 +186,23 @@ static int32_t PrepareContacts(m3World* world, m3ContactConstraint* constraints,
         c->invMassB = world->types[bodyB] == (uint8_t)m3_dynamicBody ? world->invMass[bodyB] : 0.0f;
         c->invIA = m3WorldInvInertia(world, bodyA);
         c->invIB = m3WorldInvInertia(world, bodyB);
-        // Reference mixing: friction geometric, restitution maximum.
+        // Reference mixing: friction geometric, restitution maximum,
+        // rolling resistance maximum scaled by the pair's extent
+        // (the lever that turns the dimensionless knob into torque).
         c->friction = sqrtf(world->shapeFriction[shapeA] * world->shapeFriction[shapeB]);
         c->restitution = m3MaxF(world->shapeRestitution[shapeA], world->shapeRestitution[shapeB]);
+        c->rollingResistance =
+            m3MaxF(world->shapeRollingResistance[shapeA], world->shapeRollingResistance[shapeB]) *
+            m3MaxF(world->maxExtents[bodyA], world->maxExtents[bodyB]);
+        c->rollingImpulse = (m3Vec3){0.0f, 0.0f, 0.0f};
+        if (c->rollingResistance > 0.0f)
+        {
+            m3Mat3 sum = c->invIA;
+            sum.cx = m3Add3(sum.cx, c->invIB.cx);
+            sum.cy = m3Add3(sum.cy, c->invIB.cy);
+            sum.cz = m3Add3(sum.cz, c->invIB.cz);
+            c->rollingK = sum;
+        }
         c->softness = (c->invMassA == 0.0f || c->invMassB == 0.0f) ? staticSoft : soft;
 
         for (int32_t k = 0; k < c->pointCount; ++k)
@@ -209,6 +226,8 @@ static int32_t PrepareContacts(m3World* world, m3ContactConstraint* constraints,
     }
     return count;
 }
+static m3Vec3 Solve3(const m3Mat3* J, m3Vec3 b); // defined with the gyroscopic block
+
 static void WarmStartOne(m3World* world, m3ContactConstraint* c)
 {
     for (int32_t k = 0; k < c->pointCount; ++k)
@@ -296,6 +315,37 @@ static void SolveOneContact(m3World* world, m3ContactConstraint* c, const m3Vec3
             ApplyImpulse(world, c, m3Add3(m3MulSV3(d1, c->t1), m3MulSV3(d2, c->t2)), cp->rA,
                          cp->rB);
         }
+
+        // Rolling resistance (6-3, the reference recipe): a pure
+        // angular row braking relative rotation, capped by the
+        // step-long normal work times the mixed coefficient. The
+        // accumulator starts cold each step (persistence would
+        // grow the snapshot for a brake). Without this row a
+        // sphere pile never stops rolling and never sleeps.
+        if (c->rollingResistance > 0.0f)
+        {
+            m3Vec3 wRel =
+                m3Sub3(world->angularVelocities[c->bodyB], world->angularVelocities[c->bodyA]);
+            m3Vec3 delta = m3MulSV3(-1.0f, Solve3(&c->rollingK, wRel));
+            m3Vec3 accum = m3Add3(c->rollingImpulse, delta);
+            m3real total = 0.0f;
+            for (int32_t k = 0; k < c->pointCount; ++k)
+            {
+                total += c->points[k].totalNormalImpulse;
+            }
+            m3real maxRoll = c->rollingResistance * total;
+            m3real mag2 = m3Dot3(accum, accum);
+            if (mag2 > maxRoll * maxRoll && mag2 > 0.0f)
+            {
+                accum = m3MulSV3(maxRoll / sqrtf(mag2), accum);
+            }
+            delta = m3Sub3(accum, c->rollingImpulse);
+            c->rollingImpulse = accum;
+            world->angularVelocities[c->bodyA] =
+                m3Sub3(world->angularVelocities[c->bodyA], m3MulMV3(c->invIA, delta));
+            world->angularVelocities[c->bodyB] =
+                m3Add3(world->angularVelocities[c->bodyB], m3MulMV3(c->invIB, delta));
+        }
     }
 }
 
@@ -306,8 +356,6 @@ static void SolveOneContact(m3World* world, m3ContactConstraint* c, const m3Vec3
 // canonical index order; they join the color palette when counts
 // ever justify it (noted, not needed for correctness).
 // ---------------------------------------------------------------
-
-static m3Vec3 Solve3(const m3Mat3* J, m3Vec3 b); // defined with the gyroscopic block
 
 typedef struct m3JointConstraint
 {

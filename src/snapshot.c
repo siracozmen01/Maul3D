@@ -22,7 +22,8 @@
 #endif
 
 #define M3_SNAPSHOT_MAGIC   0x4D33534Eu // 'M3SN'
-#define M3_SNAPSHOT_VERSION 25u
+#define M3_SNAPSHOT_VERSION 26u
+// v26: shape rolling resistance (6-3).
 // v25: tire grip, drive commands, and wheel spin (5-2).
 // v24: the vehicle pool and wheel arrays (5-1 raycast vehicles).
 // v23: character mass, push ratio, and the ground-body reference
@@ -194,6 +195,7 @@ static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3Wal
     M3_BLOCK(world->hullPool.freeQueue, shapeCap * (int32_t)sizeof(int32_t));
     M3_BLOCK(world->shapeMeshIndex, shapeCap * (int32_t)sizeof(int32_t));
     M3_BLOCK(world->shapeSensor, shapeCap * (int32_t)sizeof(uint8_t));
+    M3_BLOCK(world->shapeRollingResistance, shapeCap * (int32_t)sizeof(float));
     M3_BLOCK(world->meshData, world->meshCapacity * (int32_t)sizeof(m3MeshData));
     M3_BLOCK(world->voxelData, world->voxelCapacity * (int32_t)sizeof(m3VoxelChunkData));
     M3_BLOCK(world->voxelRefCounts, world->voxelCapacity * (int32_t)sizeof(int32_t));
@@ -524,6 +526,13 @@ uint64_t m3World_Hash(m3WorldId worldId)
         h = m3Hash64(h, &world->shapeDensity[i], 4);
         h = m3Hash64(h, &world->shapeFriction[i], 4);
         h = m3Hash64(h, &world->shapeRestitution[i], 4);
+        if (world->shapeRollingResistance[i] != 0.0f)
+        {
+            // The additive-state golden rule: the new field folds
+            // only where it is set, so every pre-existing scene
+            // (rolling resistance zero everywhere) keeps its hash.
+            h = m3Hash64(h, &world->shapeRollingResistance[i], 4);
+        }
         h = m3Hash64(h, &world->shapeHullIndex[i], 4);
         h = m3Hash64(h, &world->shapeMeshIndex[i], 4);
         h = m3Hash64(h, &world->shapeSensor[i], 1);

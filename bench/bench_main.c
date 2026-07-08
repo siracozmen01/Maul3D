@@ -395,6 +395,9 @@ static m3WorldId SceneCityblock(m3ShapeId* outTowers, int32_t* outTowerCount)
     // the whole block, high enough to land through the settle phase.
     m3BodyDef bd = m3DefaultBodyDef();
     bd.type = m3_dynamicBody;
+    sd.rollingResistance = 0.05f; // soft ground: rain that lands
+                                  // eventually STOPS ROLLING and
+                                  // sleeps (the 6-3 aftermath fix)
     uint64_t rng = 0xC17B10C4ull;
     for (int32_t k = 0; k < 5000; ++k)
     {

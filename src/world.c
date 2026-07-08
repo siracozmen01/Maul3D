@@ -126,6 +126,7 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     M3_ALLOC(world->shapeDensity, shapeCap, float);
     M3_ALLOC(world->shapeFriction, shapeCap, float);
     M3_ALLOC(world->shapeRestitution, shapeCap, float);
+    M3_ALLOC(world->shapeRollingResistance, shapeCap, float);
     M3_ALLOC(world->shapeUserData, shapeCap, uint64_t);
     M3_ALLOC(world->shapeNext, shapeCap, int32_t);
     for (int32_t i = 0; i < shapeCap; ++i)
@@ -317,6 +318,7 @@ void m3DestroyWorld(m3WorldId worldId)
     m3Free(world->shapeDensity);
     m3Free(world->shapeFriction);
     m3Free(world->shapeRestitution);
+    m3Free(world->shapeRollingResistance);
     m3Free(world->shapeUserData);
     m3Free(world->shapeNext);
     m3Free(world->shapeHullIndex);

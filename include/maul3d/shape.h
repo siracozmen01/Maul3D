@@ -41,6 +41,13 @@ extern "C"
         float density; // kg/m^3
         float friction;
         float restitution;
+        /// Rolling resistance (6-3): a dimensionless material knob
+        /// braking relative rotation at contacts, mixed by maximum
+        /// across the pair and scaled by the pair's extent (the
+        /// reference recipe). Zero (the default) rolls free; around
+        /// 0.01 to 0.1 reads as soft ground. Without it a sphere
+        /// pile literally never stops rolling or sleeping.
+        float rollingResistance;
         uint64_t userData;
         /// A sensor detects overlap and fires its own begin and end
         /// events but never produces contact response: bodies pass

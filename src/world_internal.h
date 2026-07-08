@@ -380,6 +380,8 @@ typedef struct m3World
     float* shapeDensity;
     float* shapeFriction;
     float* shapeRestitution;
+    float* shapeRollingResistance; // hashed only when nonzero (the
+                                   // additive-state golden rule)
     uint64_t* shapeUserData;
     int32_t* shapeNext;       // next shape on the same body, -1 end
     int32_t* shapeHullIndex;  // interned hull slot, -1 for non-hulls
