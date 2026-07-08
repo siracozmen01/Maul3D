@@ -771,8 +771,55 @@ static void TestTwistClamp(void)
     m3DestroyWorld(world);
 }
 
+// 2d-3 coverage fill: the joint frame builder (quat whose z-axis is
+// the hinge axis) branches on the largest matrix diagonal; axes
+// pointing down each principal direction walk all four branches.
+static void TestFrameBuilderBranches(void)
+{
+    m3Vec3 axes[6] = {{1.0f, 0.0f, 0.0f},  {-1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f},
+                      {0.0f, -1.0f, 0.0f}, {0.0f, 0.0f, 1.0f},  {0.0f, 0.0f, -1.0f}};
+    uint64_t hashes[2];
+    for (int32_t run = 0; run < 2; ++run)
+    {
+        m3WorldDef def = m3DefaultWorldDef();
+        def.bodyCapacity = 16;
+        def.shapeCapacity = 16;
+        def.jointCapacity = 8;
+        m3WorldId world = m3CreateWorld(&def);
+        m3BodyDef ad = m3DefaultBodyDef();
+        m3BodyDef bd = m3DefaultBodyDef();
+        bd.type = m3_dynamicBody;
+        for (int32_t i = 0; i < 6; ++i)
+        {
+            ad.position = (m3Pos3){2.0 * (double)i, 2.0, 0.0};
+            m3BodyId anchor = m3CreateBody(world, &ad);
+            bd.position = (m3Pos3){2.0 * (double)i, 1.0, 0.0};
+            m3BodyId swinger = m3CreateBody(world, &bd);
+            m3ShapeDef sd = m3DefaultShapeDef();
+            m3Sphere ball = {{0.0f, 0.0f, 0.0f}, 0.2f};
+            m3CreateSphereShape(swinger, &sd, &ball);
+            m3JointDef jd = m3DefaultJointDef();
+            jd.type = m3_revoluteJoint;
+            jd.bodyA = anchor;
+            jd.bodyB = swinger;
+            jd.localAnchorB = (m3Vec3){0.0f, 1.0f, 0.0f};
+            jd.localAxisA = axes[i];
+            jd.localAxisB = axes[i];
+            CHECK(m3Joint_IsValid(m3CreateJoint(&jd)), "every principal axis builds a frame");
+        }
+        for (int32_t i = 0; i < 60; ++i)
+        {
+            m3World_Step(world, 1.0f / 60.0f, 4);
+        }
+        hashes[run] = m3World_Hash(world);
+        m3DestroyWorld(world);
+    }
+    CHECK(hashes[0] == hashes[1], "all frame branches are bit-deterministic");
+}
+
 int main(void)
 {
+    TestFrameBuilderBranches();
     TestPendulum();
     TestChainSettlesAndSleeps();
     TestJointDeterminismSpine();

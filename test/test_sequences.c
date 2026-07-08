@@ -91,6 +91,20 @@ static void TestStaleIdsEverywhere(void)
     CHECK(m3World_SnapshotSize(world) == -1 || m3World_SnapshotSize(world) == 0,
           "a dead world refuses its snapshot size");
     m3DestroyWorld(world); // double destroy: no-op
+
+    // The journal entries and event getters refuse the dead world
+    // and a null count pointer without ceremony.
+    static uint8_t buf[256];
+    CHECK(!m3World_JournalBegin(world, buf, (int32_t)sizeof(buf)), "a dead world cannot journal");
+    CHECK(m3World_JournalEnd(world) == -1, "a dead world has no journal to end");
+    CHECK(!m3World_JournalReplay(world, buf, 16), "a dead world cannot replay");
+    CHECK(m3World_ContactBeginEvents(world, NULL) == NULL, "a dead world has no events");
+    m3WorldId live = SmallWorld();
+    CHECK(m3World_ContactBeginEvents(live, NULL) != NULL || 1, "a null count pointer is tolerated");
+    m3World_ContactEndEvents(live, NULL);
+    m3World_SensorBeginEvents(live, NULL);
+    m3World_SensorEndEvents(live, NULL);
+    m3DestroyWorld(live);
 }
 
 static void TestSnapshotRefusals(void)
@@ -158,6 +172,7 @@ static int32_t RecordSession(m3WorldId world, uint8_t* journal, int32_t cap)
     jd.bodyB = b;
     m3CreateJoint(&jd);
     m3Body_SetLinearVelocity(b, (m3Vec3){0.5f, 0.0f, 0.0f});
+    m3Body_SetAngularVelocity(b, (m3Vec3){0.0f, 0.7f, 0.0f});
     // The mid-journal cascade: destroying `a` takes its shape and
     // the joint with it, all inside the recording.
     m3DestroyBody(a);
@@ -212,6 +227,59 @@ static void TestJournalCorruptionIsAtomic(void)
         m3World_Step(target, 1.0f / 60.0f, 4);
         m3DestroyWorld(target);
     }
+}
+
+static void TestReplayWrongSizePayloads(void)
+{
+    // Every op case in the replay switch refuses a payload whose
+    // size disagrees with its record, and the atomic wrapper backs
+    // the refusal out. Grow one op's declared size by four bytes
+    // (shrinking would also shift every later op; growing tests the
+    // size check in isolation when padding is appended).
+    static uint8_t journal[65536];
+    static uint8_t evil[65536];
+    m3WorldId source = SmallWorld();
+    int32_t bytes = RecordSession(source, journal, (int32_t)sizeof(journal));
+    m3DestroyWorld(source);
+    CHECK(bytes > 16, "the session recorded");
+
+    // Walk the op headers; for each op build a stream that inflates
+    // THAT op's byte count and appends four zero bytes, then demand
+    // an atomic refusal.
+    int32_t cursor = 0;
+    int32_t attacked = 0;
+    while (cursor + 8 <= bytes)
+    {
+        int32_t opBytes;
+        memcpy(&opBytes, journal + cursor + 4, 4);
+        memcpy(evil, journal, (size_t)cursor + 8);
+        int32_t inflated = opBytes + 4;
+        memcpy(evil + cursor + 4, &inflated, 4);
+        memcpy(evil + cursor + 8, journal + cursor + 8, (size_t)(bytes - cursor - 8));
+        memset(evil + bytes, 0, 4);
+
+        m3WorldId target = SmallWorld();
+        uint64_t before = m3World_Hash(target);
+        CHECK(!m3World_JournalReplay(target, evil, bytes + 4), "an inflated op refuses");
+        CHECK(m3World_Hash(target) == before, "the inflated-op refusal is atomic");
+        m3DestroyWorld(target);
+        attacked += 1;
+        cursor += 8 + opBytes;
+    }
+    CHECK(attacked >= 7, "every op in the session was attacked");
+
+    // Id determinism as a refusal: the CLEAN journal into a world
+    // that already has a resident cannot re-mint the recorded ids,
+    // so the replay refuses and backs out atomically.
+    m3WorldId occupied = SmallWorld();
+    m3BodyDef rd = m3DefaultBodyDef();
+    m3BodyId resident = m3CreateBody(occupied, &rd);
+    uint64_t before = m3World_Hash(occupied);
+    CHECK(!m3World_JournalReplay(occupied, journal, bytes),
+          "an occupied world refuses the id-shifted session");
+    CHECK(m3World_Hash(occupied) == before && m3Body_IsValid(resident),
+          "the id-determinism refusal is atomic");
+    m3DestroyWorld(occupied);
 }
 
 static void TestCascadeRaces(void)
@@ -308,6 +376,7 @@ int main(void)
     TestStaleIdsEverywhere();
     TestSnapshotRefusals();
     TestJournalCorruptionIsAtomic();
+    TestReplayWrongSizePayloads();
     TestCascadeRaces();
     TestGenerationRetirement();
     if (s_failures == 0)

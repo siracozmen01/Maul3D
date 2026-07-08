@@ -528,6 +528,127 @@ static void TestSensorSleepAndBullets(void)
     m3DestroyWorld(world);
 }
 
+// 2d-3 coverage fill: the mesh and plane branches of every cast and
+// overlap entry were unexercised (the coverage run named them), so
+// this scene points casts at a mesh ramp, a plane, a capsule, and a
+// hull, and probes every point-inside family.
+static void TestCastsAgainstMeshAndPlane(void)
+{
+    m3WorldDef def = m3DefaultWorldDef();
+    def.gravity = (m3Vec3){0.0f, 0.0f, 0.0f};
+    def.bodyCapacity = 8;
+    def.shapeCapacity = 8;
+    def.meshCapacity = 1;
+    m3WorldId world = m3CreateWorld(&def);
+    m3BodyDef gd = m3DefaultBodyDef();
+    m3BodyId ground = m3CreateBody(world, &gd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    m3Plane floor = {{0.0f, 1.0f, 0.0f}, 0.0f};
+    m3ShapeId floorShape = m3CreatePlaneShape(ground, &sd, &floor);
+
+    m3BodyDef md = m3DefaultBodyDef();
+    md.position = (m3Pos3){4.0, 1.0, 0.0};
+    m3BodyId meshBody = m3CreateBody(world, &md);
+    m3Vec3 quad[4] = {
+        {-1.0f, 0.0f, -1.0f}, {1.0f, 0.0f, -1.0f}, {1.0f, 0.0f, 1.0f}, {-1.0f, 0.0f, 1.0f}};
+    uint16_t tris[6] = {0, 2, 1, 0, 3, 2};
+    m3ShapeId meshShape = m3CreateMeshShape(meshBody, &sd, quad, 4, tris, 2);
+
+    // A sphere cast straight down onto the mesh quad at y = 1:
+    // center stops at 1.3, so fraction = (3 - 1.3) / 3.
+    m3RayHit hit = m3World_CastSphereClosest(world, (m3Pos3){4.0, 4.0, 0.0}, 0.3f,
+                                             (m3Vec3){0.0f, -3.0f, 0.0f});
+    CHECK(hit.hit && hit.shape.index1 == meshShape.index1, "the sphere cast hits the mesh");
+    CHECK(hit.fraction > 0.895f && hit.fraction < 0.905f, "the mesh cast fraction is analytic");
+
+    // The same cast far from the quad falls through to the plane at
+    // y = 0: fraction = (4 - 0.3) / 8.
+    hit = m3World_CastSphereClosest(world, (m3Pos3){-6.0, 4.0, 0.0}, 0.3f,
+                                    (m3Vec3){0.0f, -8.0f, 0.0f});
+    CHECK(hit.hit && hit.shape.index1 == floorShape.index1, "the sphere cast hits the plane");
+    CHECK(hit.fraction > 0.455f && hit.fraction < 0.4635f, "the plane cast fraction is analytic");
+
+    // A capsule cast onto the plane, and one starting overlapped.
+    hit = m3World_CastCapsuleClosest(world, (m3Pos3){-6.0, 2.0, 4.0}, (m3Vec3){0.0f, -0.4f, 0.0f},
+                                     (m3Vec3){0.0f, 0.4f, 0.0f}, 0.2f, (m3Vec3){0.0f, -4.0f, 0.0f});
+    CHECK(hit.hit && hit.shape.index1 == floorShape.index1, "the capsule cast hits the plane");
+    CHECK(hit.fraction > 0.34f && hit.fraction < 0.36f, "the capsule fraction is analytic");
+    hit = m3World_CastSphereClosest(world, (m3Pos3){-6.0, 0.1, 0.0}, 0.3f,
+                                    (m3Vec3){0.0f, -1.0f, 0.0f});
+    CHECK(hit.hit && hit.fraction == 0.0f, "a cast born inside the plane reports zero");
+
+    // A cast that misses everything reports the miss.
+    hit = m3World_CastSphereClosest(world, (m3Pos3){0.0, 50.0, 0.0}, 0.3f,
+                                    (m3Vec3){1.0f, 0.0f, 0.0f});
+    CHECK(!hit.hit, "a cast into open air misses");
+
+    m3DestroyWorld(world);
+}
+
+static void TestOverlapAndInsideFamilies(void)
+{
+    m3WorldDef def = m3DefaultWorldDef();
+    def.gravity = (m3Vec3){0.0f, 0.0f, 0.0f};
+    def.bodyCapacity = 8;
+    def.shapeCapacity = 8;
+    def.meshCapacity = 1;
+    m3WorldId world = m3CreateWorld(&def);
+    m3BodyDef gd = m3DefaultBodyDef();
+    m3BodyId ground = m3CreateBody(world, &gd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    m3Plane floor = {{0.0f, 1.0f, 0.0f}, 0.0f};
+    m3ShapeId floorShape = m3CreatePlaneShape(ground, &sd, &floor);
+    m3Vec3 quad[4] = {
+        {-1.0f, 0.0f, -1.0f}, {1.0f, 0.0f, -1.0f}, {1.0f, 0.0f, 1.0f}, {-1.0f, 0.0f, 1.0f}};
+    uint16_t tris[6] = {0, 2, 1, 0, 3, 2};
+    m3BodyDef md = m3DefaultBodyDef();
+    md.position = (m3Pos3){6.0, 2.0, 0.0};
+    m3BodyId meshBody = m3CreateBody(world, &md);
+    m3ShapeId meshShape = m3CreateMeshShape(meshBody, &sd, quad, 4, tris, 2);
+
+    m3BodyDef bd = m3DefaultBodyDef();
+    bd.position = (m3Pos3){-4.0, 1.0, 0.0};
+    m3BodyId pillBody = m3CreateBody(world, &bd);
+    m3Capsule pill = {{0.0f, -0.5f, 0.0f}, {0.0f, 0.5f, 0.0f}, 0.4f};
+    m3ShapeId pillShape = m3CreateCapsuleShape(pillBody, &sd, &pill);
+    bd.position = (m3Pos3){-8.0, 1.0, 0.0};
+    m3BodyId rockBody = m3CreateBody(world, &bd);
+    m3Vec3 cloud[6] = {{0.5f, 0.0f, 0.0f},  {-0.5f, 0.0f, 0.0f}, {0.0f, 0.5f, 0.0f},
+                       {0.0f, -0.5f, 0.0f}, {0.0f, 0.0f, 0.5f},  {0.0f, 0.0f, -0.5f}};
+    m3ShapeId rockShape = m3CreateHullShape(rockBody, &sd, cloud, 6);
+
+    // OverlapSphere against the mesh: within a radius of a vertex
+    // hits, just beyond misses (the vertex-reach bound).
+    m3ShapeId found[8];
+    int32_t n = m3World_OverlapSphere(world, (m3Pos3){7.2, 2.0, 1.2}, 0.4f, found, 8);
+    CHECK(n == 1 && found[0].index1 == meshShape.index1, "the sphere reach finds the mesh");
+    n = m3World_OverlapSphere(world, (m3Pos3){7.2, 2.0, 1.2}, 0.1f, found, 8);
+    CHECK(n == 0, "just out of reach finds nothing");
+
+    // OverlapSphere and OverlapAabb against the plane.
+    n = m3World_OverlapSphere(world, (m3Pos3){0.0, 0.2, 0.0}, 0.4f, found, 8);
+    CHECK(n == 1 && found[0].index1 == floorShape.index1, "the sphere reaches the plane");
+    n = m3World_OverlapAabb(world, (m3Pos3){-1.0, -0.5, -1.0}, (m3Pos3){1.0, 0.5, 1.0}, found, 8);
+    CHECK(n == 1 && found[0].index1 == floorShape.index1, "the AABB straddles the plane");
+    n = m3World_OverlapAabb(world, (m3Pos3){-1.0, 2.0, -1.0}, (m3Pos3){1.0, 3.0, 1.0}, found, 8);
+    CHECK(n == 0, "an AABB above the plane is clear");
+
+    // Point-inside for the remaining families: capsule (cylinder
+    // and cap regions), hull, and the mesh open-surface rule.
+    m3ShapeId inside = m3World_PointInside(world, (m3Pos3){-4.0, 1.2, 0.1});
+    CHECK(inside.index1 == pillShape.index1, "a point in the capsule cylinder is inside");
+    inside = m3World_PointInside(world, (m3Pos3){-4.0, 1.8, 0.0});
+    CHECK(inside.index1 == pillShape.index1, "a point in the capsule cap is inside");
+    inside = m3World_PointInside(world, (m3Pos3){-4.0, 2.5, 0.0});
+    CHECK(inside.index1 == 0, "above the capsule is outside");
+    inside = m3World_PointInside(world, (m3Pos3){-8.0, 1.1, 0.1});
+    CHECK(inside.index1 == rockShape.index1, "a point in the hull is inside");
+    inside = m3World_PointInside(world, (m3Pos3){6.0, 2.0, 0.0});
+    CHECK(inside.index1 == 0, "a point ON a mesh is outside: meshes are open surfaces");
+
+    m3DestroyWorld(world);
+}
+
 int main(void)
 {
     TestContactEvents();
@@ -538,6 +659,8 @@ int main(void)
     TestRayStartInsideContract();
     TestMultiHitSorted();
     TestPointAndOverlaps();
+    TestCastsAgainstMeshAndPlane();
+    TestOverlapAndInsideFamilies();
     TestSensorPassThrough();
     TestSensorSleepAndBullets();
     if (s_failures == 0)

@@ -280,7 +280,13 @@ static void ShapeCastTestPlane(m3ShapeCastContext* ctx, int32_t shape)
         world->shapeGeom[shape].s -
         (m3real)((double)n.x * ctx->base.x + (double)n.y * ctx->base.y + (double)n.z * ctx->base.z);
     const m3real linearSlop = 0.005f;
-    m3real target = m3MaxF(linearSlop, ctx->castRadius - linearSlop);
+    // sep below is measured to the cast shape's SKIN (the radius is
+    // already subtracted), so the stop target is one slop, full
+    // stop. The old target of castRadius - slop double-counted the
+    // radius and parked every cast one radius short of the plane;
+    // the 2d-3 coverage fill caught it (this branch had never been
+    // executed by a test before).
+    m3real target = linearSlop;
     m3real tolerance = 0.25f * linearSlop;
     m3real rate = -m3Dot3(n, ctx->translation);
     if (!(rate > 0.0f))
