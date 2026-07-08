@@ -128,6 +128,40 @@ _Static_assert(sizeof(m3MeshData) == 26632, "mesh data must be padding-free");
 // will speed it up if profiles ever ask).
 void m3BakeMeshEdgeFlags(m3MeshData* mesh);
 
+// Static per-mesh BVH (2c-10): median split on the longest centroid
+// axis, ties broken by triangle index, leaves of up to four
+// triangles. Derived acceleration data: NEVER snapshotted, never
+// hashed; rebuilt deterministically wherever mesh content lands
+// (create, journal replay, restore).
+#define M3_MESH_BVH_LEAF  4
+#define M3_MESH_BVH_NODES (2 * M3_MESH_MAX_TRIS)
+
+typedef struct m3MeshBvhNode
+{
+    m3Vec3 lo;
+    m3Vec3 hi;
+    int32_t right; // internal: right child (left child = self + 1)
+    int32_t start; // leaf only: first slot in order[]
+    int32_t count; // leaf: triangle count; 0 marks an internal node
+} m3MeshBvhNode;
+
+typedef struct m3MeshBvh
+{
+    int32_t nodeCount;
+    m3MeshBvhNode nodes[M3_MESH_BVH_NODES];
+    uint16_t order[M3_MESH_MAX_TRIS];
+} m3MeshBvh;
+
+void m3MeshBvhBuild(m3MeshBvh* bvh, const m3MeshData* mesh);
+
+// Gather every triangle in a leaf whose box overlaps [lo, hi], in
+// ascending triangle order (each triangle lives in exactly one leaf,
+// so the list is duplicate-free). The result is a SUPERSET of the
+// exact per-triangle overlaps: every consumer keeps its own exact
+// reject test, so behavior stays bit-identical to the full scan this
+// replaces. `out` must hold M3_MESH_MAX_TRIS entries.
+int32_t m3MeshBvhGather(const m3MeshBvh* bvh, m3Vec3 lo, m3Vec3 hi, uint16_t* out);
+
 // Geometry is one padding-free 32-byte record per shape, interpreted
 // by type: sphere {v=center, s=radius}, plane {v=normal, s=offset},
 // hull {v=box half extents for the journaled rebuild, s unused},
@@ -278,6 +312,11 @@ typedef struct m3World
     m3IdPool meshPool;
     m3MeshData* meshData;
     int32_t* meshRefCounts;
+    // Per-mesh static BVH (2c-10): DERIVED data, never in the
+    // snapshot or the hash. Rebuilt from mesh content on create and
+    // on restore; the build is a pure function of the triangle set,
+    // so twin worlds always agree bit for bit.
+    struct m3MeshBvh* meshBvh;
 
     // Broadphase: the fat-AABB tree (spheres only; infinite planes
     // stay out and take a dedicated pass), per-shape proxy ids, both

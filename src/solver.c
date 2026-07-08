@@ -1394,9 +1394,13 @@ static bool ContinuousQueryCallback(int32_t shape, void* userContext)
         m3Vec3 lo = {m3MinF(c1.x, c2.x) - pad, m3MinF(c1.y, c2.y) - pad, m3MinF(c1.z, c2.z) - pad};
         m3Vec3 hi = {m3MaxF(c1.x, c2.x) + pad, m3MaxF(c1.y, c2.y) + pad, m3MaxF(c1.z, c2.z) + pad};
 
+        uint16_t gather[M3_MESH_MAX_TRIS];
+        int32_t gatherCount =
+            m3MeshBvhGather(&world->meshBvh[world->shapeMeshIndex[shape]], lo, hi, gather);
         int32_t budget = 64;
-        for (int32_t t = 0; t < mesh->triangleCount && budget > 0; ++t)
+        for (int32_t g = 0; g < gatherCount && budget > 0; ++g)
         {
+            int32_t t = gather[g];
             m3Vec3 tv[3] = {mesh->vertices[mesh->indices[3 * t + 0]],
                             mesh->vertices[mesh->indices[3 * t + 1]],
                             mesh->vertices[mesh->indices[3 * t + 2]]};

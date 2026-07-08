@@ -161,11 +161,20 @@ static m3RayLocalHit RayHull(m3Vec3 o, m3Vec3 d, const m3HullData* hull)
 }
 
 // Mesh: bounded per-triangle scan, front faces only.
-static m3RayLocalHit RayMesh(m3Vec3 o, m3Vec3 d, const m3MeshData* mesh)
+static m3RayLocalHit RayMesh(m3Vec3 o, m3Vec3 d, const m3MeshData* mesh, const m3MeshBvh* bvh)
 {
     m3RayLocalHit best = {0.0f, {0.0f, 0.0f, 0.0f}, 0};
-    for (int32_t t = 0; t < mesh->triangleCount; ++t)
+    // Segment box gather (2c-10): a hit point lies on the segment and
+    // in the triangle, so it lies in both boxes; the pruned set is a
+    // safe superset and ascending order keeps tie winners identical.
+    m3Vec3 end = m3Add3(o, d);
+    m3Vec3 blo = {m3MinF(o.x, end.x), m3MinF(o.y, end.y), m3MinF(o.z, end.z)};
+    m3Vec3 bhi = {m3MaxF(o.x, end.x), m3MaxF(o.y, end.y), m3MaxF(o.z, end.z)};
+    uint16_t gather[M3_MESH_MAX_TRIS];
+    int32_t gatherCount = m3MeshBvhGather(bvh, blo, bhi, gather);
+    for (int32_t g = 0; g < gatherCount; ++g)
     {
+        int32_t t = gather[g];
         m3Vec3 a = mesh->vertices[mesh->indices[3 * t + 0]];
         m3Vec3 b = mesh->vertices[mesh->indices[3 * t + 1]];
         m3Vec3 c = mesh->vertices[mesh->indices[3 * t + 2]];
@@ -242,7 +251,8 @@ static void RayTestShape(m3RayCastContext* ctx, int32_t shape)
     }
     else if (type == (uint8_t)m3_meshShape)
     {
-        local = RayMesh(o, d, &world->meshData[world->shapeMeshIndex[shape]]);
+        local = RayMesh(o, d, &world->meshData[world->shapeMeshIndex[shape]],
+                        &world->meshBvh[world->shapeMeshIndex[shape]]);
     }
     else if (type == (uint8_t)m3_planeShape)
     {

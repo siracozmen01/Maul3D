@@ -350,6 +350,7 @@ int32_t m3CreateShapeInternal(m3World* world, int32_t bodyIndex, uint8_t type,
         }
         world->meshData[meshIndex] = *meshPrebuilt;
         m3BakeMeshEdgeFlags(&world->meshData[meshIndex]);
+        m3MeshBvhBuild(&world->meshBvh[meshIndex], &world->meshData[meshIndex]);
         world->meshRefCounts[meshIndex] = 1;
         world->shapeMeshIndex[index] = meshIndex;
     }

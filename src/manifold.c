@@ -1546,15 +1546,25 @@ static void CollideMeshConvex(m3World* world, m3Manifold* fresh, int32_t meshSha
     }
     m3real reach = radius + M3_SPECULATIVE_DISTANCE;
 
-    // Bounded midphase: ascending triangle order, cheap AABB reject
-    // (the static BVH replaces this scan behind the same contract).
+    // Midphase (2c-10): the static BVH prunes, then the exact
+    // per-triangle reject below runs unchanged, so the accepted
+    // sequence is bit-identical to the full scan this replaced
+    // (gather returns ascending order; the cap break fires at the
+    // same processing point).
+    uint16_t gather[M3_MESH_MAX_TRIS];
+    int32_t gatherCount =
+        m3MeshBvhGather(&world->meshBvh[world->shapeMeshIndex[meshShape]],
+                        (m3Vec3){boundLo.x - reach, boundLo.y - reach, boundLo.z - reach},
+                        (m3Vec3){boundHi.x + reach, boundHi.y + reach, boundHi.z + reach}, gather);
+
     m3MeshCandidate faceAccepted[M3_MESH_CANDIDATE_CAP];
     int32_t faceCount = 0;
     m3MeshCandidate tentative[M3_MESH_CANDIDATE_CAP];
     int32_t tentativeCount = 0;
 
-    for (int32_t t = 0; t < mesh->triangleCount; ++t)
+    for (int32_t g = 0; g < gatherCount; ++g)
     {
+        int32_t t = gather[g];
         if (faceCount >= M3_MESH_CANDIDATE_CAP || tentativeCount >= M3_MESH_CANDIDATE_CAP)
         {
             break;

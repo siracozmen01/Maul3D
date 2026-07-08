@@ -15,6 +15,7 @@ add_library(maul3d STATIC
     src/dynamic_tree.c
     src/hull.c
     src/manifold.c
+    src/mesh_bvh.c
     src/quickhull.c
     src/joint.c
     src/query.c
@@ -113,3 +114,9 @@ add_executable(test_draw test/test_draw.c)
 target_link_libraries(test_draw PRIVATE maul3d)
 maul3d_apply_flags(test_draw)
 add_test(NAME draw COMMAND test_draw)
+
+add_executable(test_bvh test/test_bvh.c)
+target_link_libraries(test_bvh PRIVATE maul3d)
+target_include_directories(test_bvh PRIVATE src)
+maul3d_apply_flags(test_bvh)
+add_test(NAME bvh COMMAND test_bvh)

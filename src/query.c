@@ -159,9 +159,13 @@ static void ShapeCastTestShape(m3ShapeCastContext* ctx, int32_t shape)
         m3Vec3 blo = {m3MinF(c1.x, c2.x) - pad, m3MinF(c1.y, c2.y) - pad, m3MinF(c1.z, c2.z) - pad};
         m3Vec3 bhi = {m3MaxF(c1.x, c2.x) + pad, m3MaxF(c1.y, c2.y) + pad, m3MaxF(c1.z, c2.z) + pad};
 
+        uint16_t gather[M3_MESH_MAX_TRIS];
+        int32_t gatherCount =
+            m3MeshBvhGather(&world->meshBvh[world->shapeMeshIndex[shape]], blo, bhi, gather);
         int32_t budget = 64;
-        for (int32_t t = 0; t < mesh->triangleCount && budget > 0; ++t)
+        for (int32_t g = 0; g < gatherCount && budget > 0; ++g)
         {
+            int32_t t = gather[g];
             m3Vec3 tv[3] = {mesh->vertices[mesh->indices[3 * t + 0]],
                             mesh->vertices[mesh->indices[3 * t + 1]],
                             mesh->vertices[mesh->indices[3 * t + 2]]};
@@ -514,8 +518,14 @@ static int SphereReachesShape(m3World* world, int32_t shape, m3Pos3 center, m3re
                                                        (m3real)(center.y - xf->p.y),
                                                        (m3real)(center.z - xf->p.z)});
         const m3MeshData* mesh = &world->meshData[world->shapeMeshIndex[shape]];
-        for (int32_t t = 0; t < mesh->triangleCount; ++t)
+        uint16_t gather[M3_MESH_MAX_TRIS];
+        m3Vec3 blo = {local.x - radius, local.y - radius, local.z - radius};
+        m3Vec3 bhi = {local.x + radius, local.y + radius, local.z + radius};
+        int32_t gatherCount =
+            m3MeshBvhGather(&world->meshBvh[world->shapeMeshIndex[shape]], blo, bhi, gather);
+        for (int32_t g = 0; g < gatherCount; ++g)
         {
+            int32_t t = gather[g];
             m3Vec3 a = mesh->vertices[mesh->indices[3 * t + 0]];
             m3Vec3 b = mesh->vertices[mesh->indices[3 * t + 1]];
             m3Vec3 c = mesh->vertices[mesh->indices[3 * t + 2]];

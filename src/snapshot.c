@@ -326,6 +326,17 @@ bool m3World_Restore(m3WorldId worldId, const void* data, int32_t size)
     world->hullPool.freeCount = header.hullFreeCount;
     world->hullPool.retiredCount = header.hullRetiredCount;
     WalkBlocks(world, NULL, (const uint8_t*)data + sizeof(header), m3_walkRead);
+    // Derived data follows content: the per-mesh BVHs are rebuilt
+    // from the restored triangle sets (a pure function, so the tree
+    // a restore produces is byte-identical to the one the original
+    // create produced).
+    for (int32_t m = 0; m < world->meshPool.maxIndex; ++m)
+    {
+        if (world->meshPool.alive[m] != 0)
+        {
+            m3MeshBvhBuild(&world->meshBvh[m], &world->meshData[m]);
+        }
+    }
     return true;
 }
 

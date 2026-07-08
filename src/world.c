@@ -167,6 +167,7 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     world->meshPool = m3IdPoolCreate(def->meshCapacity);
     M3_ALLOC(world->meshData, def->meshCapacity, m3MeshData);
     M3_ALLOC(world->meshRefCounts, def->meshCapacity, int32_t);
+    M3_ALLOC(world->meshBvh, def->meshCapacity, m3MeshBvh);
     M3_ALLOC(world->shapeMeshIndex, shapeCap, int32_t);
     M3_ALLOC(world->shapeSensor, shapeCap, uint8_t);
     for (int32_t i = 0; i < shapeCap; ++i)
@@ -265,6 +266,7 @@ void m3DestroyWorld(m3WorldId worldId)
     m3IdPoolDestroy(&world->meshPool);
     m3Free(world->meshData);
     m3Free(world->meshRefCounts);
+    m3Free(world->meshBvh);
     m3Free(world->shapeMeshIndex);
     m3Free(world->shapeSensor);
     m3Free(world->beginEvents);
