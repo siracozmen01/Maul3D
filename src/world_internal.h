@@ -140,7 +140,9 @@ typedef enum m3Op
     m3_opJointSetLimits = 52,       // joint + enable + lower + upper (8-6a)
     m3_opJointSetMotor = 53,        // joint + enable + speed + effort
     m3_opJointSetCollide = 54,      // joint + collide-connected flag
-    m3_opJointSetBreak = 55,        // joint + force + torque caps        // world toggle
+    m3_opJointSetBreak = 55,        // joint + force + torque caps
+    m3_opJointSetSpring = 56,       // joint + enable + hertz + zeta (8-6b)
+    m3_opJointSetTarget = 57,       // joint + scalar + quat drive target        // world toggle
 } m3Op;
 
 // Immutable interned hull data (lifetime 3): vertices, face planes,
@@ -619,10 +621,14 @@ typedef struct m3World
     m3Vec3* jointAngularImpulse; // prismatic 3-DOF rotation lock
     m3Quat* jointFrameQA;        // joint frame in body A (axis = local z)
     m3Quat* jointFrameQB;
-    uint8_t* jointFlags; // bit0 limit, bit1 motor
-    m3Vec3* jointBreak;  // 8-6a: x = max force, y = max torque, 0 = off
-    m3Vec3* jointMotor;  // x = motorSpeed, y = maxMotorTorque, z unused
-    m3Vec3* jointLimits; // x = lower angle, y = upper angle, z unused
+    uint8_t* jointFlags;        // bit0 limit, bit1 motor
+    m3Vec3* jointBreak;         // 8-6a: x = max force, y = max torque, 0 = off
+    m3Vec3* jointSpring;        // 8-6b: x = hertz, y = damping ratio (flags bit 3)
+    float* jointTargetScalar;   // revolute angle or prismatic translation
+    m3Quat* jointTargetQ;       // spherical rotation drive target
+    m3Vec3* jointSpringImpulse; // warm payload: x scalar rows, xyz spherical
+    m3Vec3* jointMotor;         // x = motorSpeed, y = maxMotorTorque, z unused
+    m3Vec3* jointLimits;        // x = lower angle, y = upper angle, z unused
     int32_t* bodyJointHead;
     int32_t* jointNextA; // next joint in body A's list
     int32_t* jointNextB; // next joint in body B's list
@@ -712,6 +718,8 @@ void m3JointSetBreakInternal(m3World* world, int32_t j, float maxForce, float ma
 // on the public API).
 void m3JointReactionMagnitudes(const m3World* world, int32_t j, m3real invH, m3real* outForce,
                                m3real* outTorque);
+void m3JointSetSpringInternal(m3World* world, int32_t j, int32_t enable, float hertz, float zeta);
+void m3JointSetTargetInternal(m3World* world, int32_t j, float scalar, m3Quat q);
 
 void m3SetGravityInternal(m3World* world, m3Vec3 gravity);
 void m3SetShapeFrictionInternal(m3World* world, int32_t slot, float value);

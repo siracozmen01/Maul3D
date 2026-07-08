@@ -149,6 +149,22 @@ extern "C"
     M3_API m3real m3Joint_GetAngle(m3JointId jointId);
     M3_API m3real m3Joint_GetTranslation(m3JointId jointId);
 
+    /// Position drive (8-6b), the reference spring rows: a soft
+    /// constraint with the given frequency and damping ratio pulls
+    /// the joint toward its target. Revolute drives the hinge angle,
+    /// prismatic the translation, spherical the relative rotation;
+    /// other types refuse. Toggling zeroes the spring's stored
+    /// impulse. All journaled; both bodies wake.
+    M3_API void m3Joint_SetSpring(m3JointId jointId, bool enable, float hertz, float dampingRatio);
+    M3_API void m3Joint_SetTargetAngle(m3JointId jointId, float radians);
+    M3_API void m3Joint_SetTargetTranslation(m3JointId jointId, float meters);
+    /// The target must be a unit rotation; garbage refuses loudly by
+    /// doing nothing. The target lives in the JOINT FRAMES (frame z
+    /// is the create-time local axis): it is the desired rotation of
+    /// frame B relative to frame A, the reference semantic. Pick
+    /// your axes at create time so the frame reads naturally.
+    M3_API void m3Joint_SetTargetRotation(m3JointId jointId, m3Quat target);
+
 #ifdef __cplusplus
 }
 #endif

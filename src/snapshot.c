@@ -22,7 +22,8 @@
 #endif
 
 #define M3_SNAPSHOT_MAGIC   0x4D33534Eu // 'M3SN'
-#define M3_SNAPSHOT_VERSION 35u
+#define M3_SNAPSHOT_VERSION 36u
+// v36: joint drive springs and targets (8-6b).
 // v35: joint break thresholds (8-6a).
 // v34: hit threshold + shape event flags (8-5).
 // v33: world tuning knobs (8-4).
@@ -337,6 +338,10 @@ static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3Wal
     M3_BLOCK(world->jointFlags, world->jointCapacity * (int32_t)sizeof(uint8_t));
     M3_BLOCK(world->jointMotor, world->jointCapacity * (int32_t)sizeof(m3Vec3));
     M3_BLOCK(world->jointBreak, world->jointCapacity * (int32_t)sizeof(m3Vec3));
+    M3_BLOCK(world->jointSpring, world->jointCapacity * (int32_t)sizeof(m3Vec3));
+    M3_BLOCK(world->jointTargetScalar, world->jointCapacity * (int32_t)sizeof(float));
+    M3_BLOCK(world->jointTargetQ, world->jointCapacity * (int32_t)sizeof(m3Quat));
+    M3_BLOCK(world->jointSpringImpulse, world->jointCapacity * (int32_t)sizeof(m3Vec3));
     M3_BLOCK(world->jointLimits, world->jointCapacity * (int32_t)sizeof(m3Vec3));
     M3_BLOCK(world->jointGenericModes, world->jointCapacity * (int32_t)sizeof(uint16_t));
     M3_BLOCK(world->jointGenLinLower, world->jointCapacity * (int32_t)sizeof(m3Vec3));
@@ -802,6 +807,19 @@ uint64_t m3World_Hash(m3WorldId worldId)
             // Break thresholds fold off-default (additive rule,
             // eighth use).
             h = m3Hash64(h, &world->jointBreak[i], (int32_t)sizeof(m3Vec3));
+        }
+        if ((world->jointFlags[i] & 8) != 0 || world->jointTargetScalar[i] != 0.0f ||
+            world->jointTargetQ[i].x != 0.0f || world->jointTargetQ[i].y != 0.0f ||
+            world->jointTargetQ[i].z != 0.0f || world->jointTargetQ[i].w != 1.0f ||
+            world->jointSpringImpulse[i].x != 0.0f || world->jointSpringImpulse[i].y != 0.0f ||
+            world->jointSpringImpulse[i].z != 0.0f)
+        {
+            // Drive springs fold off-default (additive rule, ninth
+            // use). The impulse joins: it is dynamics state.
+            h = m3Hash64(h, &world->jointSpring[i], (int32_t)sizeof(m3Vec3));
+            h = m3Hash64(h, &world->jointTargetScalar[i], 4);
+            h = m3Hash64(h, &world->jointTargetQ[i], (int32_t)sizeof(m3Quat));
+            h = m3Hash64(h, &world->jointSpringImpulse[i], (int32_t)sizeof(m3Vec3));
         }
         h = m3Hash64(h, &world->jointPerpImpulse[i], (int32_t)sizeof(m3Vec3));
         h = m3Hash64(h, &world->jointLimitImpulse[i], (int32_t)sizeof(m3Vec3));

@@ -129,6 +129,10 @@ int32_t m3CreateJointInternal(m3World* world, const m3JointDef* def, int32_t bod
                                          (def->enableCone ? 4 : 0));
     world->jointMotor[index] = (m3Vec3){def->motorSpeed, def->maxMotorEffort, 0.0f};
     world->jointBreak[index] = (m3Vec3){0.0f, 0.0f, 0.0f}; // unbreakable default
+    world->jointSpring[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
+    world->jointTargetScalar[index] = 0.0f;
+    world->jointTargetQ[index] = (m3Quat){0.0f, 0.0f, 0.0f, 1.0f};
+    world->jointSpringImpulse[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
     // For the spherical, z carries the cone angle (x and y stay the
     // twist range): no snapshot growth, all of it already hashed.
     world->jointLimits[index] = (m3Vec3){def->lowerLimit, def->upperLimit, def->coneAngle};
@@ -226,6 +230,10 @@ void m3DestroyJointInternal(m3World* world, int32_t index)
     world->jointFlags[index] = 0;
     world->jointMotor[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
     world->jointBreak[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
+    world->jointSpring[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
+    world->jointTargetScalar[index] = 0.0f;
+    world->jointTargetQ[index] = (m3Quat){0.0f, 0.0f, 0.0f, 1.0f};
+    world->jointSpringImpulse[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
     world->jointLimits[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
     world->jointGenericModes[index] = 0;
     world->jointGenLinLower[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
@@ -692,4 +700,117 @@ m3real m3Joint_GetTranslation(m3JointId jointId)
     m3Quat frameQ = m3MulQuat(xfA->q, world->jointFrameQA[slot]);
     m3Vec3 axis = m3RotateVec3(frameQ, (m3Vec3){0.0f, 0.0f, 1.0f});
     return m3Dot3(d, axis);
+}
+
+// --- Position drive (8-6b) --------------------------------------------------
+
+void m3JointSetSpringInternal(m3World* world, int32_t j, int32_t enable, float hertz, float zeta)
+{
+    world->jointFlags[j] = (uint8_t)((world->jointFlags[j] & ~8u) | (enable != 0 ? 8u : 0u));
+    world->jointSpring[j] = (m3Vec3){hertz, zeta, 0.0f};
+    // Any change invalidates the stored spring impulse: a stale
+    // warm start toward an old target kicks.
+    world->jointSpringImpulse[j] = (m3Vec3){0.0f, 0.0f, 0.0f};
+    JointWakeBodies(world, j);
+}
+
+void m3JointSetTargetInternal(m3World* world, int32_t j, float scalar, m3Quat q)
+{
+    world->jointTargetScalar[j] = scalar;
+    world->jointTargetQ[j] = q;
+    JointWakeBodies(world, j);
+}
+
+static int JointTypeDrives(uint8_t type)
+{
+    return type == (uint8_t)m3_revoluteJoint || type == (uint8_t)m3_prismaticJoint ||
+           type == (uint8_t)m3_sphericalJoint;
+}
+
+void m3Joint_SetSpring(m3JointId jointId, bool enable, float hertz, float dampingRatio)
+{
+    int32_t slot;
+    m3World* world = ResolveJoint(jointId, &slot);
+    if (world == NULL || !JointTypeDrives(world->jointType[slot]) || !m3FiniteF(hertz) ||
+        hertz <= 0.0f || !m3FiniteF(dampingRatio) || dampingRatio < 0.0f)
+    {
+        return;
+    }
+    if (world->journalActive != 0)
+    {
+        struct
+        {
+            m3JointId id;
+            int32_t enable;
+            float hertz;
+            float zeta;
+        } record;
+        memset(&record, 0, sizeof(record));
+        record.id = jointId;
+        record.enable = enable ? 1 : 0;
+        record.hertz = hertz;
+        record.zeta = dampingRatio;
+        m3JournalRecord(world, m3_opJointSetSpring, &record, (int32_t)sizeof(record));
+    }
+    m3JointSetSpringInternal(world, slot, enable ? 1 : 0, hertz, dampingRatio);
+}
+
+static void JointTargetOp(m3World* world, m3JointId jointId, int32_t slot, float scalar, m3Quat q)
+{
+    if (world->journalActive != 0)
+    {
+        struct
+        {
+            m3JointId id;
+            float scalar;
+            m3Quat q;
+        } record;
+        memset(&record, 0, sizeof(record));
+        record.id = jointId;
+        record.scalar = scalar;
+        record.q = q;
+        m3JournalRecord(world, m3_opJointSetTarget, &record, (int32_t)sizeof(record));
+    }
+    m3JointSetTargetInternal(world, slot, scalar, q);
+}
+
+void m3Joint_SetTargetAngle(m3JointId jointId, float radians)
+{
+    int32_t slot;
+    m3World* world = ResolveJoint(jointId, &slot);
+    if (world == NULL || world->jointType[slot] != (uint8_t)m3_revoluteJoint ||
+        !m3FiniteF(radians) || radians < -M3_PI || radians > M3_PI)
+    {
+        return;
+    }
+    JointTargetOp(world, jointId, slot, radians, (m3Quat){0.0f, 0.0f, 0.0f, 1.0f});
+}
+
+void m3Joint_SetTargetTranslation(m3JointId jointId, float meters)
+{
+    int32_t slot;
+    m3World* world = ResolveJoint(jointId, &slot);
+    if (world == NULL || world->jointType[slot] != (uint8_t)m3_prismaticJoint || !m3FiniteF(meters))
+    {
+        return;
+    }
+    JointTargetOp(world, jointId, slot, meters, (m3Quat){0.0f, 0.0f, 0.0f, 1.0f});
+}
+
+void m3Joint_SetTargetRotation(m3JointId jointId, m3Quat target)
+{
+    int32_t slot;
+    m3World* world = ResolveJoint(jointId, &slot);
+    if (world == NULL || world->jointType[slot] != (uint8_t)m3_sphericalJoint ||
+        !m3FiniteQuat(target))
+    {
+        return;
+    }
+    m3real len2 =
+        target.x * target.x + target.y * target.y + target.z * target.z + target.w * target.w;
+    if (len2 < 0.99f || len2 > 1.01f)
+    {
+        return; // not a unit rotation: refuse by doing nothing
+    }
+    JointTargetOp(world, jointId, slot, 0.0f, target);
 }

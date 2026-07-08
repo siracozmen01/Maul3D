@@ -191,6 +191,112 @@ static void TestBreakage(void)
     }
 }
 
+static void TestSpringServo(void)
+{
+    // The hinge door driven by the runtime angle spring: with the
+    // hinge axis vertical, gravity has no say, and the door parks
+    // in the target band. 8-6b.
+    m3WorldId world = SmallWorld();
+    m3BodyId post = Box(world, (m3Pos3){0.0, 2.0, 0.0}, 0.2f, 0);
+    m3BodyId door = Box(world, (m3Pos3){0.8, 2.0, 0.0}, 0.4f, 1);
+    m3JointDef jd = m3DefaultJointDef();
+    jd.type = m3_revoluteJoint;
+    jd.bodyA = post;
+    jd.bodyB = door;
+    jd.localAnchorA = (m3Vec3){0.4f, 0.0f, 0.0f};
+    jd.localAnchorB = (m3Vec3){-0.4f, 0.0f, 0.0f};
+    jd.localAxisA = (m3Vec3){0.0f, 1.0f, 0.0f};
+    jd.localAxisB = (m3Vec3){0.0f, 1.0f, 0.0f};
+    m3JointId hinge = m3CreateJoint(&jd);
+    m3Joint_SetSpring(hinge, true, 8.0f, 1.0f);
+    m3Joint_SetTargetAngle(hinge, 0.6f);
+    StepN(world, 240);
+    float angle = m3Joint_GetAngle(hinge);
+    CHECK(fabsf(fabsf(angle) - 0.6f) < 0.1f, "the angle servo parks in the target band");
+    m3DestroyWorld(world);
+}
+
+static void TestSpringDampingContrast(void)
+{
+    // The same slider, two damping ratios: the underdamped run
+    // overshoots its target, the critically damped run does not.
+    // Gravity-free so the axis owns the whole story.
+    double overshoot[2];
+    for (int32_t pass = 0; pass < 2; ++pass)
+    {
+        m3WorldDef def = m3DefaultWorldDef();
+        def.bodyCapacity = 8;
+        def.shapeCapacity = 8;
+        def.jointCapacity = 4;
+        def.gravity = (m3Vec3){0.0f, 0.0f, 0.0f};
+        m3WorldId world = m3CreateWorld(&def);
+        m3BodyId rail = Box(world, (m3Pos3){0.0, 2.0, 0.0}, 0.2f, 0);
+        m3BodyId slider = Box(world, (m3Pos3){0.0, 2.0, 0.0}, 0.3f, 1);
+        m3JointDef jd = m3DefaultJointDef();
+        jd.type = m3_prismaticJoint;
+        jd.bodyA = rail;
+        jd.bodyB = slider;
+        jd.localAxisA = (m3Vec3){1.0f, 0.0f, 0.0f};
+        jd.localAxisB = (m3Vec3){1.0f, 0.0f, 0.0f};
+        m3JointId slide = m3CreateJoint(&jd);
+        m3Joint_SetSpring(slide, true, 2.0f, pass == 0 ? 0.05f : 1.5f);
+        m3Joint_SetTargetTranslation(slide, 1.0f);
+        double peak = 0.0;
+        for (int32_t i = 0; i < 300; ++i)
+        {
+            m3World_Step(world, 1.0f / 60.0f, 4);
+            double t = (double)m3Joint_GetTranslation(slide);
+            if (t > peak)
+            {
+                peak = t;
+            }
+        }
+        overshoot[pass] = peak - 1.0;
+        double rest = (double)m3Joint_GetTranslation(slide);
+        CHECK(fabs(rest - 1.0) < 0.08, "the translation servo settles at the target");
+        m3DestroyWorld(world);
+    }
+    CHECK(overshoot[0] > 0.1, "the underdamped spring overshoots");
+    CHECK(overshoot[1] < 0.05, "the damped spring does not");
+}
+
+static void TestSphericalRotationDrive(void)
+{
+    // A floating crate driven to a quarter turn about y by the
+    // rotation spring. Gravity-free; the drive owns the pose.
+    m3WorldDef def = m3DefaultWorldDef();
+    def.bodyCapacity = 8;
+    def.shapeCapacity = 8;
+    def.jointCapacity = 4;
+    def.gravity = (m3Vec3){0.0f, 0.0f, 0.0f};
+    m3WorldId world = m3CreateWorld(&def);
+    m3BodyId anchor = Box(world, (m3Pos3){0.0, 2.0, 0.0}, 0.2f, 0);
+    m3BodyId crate = Box(world, (m3Pos3){0.0, 2.0, 1.2}, 0.4f, 1);
+    m3JointDef jd = m3DefaultJointDef();
+    jd.type = m3_sphericalJoint;
+    jd.bodyA = anchor;
+    jd.bodyB = crate;
+    jd.localAnchorA = (m3Vec3){0.0f, 0.0f, 0.6f};
+    jd.localAnchorB = (m3Vec3){0.0f, 0.0f, -0.6f};
+    // The target lives in the joint frames (frame z = the local
+    // axis, the documented reference semantic). Put the frame's z
+    // on world y, so a frame-z target turns the crate about y.
+    jd.localAxisA = (m3Vec3){0.0f, 1.0f, 0.0f};
+    jd.localAxisB = (m3Vec3){0.0f, 1.0f, 0.0f};
+    m3JointId ball = m3CreateJoint(&jd);
+    float s = sinf(0.25f * M3_PI * 0.5f);
+    float c = cosf(0.25f * M3_PI * 0.5f);
+    m3Quat target = {0.0f, 0.0f, s, c}; // 45 degrees about frame z
+    m3Joint_SetSpring(ball, true, 6.0f, 1.0f);
+    m3Joint_SetTargetRotation(ball, target);
+    StepN(world, 300);
+    m3Quat q = m3Body_GetRotation(crate);
+    m3Quat want = {0.0f, s, 0.0f, c}; // 45 degrees about world y
+    float dot = fabsf(q.x * want.x + q.y * want.y + q.z * want.z + q.w * want.w);
+    CHECK(dot > 0.98f, "the rotation drive lands the crate near the target pose");
+    m3DestroyWorld(world);
+}
+
 static void TestRuntimeOpsReplay(void)
 {
     // The whole 8-6a op family under the journal: twins land on the
@@ -223,6 +329,8 @@ static void TestRuntimeOpsReplay(void)
         m3Joint_SetCollideConnected(hinge, true);
         StepN(world, 20);
         m3Joint_SetBreakThresholds(hinge, 30.0f, 25.0f);
+        m3Joint_SetSpring(hinge, true, 5.0f, 0.7f);
+        m3Joint_SetTargetAngle(hinge, 0.2f);
         StepN(world, 60);
         uint64_t final = m3World_Hash(world);
         hashes[run] = final;
@@ -258,6 +366,11 @@ static void TestHostileRuntime(void)
     m3Joint_SetMotor(link, true, NAN, 10.0f);
     m3Joint_SetMotor(link, true, 1.0f, -5.0f);
     m3Joint_SetBreakThresholds(link, -1.0f, 0.0f);
+    m3Joint_SetSpring(link, true, 0.0f, 1.0f); // zero hertz refused
+    m3Joint_SetSpring(link, true, NAN, 1.0f);  // NaN refused
+    m3Joint_SetTargetAngle(link, 0.5f);        // ball joint: wrong type, no-op
+    m3Joint_SetTargetTranslation(link, 0.5f);  // wrong type, no-op
+    m3Joint_SetTargetRotation(link, (m3Quat){3.0f, 0.0f, 0.0f, 1.0f}); // non-unit refused
     m3JointId stale = link;
     stale.index1 += 99;
     m3Joint_SetMotor(stale, true, 1.0f, 1.0f);
@@ -275,6 +388,9 @@ int main(void)
     TestCollideToggle();
     TestReadbackBand();
     TestBreakage();
+    TestSpringServo();
+    TestSpringDampingContrast();
+    TestSphericalRotationDrive();
     TestRuntimeOpsReplay();
     TestHostileRuntime();
     if (s_failures == 0)

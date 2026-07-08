@@ -196,6 +196,10 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     M3_ALLOC(world->jointFrameQB, def->jointCapacity, m3Quat);
     M3_ALLOC(world->jointFlags, def->jointCapacity, uint8_t);
     M3_ALLOC(world->jointBreak, def->jointCapacity, m3Vec3);
+    M3_ALLOC(world->jointSpring, def->jointCapacity, m3Vec3);
+    M3_ALLOC(world->jointTargetScalar, def->jointCapacity, float);
+    M3_ALLOC(world->jointTargetQ, def->jointCapacity, m3Quat);
+    M3_ALLOC(world->jointSpringImpulse, def->jointCapacity, m3Vec3);
     M3_ALLOC(world->jointMotor, def->jointCapacity, m3Vec3);
     M3_ALLOC(world->jointLimits, def->jointCapacity, m3Vec3);
     M3_ALLOC(world->jointGenericModes, def->jointCapacity, uint16_t);
@@ -417,6 +421,10 @@ void m3DestroyWorld(m3WorldId worldId)
     m3Free(world->jointFrameQB);
     m3Free(world->jointFlags);
     m3Free(world->jointBreak);
+    m3Free(world->jointSpring);
+    m3Free(world->jointTargetScalar);
+    m3Free(world->jointTargetQ);
+    m3Free(world->jointSpringImpulse);
     m3Free(world->jointMotor);
     m3Free(world->jointLimits);
     m3Free(world->jointGenericModes);
@@ -1957,6 +1965,51 @@ static bool JournalReplayApply(m3World* world, const void* data, int32_t size)
                 return false;
             }
             m3JointSetBreakInternal(world, slot, record.maxForce, record.maxTorque);
+            break;
+        }
+        case m3_opJointSetSpring:
+        {
+            struct
+            {
+                m3JointId id;
+                int32_t enable;
+                float hertz;
+                float zeta;
+            } record;
+            if (bytes != (int32_t)sizeof(record))
+            {
+                return false;
+            }
+            memcpy(&record, payload, sizeof(record));
+            record.id.world0 = world->worldIndex0;
+            int32_t slot = m3JointSlot(world, record.id);
+            if (slot < 0)
+            {
+                return false;
+            }
+            m3JointSetSpringInternal(world, slot, record.enable, record.hertz, record.zeta);
+            break;
+        }
+        case m3_opJointSetTarget:
+        {
+            struct
+            {
+                m3JointId id;
+                float scalar;
+                m3Quat q;
+            } record;
+            if (bytes != (int32_t)sizeof(record))
+            {
+                return false;
+            }
+            memcpy(&record, payload, sizeof(record));
+            record.id.world0 = world->worldIndex0;
+            int32_t slot = m3JointSlot(world, record.id);
+            if (slot < 0)
+            {
+                return false;
+            }
+            m3JointSetTargetInternal(world, slot, record.scalar, record.q);
             break;
         }
         default:

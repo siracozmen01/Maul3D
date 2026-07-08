@@ -522,8 +522,12 @@ typedef struct m3JointConstraint
     m3real lowerLimit;
     m3real upperLimit;
     m3Vec3 angularImpulse; // prismatic rotation lock (3 DOF)
-    m3Softness springSoft; // distance spring (4-2)
+    m3Softness springSoft; // distance spring (4-2); drive spring (8-6b)
     m3real restLength;     // distance rest (the upper limit)
+    m3real targetScalar;   // drive target: angle or translation (8-6b)
+    m3Quat targetQ;        // spherical drive target
+    m3Vec3 springImpulseV; // x = scalar rows; xyz = spherical row
+    m3Mat3 springK;        // iA + iB, the spherical drive mass
     uint16_t genModes;     // generic 6-DOF packed modes (4-3)
     m3Vec3 genLinLower;    // generic per-axis limits
     m3Vec3 genLinUpper;
@@ -540,6 +544,22 @@ typedef struct m3JointConstraint
 
 // Twist about z with the polarity guard, and the all-squared swing
 // (the reference math_functions forms).
+// Pseudo angular velocity from a quaternion target (the reference
+// math_internal form): w = 2 * vec((target - s) * conj(s)), polarity
+// corrected.
+static m3Vec3 DeltaQuatToRotation(m3Quat q, m3Quat target)
+{
+    m3Quat s = q;
+    if (q.x * target.x + q.y * target.y + q.z * target.z + q.w * target.w < 0.0f)
+    {
+        s = (m3Quat){-q.x, -q.y, -q.z, -q.w};
+    }
+    m3Quat diff = {target.x - s.x, target.y - s.y, target.z - s.z, target.w - s.w};
+    m3Quat conjS = {-s.x, -s.y, -s.z, s.w};
+    m3Quat product = m3MulQuat(diff, conjS);
+    return (m3Vec3){2.0f * product.x, 2.0f * product.y, 2.0f * product.z};
+}
+
 static m3real GetTwistAngle(m3Quat q)
 {
     m3real twist = q.w < 0.0f ? m3Atan2(-q.z, -q.w) : m3Atan2(q.z, q.w);
@@ -622,7 +642,22 @@ static int32_t PrepareJoints(m3World* world, m3JointConstraint* joints, m3real h
         c->impulse = world->jointImpulse[j];
         c->type = world->jointType[j];
         c->flags = world->jointFlags[j];
-        if (c->type == (uint8_t)m3_sphericalJoint && (c->flags & (1 | 4)) != 0)
+        c->targetScalar = world->jointTargetScalar[j];
+        c->targetQ = world->jointTargetQ[j];
+        c->springImpulseV = world->jointSpringImpulse[j];
+        if ((c->flags & 8) != 0)
+        {
+            // The drive spring (8-6b): reference softness from the
+            // runtime hertz and damping ratio. The distance joint's
+            // spring reuse cannot reach here (flag 8 refuses it).
+            c->springSoft = MakeSoft(world->jointSpring[j].x, world->jointSpring[j].y, h);
+            m3Mat3 sum = c->invIA;
+            sum.cx = m3Add3(sum.cx, c->invIB.cx);
+            sum.cy = m3Add3(sum.cy, c->invIB.cy);
+            sum.cz = m3Add3(sum.cz, c->invIB.cz);
+            c->springK = sum;
+        }
+        if (c->type == (uint8_t)m3_sphericalJoint && (c->flags & (1 | 4 | 8)) != 0)
         {
             // The shoulder: cone and twist limits (2c-5), prepared
             // per the reference: swing axis from the two frame
@@ -770,17 +805,23 @@ static void WarmStartJoints(m3World* world, m3JointConstraint* joints, int32_t c
         m3Vec3 rB = m3RotateVec3(deltaRot[c->bodyB], c->rB);
         m3Vec3 angularImpulse = {0.0f, 0.0f, 0.0f};
         m3Vec3 linearExtra = {0.0f, 0.0f, 0.0f};
-        if (c->type == (uint8_t)m3_sphericalJoint && (c->flags & (1 | 4)) != 0)
+        if (c->type == (uint8_t)m3_sphericalJoint && (c->flags & (1 | 4 | 8)) != 0)
         {
             // Reference warm form: minus swing along the swing axis,
-            // twist difference along the flagged Jacobian.
+            // twist difference along the flagged Jacobian, and the
+            // drive spring's world-frame angular payload (8-6b).
             angularImpulse = m3MulSV3(-c->swingImpulse, c->swingAxis);
             angularImpulse = m3Add3(angularImpulse,
                                     m3MulSV3(c->lowerImpulse - c->upperImpulse, c->twistJacobian));
+            if ((c->flags & 8) != 0)
+            {
+                angularImpulse = m3Add3(angularImpulse, c->springImpulseV);
+            }
         }
         else if (c->type == (uint8_t)m3_revoluteJoint)
         {
-            m3real axial = c->motorImpulse + c->lowerImpulse - c->upperImpulse;
+            m3real axial =
+                c->springImpulseV.x + c->motorImpulse + c->lowerImpulse - c->upperImpulse;
             angularImpulse = m3Add3(m3MulSV3(c->perpImpulseX, c->perpAxisX),
                                     m3MulSV3(c->perpImpulseY, c->perpAxisY));
             angularImpulse = m3Add3(angularImpulse, m3MulSV3(axial, c->rotationAxis));
@@ -791,7 +832,8 @@ static void WarmStartJoints(m3World* world, m3JointConstraint* joints, int32_t c
             // angular arms differ per body and re-derive in the solve,
             // so the warm start uses the prepared arms (the reference
             // does the same through its cached sA/sB).
-            m3real axial = c->motorImpulse + c->lowerImpulse - c->upperImpulse;
+            m3real axial =
+                c->springImpulseV.x + c->motorImpulse + c->lowerImpulse - c->upperImpulse;
             linearExtra = m3MulSV3(axial, c->rotationAxis);
             linearExtra = m3Add3(linearExtra, m3MulSV3(c->perpImpulseX, c->perpAxisX));
             linearExtra = m3Add3(linearExtra, m3MulSV3(c->perpImpulseY, c->perpAxisY));
@@ -878,12 +920,29 @@ static void SolveJoints(m3World* world, m3JointConstraint* joints, int32_t count
         m3Vec3 vB = world->linearVelocities[c->bodyB];
         m3Vec3 wB = world->angularVelocities[c->bodyB];
 
-        if (c->type == (uint8_t)m3_sphericalJoint && (c->flags & (1 | 4)) != 0)
+        if (c->type == (uint8_t)m3_sphericalJoint && (c->flags & (1 | 4 | 8)) != 0)
         {
             m3Quat quatA = m3MulQuat(deltaRot[c->bodyA], c->frameQA);
             m3Quat quatB = m3MulQuat(deltaRot[c->bodyB], c->frameQB);
             m3Quat conjA = {-quatA.x, -quatA.y, -quatA.z, quatA.w};
             m3Quat relQ = m3MulQuat(conjA, quatB);
+
+            if ((c->flags & 8) != 0)
+            {
+                // Rotation drive (8-6b), the reference spherical
+                // spring: the error is the world-frame pseudo
+                // velocity toward the target, softened, solved
+                // against the summed angular mass.
+                m3Vec3 delta = DeltaQuatToRotation(relQ, c->targetQ);
+                m3Vec3 err = m3MulSV3(-1.0f, m3RotateVec3(quatA, delta));
+                m3Vec3 rhs = m3Add3(m3Sub3(wB, wA), m3MulSV3(c->springSoft.biasRate, err));
+                m3Vec3 impulse =
+                    m3Sub3(m3MulSV3(-c->springSoft.massScale, Solve3(&c->springK, rhs)),
+                           m3MulSV3(c->springSoft.impulseScale, c->springImpulseV));
+                c->springImpulseV = m3Add3(c->springImpulseV, impulse);
+                wA = m3Sub3(wA, m3MulMV3(c->invIA, impulse));
+                wB = m3Add3(wB, m3MulMV3(c->invIB, impulse));
+            }
 
             if ((c->flags & 1) != 0)
             {
@@ -987,6 +1046,20 @@ static void SolveJoints(m3World* world, m3JointConstraint* joints, int32_t count
             m3Quat conjA = {-quatA.x, -quatA.y, -quatA.z, quatA.w};
             m3Quat relQ = m3MulQuat(conjA, quatB);
             m3Vec3 axis = c->rotationAxis;
+
+            if ((c->flags & 8) != 0)
+            {
+                // Angle drive (8-6b), the reference revolute spring.
+                m3real angle = 2.0f * m3Atan2(relQ.z, relQ.w);
+                m3real cc = angle - c->targetScalar;
+                m3real bias = c->springSoft.biasRate * cc;
+                m3real cdot = m3Dot3(m3Sub3(wB, wA), axis);
+                m3real delta = -c->springSoft.massScale * c->axialMass * (cdot + bias) -
+                               c->springSoft.impulseScale * c->springImpulseV.x;
+                c->springImpulseV.x += delta;
+                wA = m3Sub3(wA, m3MulSV3(delta, m3MulMV3(c->invIA, axis)));
+                wB = m3Add3(wB, m3MulSV3(delta, m3MulMV3(c->invIB, axis)));
+            }
 
             if ((c->flags & 2) != 0)
             {
@@ -1128,6 +1201,25 @@ static void SolveJoints(m3World* world, m3JointConstraint* joints, int32_t count
             m3real ka = c->invMassA + c->invMassB + m3Dot3(sAx, m3MulMV3(c->invIA, sAx)) +
                         m3Dot3(sBx, m3MulMV3(c->invIB, sBx));
             m3real axialMass = ka > 0.0f ? 1.0f / ka : 0.0f;
+
+            if ((c->flags & 8) != 0)
+            {
+                // Translation drive (8-6b), the reference prismatic
+                // spring: a softened linear row along the slide axis
+                // with the full Jacobian arms.
+                m3real cc = translation - c->targetScalar;
+                m3real bias = c->springSoft.biasRate * cc;
+                m3Vec3 vRel =
+                    m3Sub3(m3Sub3(m3Add3(vB, m3Cross3(wB, rB)), vA), m3Cross3(wA, m3Add3(rA, d)));
+                m3real cdot = m3Dot3(vRel, axis);
+                m3real delta = -c->springSoft.massScale * axialMass * (cdot + bias) -
+                               c->springSoft.impulseScale * c->springImpulseV.x;
+                c->springImpulseV.x += delta;
+                vA = m3Sub3(vA, m3MulSV3(c->invMassA * delta, axis));
+                wA = m3Sub3(wA, m3MulMV3(c->invIA, m3MulSV3(delta, sAx)));
+                vB = m3Add3(vB, m3MulSV3(c->invMassB * delta, axis));
+                wB = m3Add3(wB, m3MulMV3(c->invIB, m3MulSV3(delta, sBx)));
+            }
 
             if ((c->flags & 2) != 0)
             {
@@ -1779,6 +1871,7 @@ static void StoreJointImpulses(m3World* world, m3JointConstraint* joints, int32_
                          c->type == (uint8_t)m3_sphericalJoint ? c->swingImpulse : 0.0f};
         }
         world->jointAngularImpulse[c->joint] = c->angularImpulse;
+        world->jointSpringImpulse[c->joint] = c->springImpulseV;
     }
 }
 
