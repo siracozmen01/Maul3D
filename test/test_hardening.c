@@ -6,6 +6,7 @@
 // (every pool exhausted on purpose; every refusal loud and clean,
 // the world never corrupted).
 
+#include "maul3d/joint.h"
 #include "maul3d/shape.h"
 
 #include <stdio.h>
@@ -80,6 +81,88 @@ static m3WorldId BuildZoo(uint64_t seed, uint8_t* journal, int32_t journalBytes)
     kd.linearVelocity = (m3Vec3){0.6f, 0.0f, 0.0f};
     m3BodyId sweeper = m3CreateBody(world, &kd);
     m3CreateBoxShape(sweeper, &sd, (m3Vec3){1.2f, 0.15f, 1.2f});
+
+    // 2c-12: the zoo grows articulation and a watcher. A sensor
+    // curtain hangs over the arena (bodies rain through it: begin
+    // and end events churn every step), a two-link chain swings
+    // from a static post (spherical shoulder + revolute elbow), a
+    // slider rides its rail, and one throwaway joint is created and
+    // destroyed inside the journal so replay covers both ops.
+    m3BodyDef cd = m3DefaultBodyDef();
+    cd.position = (m3Pos3){0.0, 3.0, 0.0};
+    m3BodyId curtainBody = m3CreateBody(world, &cd);
+    m3ShapeDef curtainShape = m3DefaultShapeDef();
+    curtainShape.isSensor = true;
+    m3CreateBoxShape(curtainBody, &curtainShape, (m3Vec3){5.0f, 0.3f, 5.0f});
+
+    m3BodyDef postDef = m3DefaultBodyDef();
+    postDef.position = (m3Pos3){5.5, 3.2, 5.5};
+    m3BodyId post = m3CreateBody(world, &postDef);
+    m3BodyDef linkDef = m3DefaultBodyDef();
+    linkDef.type = m3_dynamicBody;
+    linkDef.position = (m3Pos3){5.5, 2.6, 5.5};
+    m3BodyId upperLink = m3CreateBody(world, &linkDef);
+    m3CreateCapsuleShape(upperLink, &sd,
+                         &(m3Capsule){{0.0f, 0.3f, 0.0f}, {0.0f, -0.3f, 0.0f}, 0.1f});
+    linkDef.position = (m3Pos3){5.5, 1.9, 5.5};
+    m3BodyId lowerLink = m3CreateBody(world, &linkDef);
+    m3CreateCapsuleShape(lowerLink, &sd,
+                         &(m3Capsule){{0.0f, 0.3f, 0.0f}, {0.0f, -0.3f, 0.0f}, 0.1f});
+
+    m3JointDef shoulder = m3DefaultJointDef();
+    shoulder.type = m3_sphericalJoint;
+    shoulder.bodyA = post;
+    shoulder.bodyB = upperLink;
+    shoulder.localAnchorA = (m3Vec3){0.0f, 0.0f, 0.0f};
+    shoulder.localAnchorB = (m3Vec3){0.0f, 0.35f, 0.0f};
+    shoulder.enableCone = true;
+    shoulder.coneAngle = 0.9f;
+    m3CreateJoint(&shoulder);
+
+    m3JointDef elbow = m3DefaultJointDef();
+    elbow.type = m3_revoluteJoint;
+    elbow.bodyA = upperLink;
+    elbow.bodyB = lowerLink;
+    elbow.localAnchorA = (m3Vec3){0.0f, -0.35f, 0.0f};
+    elbow.localAnchorB = (m3Vec3){0.0f, 0.35f, 0.0f};
+    elbow.localAxisA = (m3Vec3){1.0f, 0.0f, 0.0f};
+    elbow.localAxisB = (m3Vec3){1.0f, 0.0f, 0.0f};
+    elbow.enableLimit = true;
+    elbow.lowerLimit = -2.0f;
+    elbow.upperLimit = 0.1f;
+    m3CreateJoint(&elbow);
+
+    m3BodyDef railDef = m3DefaultBodyDef();
+    railDef.position = (m3Pos3){-5.5, 2.0, 5.5};
+    m3BodyId railPost = m3CreateBody(world, &railDef);
+    m3BodyDef cartDef = m3DefaultBodyDef();
+    cartDef.type = m3_dynamicBody;
+    cartDef.position = (m3Pos3){-5.5, 2.0, 5.5};
+    m3BodyId cart = m3CreateBody(world, &cartDef);
+    m3CreateBoxShape(cart, &sd, (m3Vec3){0.2f, 0.2f, 0.2f});
+    m3JointDef rail = m3DefaultJointDef();
+    rail.type = m3_prismaticJoint;
+    rail.bodyA = railPost;
+    rail.bodyB = cart;
+    rail.localAxisA = (m3Vec3){1.0f, 0.0f, 0.0f};
+    rail.localAxisB = (m3Vec3){1.0f, 0.0f, 0.0f};
+    rail.enableLimit = true;
+    rail.lowerLimit = -1.5f;
+    rail.upperLimit = 1.5f;
+    rail.enableMotor = true;
+    rail.motorSpeed = 0.8f;
+    rail.maxMotorEffort = 30.0f;
+    m3CreateJoint(&rail);
+
+    // Journaled create AND destroy: replay must verify the minted id
+    // and then remove it, leaving the pool identity advanced.
+    m3JointDef throwaway = m3DefaultJointDef();
+    throwaway.type = m3_sphericalJoint;
+    throwaway.bodyA = post;
+    throwaway.bodyB = lowerLink;
+    throwaway.localAnchorB = (m3Vec3){0.0f, -0.35f, 0.0f};
+    m3JointId doomed = m3CreateJoint(&throwaway);
+    m3DestroyJoint(doomed);
 
     m3BodyDef bd = m3DefaultBodyDef();
     bd.type = m3_dynamicBody;
@@ -199,9 +282,11 @@ static void TestCapacityExhaustion(void)
     def.bodyCapacity = 4;
     def.shapeCapacity = 4;
     def.meshCapacity = 1;
+    def.jointCapacity = 2;
     m3WorldId world = m3CreateWorld(&def);
 
     m3BodyDef bd = m3DefaultBodyDef();
+    bd.type = m3_dynamicBody; // joints below need dynamics
     m3BodyId bodies[4];
     for (int32_t i = 0; i < 4; ++i)
     {
@@ -220,6 +305,36 @@ static void TestCapacityExhaustion(void)
     }
     CHECK(!m3Shape_IsValid(m3CreateSphereShape(bodies[0], &sd, &ball)),
           "the shape pool refuses past capacity");
+
+    // The joint pool: fill, refuse, recycle, and the invalid defs
+    // that must never mint an id in the first place.
+    m3JointDef pin = m3DefaultJointDef();
+    pin.type = m3_sphericalJoint;
+    pin.bodyA = bodies[0];
+    pin.bodyB = bodies[1];
+    m3JointId j1 = m3CreateJoint(&pin);
+    CHECK(m3Joint_IsValid(j1), "joints up to capacity create");
+    pin.bodyA = bodies[1];
+    pin.bodyB = bodies[2];
+    m3JointId j2 = m3CreateJoint(&pin);
+    CHECK(m3Joint_IsValid(j2), "the second joint fills the pool");
+    pin.bodyA = bodies[2];
+    pin.bodyB = bodies[3];
+    CHECK(!m3Joint_IsValid(m3CreateJoint(&pin)), "the joint pool refuses past capacity");
+    m3DestroyJoint(j2);
+    m3JointId j3 = m3CreateJoint(&pin);
+    CHECK(m3Joint_IsValid(j3), "a freed joint slot recycles");
+    CHECK(!m3Joint_IsValid(j2), "the destroyed joint id is stale");
+
+    pin.bodyA = bodies[0];
+    pin.bodyB = bodies[0];
+    CHECK(!m3Joint_IsValid(m3CreateJoint(&pin)), "a self joint refuses");
+    m3JointDef bad = m3DefaultJointDef();
+    bad.type = m3_revoluteJoint;
+    bad.bodyA = bodies[0];
+    bad.bodyB = bodies[1];
+    bad.localAxisA = (m3Vec3){0.0f, 0.0f, 0.0f};
+    CHECK(!m3Joint_IsValid(m3CreateJoint(&bad)), "a hinge with no axis refuses");
 
     m3DestroyWorld(world);
 

@@ -8,9 +8,9 @@ Sibling of [Maul2D](https://github.com/siracozmen01/Maul2D), which
 validated the solver core and the determinism discipline this engine
 is built on.
 
-## Status: v0.2, the full narrowphase
+## Status: v0.3, joints, queries, and the profiled midphase
 
-Phase 2b is complete. The engine simulates:
+Phases 2b and 2c are complete. The engine simulates:
 
 - **Shapes**: spheres, boxes, capsules, convex hulls from point
   clouds (built-in QuickHull with coplanar face merging and exact
@@ -31,11 +31,30 @@ Phase 2b is complete. The engine simulates:
   collision: fast bodies sweep against statics, bullets sweep against
   dynamics and kinematics with both sweeps in the time-of-impact
   kernel, meshes included.
+- **Joints**: spherical (with an optional shoulder cone and twist
+  limits), revolute (limits and a motor), and prismatic (limits and
+  a motor), all warm-started through the snapshot, journaled with
+  id-verified replay, and solved before contacts inside every
+  substep. The two hand-derived Jacobians are pinned by central
+  finite-difference gates.
+- **Queries**: closest and all-hits ray casts (sorted, capacity
+  bounded), sphere and capsule shape casts through the shared
+  time-of-impact kernel, point-inside tests, AABB and sphere
+  overlaps. Start-overlapped casts report fraction zero; rays are
+  front-face-only by contract.
+- **Sensors**: shapes that detect and never respond. Their begin and
+  end events ride the same canonical stream walk as contacts; they
+  wake nobody, stop nothing, and never sense each other.
+- **Debug draw**: a pure observer interface (segments and points
+  through host callbacks, fixed palette). A draw pass between two
+  snapshots leaves every byte identical, and the test suite holds
+  that promise on every commit.
 - **World machinery**: fat-AABB dynamic tree broadphase with a
-  brute-force referee, islands with per-island sleep (sleeping worlds
-  are bit-frozen), contact begin/end events, closest-hit ray casts
-  for every shape family, and a host-owned task interface (the
-  library never spawns threads; worker count never changes results).
+  brute-force referee, a per-mesh static BVH midphase (derived data,
+  rebuilt on restore, referee kept), islands with per-island sleep
+  (sleeping worlds are bit-frozen), contact begin/end events, and a
+  host-owned task interface (the library never spawns threads;
+  worker count never changes results).
 
 ## The determinism promise
 
@@ -113,10 +132,22 @@ No dependencies. `-DMAUL3D_SIMD=scalar` forces the scalar backend,
 which must match the vector backends bit for bit; `-DMAUL3D_SANITIZE=ON`
 adds ASan and UBSan.
 
+## Performance
+
+The benchmark harness ships in `bench/` and is never a test gate
+(wall time is not deterministic; the printed state hashes are). On
+one mid-range x86-64 core, Release, 300 steps:
+
+| scene     | bodies                      | ms/step |
+| --------- | --------------------------- | ------- |
+| pyramid   | 91 spheres on a plane       | 0.12    |
+| hulljam   | 80 hulls jammed in a pit    | 0.53    |
+| meshfield | rain on a 1922-triangle field | 0.38  |
+
 ## Roadmap
 
-- Phase 2c: the profiling era (per-mesh BVH midphase, SAT caching,
-  four-lane solver batches, descending ray traversal).
+- Phase 2d: hardening and release. Red-team rounds, coverage, a
+  v1.0-grade maturity pass (the constitution freezes the API at 1.x).
 - Phase 3: destruction. Fracture fragments are QuickHull cells, and
   the rollback spine is what makes networked destruction possible.
 
