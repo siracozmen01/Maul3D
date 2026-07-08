@@ -1,36 +1,105 @@
 # Maul3D
 
-A 3D rigid body physics engine for sandbox games. Written in C17 with a
-plain C API. MIT licensed. Zero dependencies.
+A deterministic 3D rigid body physics engine for sandbox and
+destruction games. Written in C17 with a plain C API. MIT licensed.
+Zero dependencies.
 
 Sibling of [Maul2D](https://github.com/siracozmen01/Maul2D), which
-validated the solver core and the determinism discipline this engine is
-built on.
+validated the solver core and the determinism discipline this engine
+is built on.
 
-## Status
+## Status: v0.2, the full narrowphase
 
-Phase 2a, "the standing spine," is complete: spheres and planes
-simulate under the Soft Step solver, a five-sphere stack stands, and
-the four determinism gates below hold on every commit. Phase 2b (the
-full 3D narrowphase: hulls, capsules, boxes, meshes, real CCD) builds
-on this proven spine.
+Phase 2b is complete. The engine simulates:
+
+- **Shapes**: spheres, boxes, capsules, convex hulls from point
+  clouds (built-in QuickHull with coplanar face merging and exact
+  mass integration), static triangle meshes with internal-edge ghost
+  filtering and baked edge convexity, heightfield chunks, and native
+  infinite planes.
+- **Bodies**: static, kinematic (commanded velocity, immovable by
+  contact), and dynamic, with full inertia tensors, offset centers of
+  mass, and the implicit gyroscopic term (long skinny bodies tumble
+  correctly and never gain energy).
+- **Solver**: the Soft Step scheme (soft constraints, speculative
+  contacts, relax pass, restitution pass, Coulomb disc friction) on
+  up to four-point manifolds, solved in graph-color order so hosts
+  can parallelize inside a color without moving a single bit.
+- **Collision**: SAT hull pairs with Gauss-map edge pruning, GJK
+  distance with warm-started simplex caching, exact deep-overlap
+  recovery (no EPA needed by construction), and real continuous
+  collision: fast bodies sweep against statics, bullets sweep against
+  dynamics and kinematics with both sweeps in the time-of-impact
+  kernel, meshes included.
+- **World machinery**: fat-AABB dynamic tree broadphase with a
+  brute-force referee, islands with per-island sleep (sleeping worlds
+  are bit-frozen), contact begin/end events, closest-hit ray casts
+  for every shape family, and a host-owned task interface (the
+  library never spawns threads; worker count never changes results).
 
 ## The determinism promise
 
 Same inputs, same bits, everywhere. Every commit must hold four gates
-in CI, across three OSes, two ISAs, and four compilers:
+in CI, across three OSes, two ISAs, and four compilers, and the
+printed state hashes must match across every cell:
 
-1. **The golden scene.** A 30-sphere pyramid plus droppers, 300 steps;
-   every cell must produce the identical state hash.
+1. **The golden scene.** A fixed pyramid scene plus droppers; every
+   cell must produce the identical state hash on every platform,
+   compiler, and SIMD backend.
 2. **Replay.** The same run twice is bit-identical, and a journaled
-   session (creates plus steps) replays bit for bit into a fresh world.
+   session (creates plus commands plus steps) replays bit for bit
+   into a fresh world, minted ids included.
 3. **Rollback.** Snapshot mid-flight, run on, restore, rerun: the
    resimulated timeline is bit-identical, and a changed continuation
-   diverges (restore is total, resume is real simulation). The snapshot
-   format is portable and versioned, never a raw memory image.
-4. **Worker twins.** Different worker counts produce identical bits.
+   diverges (restore is total, resume is real simulation). The
+   snapshot format is portable and versioned, never a raw memory
+   image; SIMD width and worker count are deliberately not part of
+   the format.
+4. **Worker twins.** One worker or four, a real thread pool or none,
+   the hash never moves.
 
-Fast-math is refused at configure time.
+Every capacity refusal is loud (a null id or a false return, never a
+crash, never a silent no-op), and the failure paths are themselves
+deterministic. Fast-math is refused at configure time.
+
+## Quick start
+
+```c
+#include "maul3d/shape.h"
+
+m3WorldDef wd = m3DefaultWorldDef();
+m3WorldId world = m3CreateWorld(&wd);
+
+m3BodyDef ground = m3DefaultBodyDef();
+m3BodyId floor = m3CreateBody(world, &ground);
+m3ShapeDef sd = m3DefaultShapeDef();
+m3Plane plane = {{0.0f, 1.0f, 0.0f}, 0.0f};
+m3CreatePlaneShape(floor, &sd, &plane);
+
+m3BodyDef bd = m3DefaultBodyDef();
+bd.type = m3_dynamicBody;
+bd.position = (m3Pos3){0.0, 5.0, 0.0};
+m3BodyId body = m3CreateBody(world, &bd);
+m3CreateBoxShape(body, &sd, (m3Vec3){0.5f, 0.5f, 0.5f});
+
+for (int i = 0; i < 300; ++i)
+{
+    m3World_Step(world, 1.0f / 60.0f, 4);
+}
+
+m3Pos3 p = m3Body_GetPosition(body); // resting at y = 0.5
+m3DestroyWorld(world);
+```
+
+Snapshot and rollback:
+
+```c
+int32_t size = m3World_SnapshotSize(world);
+void* buffer = malloc(size);
+m3World_Snapshot(world, buffer, size); // save the exact world
+// ... run steps, mispredict, whatever ...
+m3World_Restore(world, buffer, size);  // bit-exact rewind
+```
 
 ## Build
 
@@ -40,5 +109,17 @@ cmake --build build
 ctest --test-dir build
 ```
 
-`-DMAUL3D_SIMD=scalar` forces the scalar backend, which must match the
-vector backends bit for bit.
+No dependencies. `-DMAUL3D_SIMD=scalar` forces the scalar backend,
+which must match the vector backends bit for bit; `-DMAUL3D_SANITIZE=ON`
+adds ASan and UBSan.
+
+## Roadmap
+
+- Phase 2c: the profiling era (per-mesh BVH midphase, SAT caching,
+  four-lane solver batches, descending ray traversal).
+- Phase 3: destruction. Fracture fragments are QuickHull cells, and
+  the rollback spine is what makes networked destruction possible.
+
+## License
+
+MIT. See LICENSE.

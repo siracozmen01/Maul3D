@@ -84,6 +84,11 @@ target_link_libraries(test_queries PRIVATE maul3d)
 maul3d_apply_flags(test_queries)
 add_test(NAME queries COMMAND test_queries)
 
+add_executable(test_hardening test/test_hardening.c)
+target_link_libraries(test_hardening PRIVATE maul3d)
+maul3d_apply_flags(test_hardening)
+add_test(NAME hardening COMMAND test_hardening)
+
 add_executable(test_journal test/test_journal.c)
 target_link_libraries(test_journal PRIVATE maul3d)
 maul3d_apply_flags(test_journal)
