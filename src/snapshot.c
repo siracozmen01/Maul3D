@@ -22,7 +22,7 @@
 #endif
 
 #define M3_SNAPSHOT_MAGIC   0x4D33534Eu // 'M3SN'
-#define M3_SNAPSHOT_VERSION 14u         // v14: joints
+#define M3_SNAPSHOT_VERSION 15u         // v15: revolute joint state
 
 // The math types are canonical field data only because they are
 // provably padding-free; a change here is a format version bump.
@@ -182,6 +182,13 @@ static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3Wal
     M3_BLOCK(world->jointLocalB, world->jointCapacity * (int32_t)sizeof(m3Vec3));
     M3_BLOCK(world->jointCollide, world->jointCapacity * (int32_t)sizeof(uint8_t));
     M3_BLOCK(world->jointImpulse, world->jointCapacity * (int32_t)sizeof(m3Vec3));
+    M3_BLOCK(world->jointPerpImpulse, world->jointCapacity * (int32_t)sizeof(m3Vec3));
+    M3_BLOCK(world->jointLimitImpulse, world->jointCapacity * (int32_t)sizeof(m3Vec3));
+    M3_BLOCK(world->jointFrameQA, world->jointCapacity * (int32_t)sizeof(m3Quat));
+    M3_BLOCK(world->jointFrameQB, world->jointCapacity * (int32_t)sizeof(m3Quat));
+    M3_BLOCK(world->jointFlags, world->jointCapacity * (int32_t)sizeof(uint8_t));
+    M3_BLOCK(world->jointMotor, world->jointCapacity * (int32_t)sizeof(m3Vec3));
+    M3_BLOCK(world->jointLimits, world->jointCapacity * (int32_t)sizeof(m3Vec3));
     M3_BLOCK(world->jointNextA, world->jointCapacity * (int32_t)sizeof(int32_t));
     M3_BLOCK(world->jointNextB, world->jointCapacity * (int32_t)sizeof(int32_t));
     M3_BLOCK(world->bodyJointHead, cap * (int32_t)sizeof(int32_t));
@@ -385,6 +392,11 @@ uint64_t m3World_Hash(m3WorldId worldId)
         h = m3Hash64(h, &world->jointLocalA[i], (int32_t)sizeof(m3Vec3));
         h = m3Hash64(h, &world->jointLocalB[i], (int32_t)sizeof(m3Vec3));
         h = m3Hash64(h, &world->jointImpulse[i], (int32_t)sizeof(m3Vec3));
+        h = m3Hash64(h, &world->jointPerpImpulse[i], (int32_t)sizeof(m3Vec3));
+        h = m3Hash64(h, &world->jointLimitImpulse[i], (int32_t)sizeof(m3Vec3));
+        h = m3Hash64(h, &world->jointFrameQA[i], (int32_t)sizeof(m3Quat));
+        h = m3Hash64(h, &world->jointFrameQB[i], (int32_t)sizeof(m3Quat));
+        h = m3Hash64(h, &world->jointFlags[i], 1);
     }
 
     // Pairs and manifolds: warm-start impulses are simulation state

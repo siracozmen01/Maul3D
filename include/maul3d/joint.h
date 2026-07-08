@@ -18,6 +18,7 @@ extern "C"
     typedef enum m3JointType
     {
         m3_sphericalJoint = 0, // ball: pins two body-frame points together
+        m3_revoluteJoint = 1,  // hinge: one rotation axis, limits, motor
     } m3JointType;
 
     /// Build with m3DefaultJointDef; hand-rolled defs are rejected
@@ -29,6 +30,17 @@ extern "C"
         m3BodyId bodyB;
         m3Vec3 localAnchorA;
         m3Vec3 localAnchorB;
+        /// Hinge axis per body frame (unit; revolute only). The two
+        /// axes must map to the same world direction at create time
+        /// for a well-posed hinge.
+        m3Vec3 localAxisA;
+        m3Vec3 localAxisB;
+        bool enableLimit; // revolute: angle range about the axis
+        m3real lowerAngle;
+        m3real upperAngle;
+        bool enableMotor; // revolute: velocity drive with a torque cap
+        m3real motorSpeed;
+        m3real maxMotorTorque;
         /// Jointed bodies do not collide with each other unless this
         /// is set (the classic chain-fight guard).
         bool collideConnected;

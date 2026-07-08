@@ -17,8 +17,59 @@ m3JointDef m3DefaultJointDef(void)
     m3JointDef def;
     memset(&def, 0, sizeof(def));
     def.type = m3_sphericalJoint;
+    def.localAxisA = (m3Vec3){0.0f, 0.0f, 1.0f};
+    def.localAxisB = (m3Vec3){0.0f, 0.0f, 1.0f};
     def.internalValue = M3_JOINT_COOKIE;
     return def;
+}
+
+// Quaternion whose z-axis is the given unit axis, with the tangent
+// basis rule fixing the other two columns (deterministic: Shepperd's
+// branch on the largest diagonal).
+static m3Quat QuatFromAxisZ(m3Vec3 axis)
+{
+    m3Vec3 t1;
+    m3Vec3 t2;
+    m3MakeTangentBasis(axis, &t1, &t2);
+    // Columns: x = t1, y = t2, z = axis (right-handed by the basis rule).
+    m3real m00 = t1.x, m01 = t2.x, m02 = axis.x;
+    m3real m10 = t1.y, m11 = t2.y, m12 = axis.y;
+    m3real m20 = t1.z, m21 = t2.z, m22 = axis.z;
+    m3Quat q;
+    m3real trace = m00 + m11 + m22;
+    if (trace > 0.0f)
+    {
+        m3real s = sqrtf(trace + 1.0f) * 2.0f;
+        q.w = 0.25f * s;
+        q.x = (m21 - m12) / s;
+        q.y = (m02 - m20) / s;
+        q.z = (m10 - m01) / s;
+    }
+    else if (m00 > m11 && m00 > m22)
+    {
+        m3real s = sqrtf(1.0f + m00 - m11 - m22) * 2.0f;
+        q.w = (m21 - m12) / s;
+        q.x = 0.25f * s;
+        q.y = (m01 + m10) / s;
+        q.z = (m02 + m20) / s;
+    }
+    else if (m11 > m22)
+    {
+        m3real s = sqrtf(1.0f + m11 - m00 - m22) * 2.0f;
+        q.w = (m02 - m20) / s;
+        q.x = (m01 + m10) / s;
+        q.y = 0.25f * s;
+        q.z = (m12 + m21) / s;
+    }
+    else
+    {
+        m3real s = sqrtf(1.0f + m22 - m00 - m11) * 2.0f;
+        q.w = (m10 - m01) / s;
+        q.x = (m02 + m20) / s;
+        q.y = (m12 + m21) / s;
+        q.z = 0.25f * s;
+    }
+    return m3NormalizeQuat(q);
 }
 
 int32_t m3JointSlot(const m3World* world, m3JointId jointId)
@@ -46,6 +97,13 @@ int32_t m3CreateJointInternal(m3World* world, const m3JointDef* def, int32_t bod
     world->jointLocalB[index] = def->localAnchorB;
     world->jointCollide[index] = def->collideConnected ? 1 : 0;
     world->jointImpulse[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
+    world->jointPerpImpulse[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
+    world->jointLimitImpulse[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
+    world->jointFrameQA[index] = QuatFromAxisZ(m3Normalize3(def->localAxisA));
+    world->jointFrameQB[index] = QuatFromAxisZ(m3Normalize3(def->localAxisB));
+    world->jointFlags[index] = (uint8_t)((def->enableLimit ? 1 : 0) | (def->enableMotor ? 2 : 0));
+    world->jointMotor[index] = (m3Vec3){def->motorSpeed, def->maxMotorTorque, 0.0f};
+    world->jointLimits[index] = (m3Vec3){def->lowerAngle, def->upperAngle, 0.0f};
     // Push onto both bodies' joint lists (creation order recoverable:
     // replay recreates in the same order).
     world->jointNextA[index] = world->bodyJointHead[bodyA];
@@ -106,6 +164,13 @@ void m3DestroyJointInternal(m3World* world, int32_t index)
     world->jointLocalB[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
     world->jointCollide[index] = 0;
     world->jointImpulse[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
+    world->jointPerpImpulse[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
+    world->jointLimitImpulse[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
+    world->jointFrameQA[index] = m3MakeIdentityQuat();
+    world->jointFrameQB[index] = m3MakeIdentityQuat();
+    world->jointFlags[index] = 0;
+    world->jointMotor[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
+    world->jointLimits[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
     world->jointNextA[index] = -1;
     world->jointNextB[index] = -1;
     m3IdPoolFree(&world->jointPool, index);
@@ -114,9 +179,15 @@ void m3DestroyJointInternal(m3World* world, int32_t index)
 m3JointId m3CreateJoint(const m3JointDef* def)
 {
     if (def == NULL || def->internalValue != M3_JOINT_COOKIE ||
-        def->type != (int32_t)m3_sphericalJoint)
+        (def->type != (int32_t)m3_sphericalJoint && def->type != (int32_t)m3_revoluteJoint))
     {
         return m3_nullJointId;
+    }
+    if (def->type == (int32_t)m3_revoluteJoint &&
+        (!(m3Dot3(def->localAxisA, def->localAxisA) > 0.0f) ||
+         !(m3Dot3(def->localAxisB, def->localAxisB) > 0.0f)))
+    {
+        return m3_nullJointId; // a hinge needs real axes
     }
     m3World* world = m3WorldFromIndex0(def->bodyA.world0);
     if (world == NULL || def->bodyB.world0 != def->bodyA.world0)

@@ -287,7 +287,9 @@ static m3Vec3 Solve3(const m3Mat3* J, m3Vec3 b); // defined with the gyroscopic 
 
 typedef struct m3JointConstraint
 {
-    int32_t joint; // world joint slot (impulse written back at store)
+    int32_t joint; // world joint slot (impulses written back at store)
+    uint8_t type;
+    uint8_t flags; // bit0 limit, bit1 motor
     int32_t bodyA;
     int32_t bodyB;
     m3Vec3 rA; // COM-relative anchors, world-rotated at prepare
@@ -298,8 +300,34 @@ typedef struct m3JointConstraint
     m3Mat3 invIA;
     m3Mat3 invIB;
     m3Softness softness;
-    m3Vec3 impulse;
+    m3Vec3 impulse; // linear point impulse
+    // Revolute state (prepared): world joint frames, hinge axis,
+    // axial mass, cached perp axes for warm start, extra impulses.
+    m3Quat frameQA;
+    m3Quat frameQB;
+    m3Vec3 rotationAxis;
+    m3real axialMass;
+    m3Vec3 perpAxisX;
+    m3Vec3 perpAxisY;
+    m3real perpImpulseX;
+    m3real perpImpulseY;
+    m3real motorImpulse;
+    m3real lowerImpulse;
+    m3real upperImpulse;
+    m3real motorSpeed;
+    m3real maxMotorTorque;
+    m3real lowerAngle;
+    m3real upperAngle;
 } m3JointConstraint;
+
+// Half-quaternion rotation of a frame axis, the reference form for
+// the collinearity Jacobian columns.
+static m3Vec3 PerpColumn(m3Quat qA, m3Quat relQ, m3Vec3 axis)
+{
+    m3Vec3 rv = {relQ.x, relQ.y, relQ.z};
+    m3Vec3 inner = m3Add3(m3MulSV3(relQ.w, axis), m3Cross3(rv, axis));
+    return m3MulSV3(0.5f, m3RotateVec3(qA, inner));
+}
 
 static int32_t PrepareJoints(m3World* world, m3JointConstraint* joints, m3real h)
 {
@@ -321,6 +349,8 @@ static int32_t PrepareJoints(m3World* world, m3JointConstraint* joints, m3real h
         }
         m3JointConstraint* c = &joints[count];
         count += 1;
+        memset(c, 0, sizeof(*c)); // every field defined for every type:
+                                  // the store writes them all back
         c->joint = j;
         c->bodyA = bodyA;
         c->bodyB = bodyB;
@@ -339,6 +369,31 @@ static int32_t PrepareJoints(m3World* world, m3JointConstraint* joints, m3real h
         c->invIB = WorldInvInertia(world, bodyB);
         c->softness = MakeSoft(60.0f, 2.0f, h); // the reference joint stiffness
         c->impulse = world->jointImpulse[j];
+        c->type = world->jointType[j];
+        c->flags = world->jointFlags[j];
+        if (c->type == (uint8_t)m3_revoluteJoint)
+        {
+            c->frameQA = m3MulQuat(xfA->q, world->jointFrameQA[j]);
+            c->frameQB = m3MulQuat(xfB->q, world->jointFrameQB[j]);
+            m3Vec3 axis = m3RotateVec3(c->frameQA, (m3Vec3){0.0f, 0.0f, 1.0f});
+            c->rotationAxis = axis;
+            m3Vec3 sum = m3Add3(m3MulMV3(c->invIA, axis), m3MulMV3(c->invIB, axis));
+            m3real k = m3Dot3(axis, sum);
+            c->axialMass = k > 0.0f ? 1.0f / k : 0.0f;
+            m3Quat conjA = {-c->frameQA.x, -c->frameQA.y, -c->frameQA.z, c->frameQA.w};
+            m3Quat relQ = m3MulQuat(conjA, c->frameQB);
+            c->perpAxisX = PerpColumn(c->frameQA, relQ, (m3Vec3){1.0f, 0.0f, 0.0f});
+            c->perpAxisY = PerpColumn(c->frameQA, relQ, (m3Vec3){0.0f, 1.0f, 0.0f});
+            c->perpImpulseX = world->jointPerpImpulse[j].x;
+            c->perpImpulseY = world->jointPerpImpulse[j].y;
+            c->motorImpulse = world->jointPerpImpulse[j].z;
+            c->lowerImpulse = world->jointLimitImpulse[j].x;
+            c->upperImpulse = world->jointLimitImpulse[j].y;
+            c->motorSpeed = world->jointMotor[j].x;
+            c->maxMotorTorque = world->jointMotor[j].y;
+            c->lowerAngle = world->jointLimits[j].x;
+            c->upperAngle = world->jointLimits[j].y;
+        }
     }
     return count;
 }
@@ -351,19 +406,30 @@ static void WarmStartJoints(m3World* world, m3JointConstraint* joints, int32_t c
         m3JointConstraint* c = &joints[i];
         m3Vec3 rA = m3RotateVec3(deltaRot[c->bodyA], c->rA);
         m3Vec3 rB = m3RotateVec3(deltaRot[c->bodyB], c->rB);
+        m3Vec3 angularImpulse = {0.0f, 0.0f, 0.0f};
+        if (c->type == (uint8_t)m3_revoluteJoint)
+        {
+            m3real axial = c->motorImpulse + c->lowerImpulse - c->upperImpulse;
+            angularImpulse = m3Add3(m3MulSV3(c->perpImpulseX, c->perpAxisX),
+                                    m3MulSV3(c->perpImpulseY, c->perpAxisY));
+            angularImpulse = m3Add3(angularImpulse, m3MulSV3(axial, c->rotationAxis));
+        }
         world->linearVelocities[c->bodyA] =
             m3Sub3(world->linearVelocities[c->bodyA], m3MulSV3(c->invMassA, c->impulse));
-        world->angularVelocities[c->bodyA] = m3Sub3(world->angularVelocities[c->bodyA],
-                                                    m3MulMV3(c->invIA, m3Cross3(rA, c->impulse)));
+        world->angularVelocities[c->bodyA] =
+            m3Sub3(world->angularVelocities[c->bodyA],
+                   m3MulMV3(c->invIA, m3Add3(m3Cross3(rA, c->impulse), angularImpulse)));
         world->linearVelocities[c->bodyB] =
             m3Add3(world->linearVelocities[c->bodyB], m3MulSV3(c->invMassB, c->impulse));
-        world->angularVelocities[c->bodyB] = m3Add3(world->angularVelocities[c->bodyB],
-                                                    m3MulMV3(c->invIB, m3Cross3(rB, c->impulse)));
+        world->angularVelocities[c->bodyB] =
+            m3Add3(world->angularVelocities[c->bodyB],
+                   m3MulMV3(c->invIB, m3Add3(m3Cross3(rB, c->impulse), angularImpulse)));
     }
 }
 
 static void SolveJoints(m3World* world, m3JointConstraint* joints, int32_t count,
-                        const m3Vec3* deltaPos, const m3Quat* deltaRot, int useBias)
+                        const m3Vec3* deltaPos, const m3Quat* deltaRot, m3real hSub, m3real invHSub,
+                        int useBias)
 {
     for (int32_t i = 0; i < count; ++i)
     {
@@ -375,6 +441,142 @@ static void SolveJoints(m3World* world, m3JointConstraint* joints, int32_t count
         m3Vec3 wA = world->angularVelocities[c->bodyA];
         m3Vec3 vB = world->linearVelocities[c->bodyB];
         m3Vec3 wB = world->angularVelocities[c->bodyB];
+
+        if (c->type == (uint8_t)m3_revoluteJoint)
+        {
+            // Substep frames and the relative rotation, sign-guarded
+            // so the angle lives in [-pi, pi] (the reference rule).
+            m3Quat quatA = m3MulQuat(deltaRot[c->bodyA], c->frameQA);
+            m3Quat quatB = m3MulQuat(deltaRot[c->bodyB], c->frameQB);
+            if (quatA.x * quatB.x + quatA.y * quatB.y + quatA.z * quatB.z + quatA.w * quatB.w <
+                0.0f)
+            {
+                quatB = (m3Quat){-quatB.x, -quatB.y, -quatB.z, -quatB.w};
+            }
+            m3Quat conjA = {-quatA.x, -quatA.y, -quatA.z, quatA.w};
+            m3Quat relQ = m3MulQuat(conjA, quatB);
+            m3Vec3 axis = c->rotationAxis;
+
+            if ((c->flags & 2) != 0)
+            {
+                // Motor: velocity drive with the torque-rate cap.
+                m3real cdot = m3Dot3(m3Sub3(wB, wA), axis) - c->motorSpeed;
+                m3real delta = -c->axialMass * cdot;
+                m3real newImpulse = c->motorImpulse + delta;
+                m3real maxImpulse = c->maxMotorTorque * hSub;
+                newImpulse = m3MaxF(-maxImpulse, m3MinF(maxImpulse, newImpulse));
+                delta = newImpulse - c->motorImpulse;
+                c->motorImpulse = newImpulse;
+                wA = m3Sub3(wA, m3MulSV3(delta, m3MulMV3(c->invIA, axis)));
+                wB = m3Add3(wB, m3MulSV3(delta, m3MulMV3(c->invIB, axis)));
+            }
+
+            if ((c->flags & 1) != 0)
+            {
+                // Twist angle about the hinge: 2 atan2(relQ.z, relQ.w).
+                m3real angle = 2.0f * m3Atan2(relQ.z, relQ.w);
+                // Lower limit.
+                {
+                    m3real cc = angle - c->lowerAngle;
+                    m3real bias = 0.0f;
+                    m3real massScale = 1.0f;
+                    m3real impulseScale = 0.0f;
+                    if (cc > 0.0f)
+                    {
+                        bias = cc * invHSub;
+                    }
+                    else if (useBias)
+                    {
+                        bias = c->softness.biasRate * cc;
+                        massScale = c->softness.massScale;
+                        impulseScale = c->softness.impulseScale;
+                    }
+                    m3real cdot = m3Dot3(m3Sub3(wB, wA), axis);
+                    m3real old = c->lowerImpulse;
+                    m3real delta = -massScale * c->axialMass * (cdot + bias) - impulseScale * old;
+                    c->lowerImpulse = m3MaxF(old + delta, 0.0f);
+                    delta = c->lowerImpulse - old;
+                    wA = m3Sub3(wA, m3MulSV3(delta, m3MulMV3(c->invIA, axis)));
+                    wB = m3Add3(wB, m3MulSV3(delta, m3MulMV3(c->invIB, axis)));
+                }
+                // Upper limit (signs flipped, the reference form).
+                {
+                    m3real cc = c->upperAngle - angle;
+                    m3real bias = 0.0f;
+                    m3real massScale = 1.0f;
+                    m3real impulseScale = 0.0f;
+                    if (cc > 0.0f)
+                    {
+                        bias = cc * invHSub;
+                    }
+                    else if (useBias)
+                    {
+                        bias = c->softness.biasRate * cc;
+                        massScale = c->softness.massScale;
+                        impulseScale = c->softness.impulseScale;
+                    }
+                    m3real cdot = m3Dot3(m3Sub3(wA, wB), axis);
+                    m3real old = c->upperImpulse;
+                    m3real delta = -massScale * c->axialMass * (cdot + bias) - impulseScale * old;
+                    c->upperImpulse = m3MaxF(old + delta, 0.0f);
+                    delta = c->upperImpulse - old;
+                    wA = m3Add3(wA, m3MulSV3(delta, m3MulMV3(c->invIA, axis)));
+                    wB = m3Sub3(wB, m3MulSV3(delta, m3MulMV3(c->invIB, axis)));
+                }
+            }
+
+            // Collinearity: lock the two off-axis rotations, 2x2.
+            {
+                m3Vec3 perpX = PerpColumn(quatA, relQ, (m3Vec3){1.0f, 0.0f, 0.0f});
+                m3Vec3 perpY = PerpColumn(quatA, relQ, (m3Vec3){0.0f, 1.0f, 0.0f});
+                c->perpAxisX = perpX;
+                c->perpAxisY = perpY;
+                m3real biasX = 0.0f;
+                m3real biasY = 0.0f;
+                m3real massScale = 1.0f;
+                m3real impulseScale = 0.0f;
+                if (useBias)
+                {
+                    biasX = c->softness.biasRate * relQ.x;
+                    biasY = c->softness.biasRate * relQ.y;
+                    massScale = c->softness.massScale;
+                    impulseScale = c->softness.impulseScale;
+                }
+                m3Vec3 sumX = m3Add3(m3MulMV3(c->invIA, perpX), m3MulMV3(c->invIB, perpX));
+                m3Vec3 sumY = m3Add3(m3MulMV3(c->invIA, perpY), m3MulMV3(c->invIB, perpY));
+                m3real kxx = m3Dot3(perpX, sumX);
+                m3real kyy = m3Dot3(perpY, sumY);
+                m3real kxy = m3Dot3(perpX, sumY);
+                m3Vec3 wRel = m3Sub3(wB, wA);
+                m3real cdotX = m3Dot3(wRel, perpX) + biasX;
+                m3real cdotY = m3Dot3(wRel, perpY) + biasY;
+                m3real det = kxx * kyy - kxy * kxy;
+                m3real solX = 0.0f;
+                m3real solY = 0.0f;
+                if (det != 0.0f)
+                {
+                    m3real inv = 1.0f / det;
+                    solX = inv * (kyy * cdotX - kxy * cdotY);
+                    solY = inv * (kxx * cdotY - kxy * cdotX);
+                }
+                m3real deltaX = -massScale * solX - impulseScale * c->perpImpulseX;
+                m3real deltaY = -massScale * solY - impulseScale * c->perpImpulseY;
+                c->perpImpulseX += deltaX;
+                c->perpImpulseY += deltaY;
+                m3Vec3 angular = m3Add3(m3MulSV3(deltaX, perpX), m3MulSV3(deltaY, perpY));
+                wA = m3Sub3(wA, m3MulMV3(c->invIA, angular));
+                wB = m3Add3(wB, m3MulMV3(c->invIB, angular));
+            }
+
+            world->angularVelocities[c->bodyA] = wA;
+            world->angularVelocities[c->bodyB] = wB;
+            // Fall through to the shared point constraint below with
+            // refreshed local copies.
+            vA = world->linearVelocities[c->bodyA];
+            wA = world->angularVelocities[c->bodyA];
+            vB = world->linearVelocities[c->bodyB];
+            wB = world->angularVelocities[c->bodyB];
+        }
 
         m3Vec3 cdot = m3Sub3(m3Add3(vB, m3Cross3(wB, rB)), m3Add3(vA, m3Cross3(wA, rA)));
 
@@ -426,7 +628,11 @@ static void StoreJointImpulses(m3World* world, m3JointConstraint* joints, int32_
 {
     for (int32_t i = 0; i < count; ++i)
     {
-        world->jointImpulse[joints[i].joint] = joints[i].impulse;
+        const m3JointConstraint* c = &joints[i];
+        world->jointImpulse[c->joint] = c->impulse;
+        world->jointPerpImpulse[c->joint] =
+            (m3Vec3){c->perpImpulseX, c->perpImpulseY, c->motorImpulse};
+        world->jointLimitImpulse[c->joint] = (m3Vec3){c->lowerImpulse, c->upperImpulse, 0.0f};
     }
 }
 
@@ -1382,7 +1588,7 @@ void m3StepInternal(m3World* world, float dt, int32_t substeps)
 
         WarmStartJoints(world, jointConstraints, jointCount, deltaRot);
         RunColored(world, &coloring, constraints, deltaPos, deltaRot, invH, 0, 1);
-        SolveJoints(world, jointConstraints, jointCount, deltaPos, deltaRot, 1);
+        SolveJoints(world, jointConstraints, jointCount, deltaPos, deltaRot, h, invH, 1);
         RunColored(world, &coloring, constraints, deltaPos, deltaRot, invH, 1, 0);
 
         // Integrate positions and accumulate the substep deltas the
@@ -1417,7 +1623,7 @@ void m3StepInternal(m3World* world, float dt, int32_t substeps)
         }
 
         // Relax: remove the bias energy (reference schedule).
-        SolveJoints(world, jointConstraints, jointCount, deltaPos, deltaRot, 0);
+        SolveJoints(world, jointConstraints, jointCount, deltaPos, deltaRot, h, invH, 0);
         RunColored(world, &coloring, constraints, deltaPos, deltaRot, invH, 0, 0);
     }
 

@@ -245,12 +245,154 @@ static void TestJointContracts(void)
     m3DestroyWorld(world);
 }
 
+static m3BodyId MakeDoor(m3WorldId world, m3JointDef* jdOut)
+{
+    // A door panel hinged to a static post on the y axis: the hinge
+    // line passes through x = 0, the panel extends to +x.
+    m3BodyDef pd = m3DefaultBodyDef();
+    m3BodyId post = m3CreateBody(world, &pd);
+
+    m3BodyDef bd = m3DefaultBodyDef();
+    bd.type = m3_dynamicBody;
+    bd.position = (m3Pos3){0.5, 0.0, 0.0};
+    m3BodyId door = m3CreateBody(world, &bd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    m3CreateBoxShape(door, &sd, (m3Vec3){0.5f, 1.0f, 0.05f});
+
+    m3JointDef jd = m3DefaultJointDef();
+    jd.type = m3_revoluteJoint;
+    jd.bodyA = post;
+    jd.bodyB = door;
+    jd.localAnchorA = (m3Vec3){0.0f, 0.0f, 0.0f};
+    jd.localAnchorB = (m3Vec3){-0.5f, 0.0f, 0.0f};
+    jd.localAxisA = (m3Vec3){0.0f, 1.0f, 0.0f};
+    jd.localAxisB = (m3Vec3){0.0f, 1.0f, 0.0f};
+    *jdOut = jd;
+    return door;
+}
+
+static double DoorAngle(m3BodyId door)
+{
+    // The hinge axis is world y and the door starts along +x, so the
+    // yaw of the body quaternion IS the door angle (collinearity
+    // keeps the other two rotations locked).
+    m3Quat q = m3Body_GetRotation(door);
+    return 2.0 * (double)m3Atan2(q.y, q.w);
+}
+
+static void TestDoorSwings(void)
+{
+    // Gravity off: a pushed door spins about the hinge axis only,
+    // the hinge line never drifts, and no off-axis rotation leaks.
+    m3WorldDef def = m3DefaultWorldDef();
+    def.gravity = (m3Vec3){0.0f, 0.0f, 0.0f};
+    def.bodyCapacity = 8;
+    def.shapeCapacity = 8;
+    m3WorldId world = m3CreateWorld(&def);
+    m3JointDef jd;
+    m3BodyId door = MakeDoor(world, &jd);
+    CHECK(m3Joint_IsValid(m3CreateJoint(&jd)), "the hinge creates");
+    m3Body_SetAngularVelocity(door, (m3Vec3){0.0f, 2.0f, 0.0f});
+
+    double maxDrift = 0.0;
+    double maxOffAxis = 0.0;
+    for (int32_t i = 0; i < 240; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+        m3Pos3 p = m3Body_GetPosition(door);
+        m3Quat q = m3Body_GetRotation(door);
+        m3Vec3 hinge = m3RotateVec3(q, (m3Vec3){-0.5f, 0.0f, 0.0f});
+        double hx = p.x + (double)hinge.x;
+        double hy = p.y + (double)hinge.y;
+        double hz = p.z + (double)hinge.z;
+        double drift = hx * hx + hy * hy + hz * hz;
+        maxDrift = drift > maxDrift ? drift : maxDrift;
+        double off = (double)(q.x * q.x + q.z * q.z); // yaw-only means x, z stay zero
+        maxOffAxis = off > maxOffAxis ? off : maxOffAxis;
+    }
+    CHECK(maxDrift < 0.0005, "the hinge line never drifts");
+    CHECK(maxOffAxis < 0.001, "no off-axis rotation leaks");
+    m3DestroyWorld(world);
+}
+
+static void TestDoorLimits(void)
+{
+    // Limits at plus and minus a quarter turn: a hard shove never
+    // carries the door past the stops (plus the speculative band).
+    m3WorldDef def = m3DefaultWorldDef();
+    def.gravity = (m3Vec3){0.0f, 0.0f, 0.0f};
+    def.bodyCapacity = 8;
+    def.shapeCapacity = 8;
+    m3WorldId world = m3CreateWorld(&def);
+    m3JointDef jd;
+    m3BodyId door = MakeDoor(world, &jd);
+    jd.enableLimit = true;
+    jd.lowerAngle = -0.7854f;
+    jd.upperAngle = 0.7854f;
+    CHECK(m3Joint_IsValid(m3CreateJoint(&jd)), "the limited hinge creates");
+    m3Body_SetAngularVelocity(door, (m3Vec3){0.0f, 12.0f, 0.0f});
+
+    double maxAngle = 0.0;
+    for (int32_t i = 0; i < 240; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+        if (i == 120)
+        {
+            m3Body_SetAngularVelocity(door, (m3Vec3){0.0f, -12.0f, 0.0f});
+        }
+        double a = DoorAngle(door);
+        double mag = a < 0.0 ? -a : a;
+        maxAngle = mag > maxAngle ? mag : maxAngle;
+    }
+    CHECK(maxAngle < 0.83, "the stops hold against a hard shove both ways");
+    CHECK(maxAngle > 0.70, "the door actually reached the stops");
+    m3DestroyWorld(world);
+}
+
+static void TestDoorMotor(void)
+{
+    // A strong motor reaches its commanded speed; a feeble motor
+    // against the same door proves the torque cap (it cannot).
+    for (int32_t variant = 0; variant < 2; ++variant)
+    {
+        m3WorldDef def = m3DefaultWorldDef();
+        def.gravity = (m3Vec3){0.0f, 0.0f, 0.0f};
+        def.bodyCapacity = 8;
+        def.shapeCapacity = 8;
+        m3WorldId world = m3CreateWorld(&def);
+        m3JointDef jd;
+        m3BodyId door = MakeDoor(world, &jd);
+        jd.enableMotor = true;
+        jd.motorSpeed = 2.0f;
+        jd.maxMotorTorque = variant == 0 ? 50.0f : 0.02f;
+        CHECK(m3Joint_IsValid(m3CreateJoint(&jd)), "the motored hinge creates");
+
+        for (int32_t i = 0; i < 120; ++i)
+        {
+            m3World_Step(world, 1.0f / 60.0f, 4);
+        }
+        m3Vec3 w = m3Body_GetAngularVelocity(door);
+        if (variant == 0)
+        {
+            CHECK(w.y > 1.9f && w.y < 2.1f, "the strong motor reaches its speed");
+        }
+        else
+        {
+            CHECK(w.y < 1.0f, "the feeble motor is honestly torque-capped");
+        }
+        m3DestroyWorld(world);
+    }
+}
+
 int main(void)
 {
     TestPendulum();
     TestChainSettlesAndSleeps();
     TestJointDeterminismSpine();
     TestJointContracts();
+    TestDoorSwings();
+    TestDoorLimits();
+    TestDoorMotor();
     if (s_failures == 0)
     {
         printf("test_joints: all checks passed\n");

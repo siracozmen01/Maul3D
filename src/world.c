@@ -142,6 +142,13 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     M3_ALLOC(world->jointLocalB, def->jointCapacity, m3Vec3);
     M3_ALLOC(world->jointCollide, def->jointCapacity, uint8_t);
     M3_ALLOC(world->jointImpulse, def->jointCapacity, m3Vec3);
+    M3_ALLOC(world->jointPerpImpulse, def->jointCapacity, m3Vec3);
+    M3_ALLOC(world->jointLimitImpulse, def->jointCapacity, m3Vec3);
+    M3_ALLOC(world->jointFrameQA, def->jointCapacity, m3Quat);
+    M3_ALLOC(world->jointFrameQB, def->jointCapacity, m3Quat);
+    M3_ALLOC(world->jointFlags, def->jointCapacity, uint8_t);
+    M3_ALLOC(world->jointMotor, def->jointCapacity, m3Vec3);
+    M3_ALLOC(world->jointLimits, def->jointCapacity, m3Vec3);
     M3_ALLOC(world->jointNextA, def->jointCapacity, int32_t);
     M3_ALLOC(world->jointNextB, def->jointCapacity, int32_t);
     M3_ALLOC(world->bodyJointHead, cap, int32_t);
@@ -240,6 +247,13 @@ void m3DestroyWorld(m3WorldId worldId)
     m3Free(world->jointLocalB);
     m3Free(world->jointCollide);
     m3Free(world->jointImpulse);
+    m3Free(world->jointPerpImpulse);
+    m3Free(world->jointLimitImpulse);
+    m3Free(world->jointFrameQA);
+    m3Free(world->jointFrameQB);
+    m3Free(world->jointFlags);
+    m3Free(world->jointMotor);
+    m3Free(world->jointLimits);
     m3Free(world->jointNextA);
     m3Free(world->jointNextB);
     m3Free(world->bodyJointHead);
