@@ -33,6 +33,7 @@ extern "C"
         int32_t bodyCapacity;
         int32_t shapeCapacity;
         int32_t meshCapacity;         // static triangle-mesh slots (24 KB each)
+        int32_t jointCapacity;        // articulation slots (2c-2)
         int32_t workerCount;          // twin worlds with different counts must hash equal
         m3EnqueueTaskFn* enqueueTask; // both null = serial (the default)
         m3FinishTaskFn* finishTask;

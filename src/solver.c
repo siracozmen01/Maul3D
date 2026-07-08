@@ -276,6 +276,161 @@ static void SolveOneContact(m3World* world, m3ContactConstraint* c, const m3Vec3
 }
 
 // ---------------------------------------------------------------
+// Joints (2c-2): the spherical point constraint in soft-step form,
+// the reference schedule (joints warm start and solve BEFORE the
+// contacts inside every substep pass). Few joints, serial in
+// canonical index order; they join the color palette when counts
+// ever justify it (noted, not needed for correctness).
+// ---------------------------------------------------------------
+
+static m3Vec3 Solve3(const m3Mat3* J, m3Vec3 b); // defined with the gyroscopic block
+
+typedef struct m3JointConstraint
+{
+    int32_t joint; // world joint slot (impulse written back at store)
+    int32_t bodyA;
+    int32_t bodyB;
+    m3Vec3 rA; // COM-relative anchors, world-rotated at prepare
+    m3Vec3 rB;
+    m3Vec3 deltaCenter; // cB - cA at prepare
+    m3real invMassA;
+    m3real invMassB;
+    m3Mat3 invIA;
+    m3Mat3 invIB;
+    m3Softness softness;
+    m3Vec3 impulse;
+} m3JointConstraint;
+
+static int32_t PrepareJoints(m3World* world, m3JointConstraint* joints, m3real h)
+{
+    int32_t count = 0;
+    int32_t maxJoint = world->jointPool.maxIndex;
+    for (int32_t j = 0; j < maxJoint; ++j)
+    {
+        if (world->jointPool.alive[j] == 0)
+        {
+            continue;
+        }
+        int32_t bodyA = world->jointBodyA[j];
+        int32_t bodyB = world->jointBodyB[j];
+        int awakeDynA = world->types[bodyA] == (uint8_t)m3_dynamicBody && world->awake[bodyA];
+        int awakeDynB = world->types[bodyB] == (uint8_t)m3_dynamicBody && world->awake[bodyB];
+        if (!awakeDynA && !awakeDynB)
+        {
+            continue; // both sides frozen or immovable
+        }
+        m3JointConstraint* c = &joints[count];
+        count += 1;
+        c->joint = j;
+        c->bodyA = bodyA;
+        c->bodyB = bodyB;
+        const m3Transform* xfA = &world->transforms[bodyA];
+        const m3Transform* xfB = &world->transforms[bodyB];
+        c->rA = m3RotateVec3(xfA->q, m3Sub3(world->jointLocalA[j], world->localCenters[bodyA]));
+        c->rB = m3RotateVec3(xfB->q, m3Sub3(world->jointLocalB[j], world->localCenters[bodyB]));
+        m3Vec3 rlcA = m3RotateVec3(xfA->q, world->localCenters[bodyA]);
+        m3Vec3 rlcB = m3RotateVec3(xfB->q, world->localCenters[bodyB]);
+        c->deltaCenter = (m3Vec3){(m3real)(xfB->p.x + (double)rlcB.x - xfA->p.x - (double)rlcA.x),
+                                  (m3real)(xfB->p.y + (double)rlcB.y - xfA->p.y - (double)rlcA.y),
+                                  (m3real)(xfB->p.z + (double)rlcB.z - xfA->p.z - (double)rlcA.z)};
+        c->invMassA = world->types[bodyA] == (uint8_t)m3_dynamicBody ? world->invMass[bodyA] : 0.0f;
+        c->invMassB = world->types[bodyB] == (uint8_t)m3_dynamicBody ? world->invMass[bodyB] : 0.0f;
+        c->invIA = WorldInvInertia(world, bodyA);
+        c->invIB = WorldInvInertia(world, bodyB);
+        c->softness = MakeSoft(60.0f, 2.0f, h); // the reference joint stiffness
+        c->impulse = world->jointImpulse[j];
+    }
+    return count;
+}
+
+static void WarmStartJoints(m3World* world, m3JointConstraint* joints, int32_t count,
+                            const m3Quat* deltaRot)
+{
+    for (int32_t i = 0; i < count; ++i)
+    {
+        m3JointConstraint* c = &joints[i];
+        m3Vec3 rA = m3RotateVec3(deltaRot[c->bodyA], c->rA);
+        m3Vec3 rB = m3RotateVec3(deltaRot[c->bodyB], c->rB);
+        world->linearVelocities[c->bodyA] =
+            m3Sub3(world->linearVelocities[c->bodyA], m3MulSV3(c->invMassA, c->impulse));
+        world->angularVelocities[c->bodyA] = m3Sub3(world->angularVelocities[c->bodyA],
+                                                    m3MulMV3(c->invIA, m3Cross3(rA, c->impulse)));
+        world->linearVelocities[c->bodyB] =
+            m3Add3(world->linearVelocities[c->bodyB], m3MulSV3(c->invMassB, c->impulse));
+        world->angularVelocities[c->bodyB] = m3Add3(world->angularVelocities[c->bodyB],
+                                                    m3MulMV3(c->invIB, m3Cross3(rB, c->impulse)));
+    }
+}
+
+static void SolveJoints(m3World* world, m3JointConstraint* joints, int32_t count,
+                        const m3Vec3* deltaPos, const m3Quat* deltaRot, int useBias)
+{
+    for (int32_t i = 0; i < count; ++i)
+    {
+        m3JointConstraint* c = &joints[i];
+        m3Vec3 rA = m3RotateVec3(deltaRot[c->bodyA], c->rA);
+        m3Vec3 rB = m3RotateVec3(deltaRot[c->bodyB], c->rB);
+
+        m3Vec3 vA = world->linearVelocities[c->bodyA];
+        m3Vec3 wA = world->angularVelocities[c->bodyA];
+        m3Vec3 vB = world->linearVelocities[c->bodyB];
+        m3Vec3 wB = world->angularVelocities[c->bodyB];
+
+        m3Vec3 cdot = m3Sub3(m3Add3(vB, m3Cross3(wB, rB)), m3Add3(vA, m3Cross3(wA, rA)));
+
+        m3Vec3 bias = {0.0f, 0.0f, 0.0f};
+        m3real massScale = 1.0f;
+        m3real impulseScale = 0.0f;
+        if (useBias)
+        {
+            // The raw anchor violation, the reference form: current
+            // anchor delta = COM drift + rotated anchors + the
+            // prepare-time center offset. No baseline subtraction:
+            // a satisfied joint has deltaCenter = rA0 - rB0 and the
+            // sum vanishes by itself.
+            m3Vec3 separation =
+                m3Add3(m3Add3(m3Sub3(deltaPos[c->bodyB], deltaPos[c->bodyA]), m3Sub3(rB, rA)),
+                       c->deltaCenter);
+            bias = m3MulSV3(c->softness.biasRate, separation);
+            massScale = c->softness.massScale;
+            impulseScale = c->softness.impulseScale;
+        }
+
+        // K = (mA + mB) I - skew(rA) iA skew(rA) - skew(rB) iB skew(rB),
+        // built column by column by applying the operator to the basis
+        // (no matrix-matrix helpers needed).
+        m3Mat3 k;
+        m3Vec3 basis[3] = {{1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f}};
+        m3Vec3* cols[3] = {&k.cx, &k.cy, &k.cz};
+        for (int32_t a = 0; a < 3; ++a)
+        {
+            m3Vec3 e = basis[a];
+            m3Vec3 tA = m3Cross3(rA, m3MulMV3(c->invIA, m3Cross3(rA, e)));
+            m3Vec3 tB = m3Cross3(rB, m3MulMV3(c->invIB, m3Cross3(rB, e)));
+            m3Vec3 col = m3Sub3(m3MulSV3(c->invMassA + c->invMassB, e), m3Add3(tA, tB));
+            *cols[a] = col;
+        }
+
+        m3Vec3 b = Solve3(&k, m3Add3(cdot, bias));
+        m3Vec3 impulse = m3Sub3(m3MulSV3(-massScale, b), m3MulSV3(impulseScale, c->impulse));
+        c->impulse = m3Add3(c->impulse, impulse);
+
+        world->linearVelocities[c->bodyA] = m3Sub3(vA, m3MulSV3(c->invMassA, impulse));
+        world->angularVelocities[c->bodyA] = m3Sub3(wA, m3MulMV3(c->invIA, m3Cross3(rA, impulse)));
+        world->linearVelocities[c->bodyB] = m3Add3(vB, m3MulSV3(c->invMassB, impulse));
+        world->angularVelocities[c->bodyB] = m3Add3(wB, m3MulMV3(c->invIB, m3Cross3(rB, impulse)));
+    }
+}
+
+static void StoreJointImpulses(m3World* world, m3JointConstraint* joints, int32_t count)
+{
+    for (int32_t i = 0; i < count; ++i)
+    {
+        world->jointImpulse[joints[i].joint] = joints[i].impulse;
+    }
+}
+
+// ---------------------------------------------------------------
 // Graph coloring (2b-12): constraints in one color share no awake
 // dynamic body, so any schedule inside a color writes disjoint
 // velocities and the bits cannot move. The greedy walk runs in
@@ -899,6 +1054,39 @@ static int32_t* IslandWakePass(m3World* world)
             }
         }
     }
+    // Joints couple islands exactly like touching contacts, and a
+    // moving kinematic partner is a wake source through a joint too.
+    int32_t maxJoint = world->jointPool.maxIndex;
+    for (int32_t j = 0; j < maxJoint; ++j)
+    {
+        if (world->jointPool.alive[j] == 0)
+        {
+            continue;
+        }
+        int32_t bodyA = world->jointBodyA[j];
+        int32_t bodyB = world->jointBodyB[j];
+        int dynA = world->types[bodyA] == (uint8_t)m3_dynamicBody;
+        int dynB = world->types[bodyB] == (uint8_t)m3_dynamicBody;
+        if (dynA && dynB)
+        {
+            IslandUnion(parent, bodyA, bodyB);
+        }
+        else if (dynA || dynB)
+        {
+            int32_t kin = dynA ? bodyB : bodyA;
+            int32_t dyn = dynA ? bodyA : bodyB;
+            if (world->types[kin] == (uint8_t)m3_kinematicBody)
+            {
+                m3Vec3 v = world->linearVelocities[kin];
+                m3Vec3 w = world->angularVelocities[kin];
+                if (m3Dot3(v, v) > 0.0f || m3Dot3(w, w) > 0.0f)
+                {
+                    forced[dyn] = 1;
+                }
+            }
+        }
+    }
+
     // Aggregate: does any island member demand wakefulness?
     for (int32_t i = 0; i < maxBody; ++i)
     {
@@ -1161,6 +1349,17 @@ void m3StepInternal(m3World* world, float dt, int32_t substeps)
         return;
     }
 
+    int32_t maxJointSlots = world->jointPool.maxIndex;
+    m3JointConstraint* jointConstraints = (m3JointConstraint*)m3StackAlloc(
+        &world->scratch, maxJointSlots > 0 ? maxJointSlots * (int32_t)sizeof(m3JointConstraint)
+                                           : (int32_t)sizeof(m3JointConstraint));
+    if (jointConstraints == NULL)
+    {
+        M3_ASSERT(false);
+        return;
+    }
+    int32_t jointCount = PrepareJoints(world, jointConstraints, h);
+
     for (int32_t sub = 0; sub < substeps; ++sub)
     {
         // Integrate velocities (fixed body order): gravity, damping.
@@ -1181,7 +1380,9 @@ void m3StepInternal(m3World* world, float dt, int32_t substeps)
             world->angularVelocities[i] = w;
         }
 
+        WarmStartJoints(world, jointConstraints, jointCount, deltaRot);
         RunColored(world, &coloring, constraints, deltaPos, deltaRot, invH, 0, 1);
+        SolveJoints(world, jointConstraints, jointCount, deltaPos, deltaRot, 1);
         RunColored(world, &coloring, constraints, deltaPos, deltaRot, invH, 1, 0);
 
         // Integrate positions and accumulate the substep deltas the
@@ -1216,11 +1417,13 @@ void m3StepInternal(m3World* world, float dt, int32_t substeps)
         }
 
         // Relax: remove the bias energy (reference schedule).
+        SolveJoints(world, jointConstraints, jointCount, deltaPos, deltaRot, 0);
         RunColored(world, &coloring, constraints, deltaPos, deltaRot, invH, 0, 0);
     }
 
     Restitution(world, constraints, constraintCount);
     StoreImpulses(world, constraints, constraintCount);
+    StoreJointImpulses(world, jointConstraints, jointCount);
 
     SolveContinuousPhase(world, com0, rot0);
     IslandSleepPass(world, islandParent, com0, rot0, dt);

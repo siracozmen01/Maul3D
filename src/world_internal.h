@@ -13,6 +13,7 @@
 #include "dynamic_tree.h"
 
 #include "maul3d/body.h"
+#include "maul3d/joint.h"
 #include "maul3d/shape.h"
 #include "maul3d/world.h"
 
@@ -22,7 +23,7 @@
 // integration order, constants). Part of the snapshot config hash, so
 // a snapshot from a different behavior revision is refused loudly
 // instead of silently diverging (the Jolt friction-model lesson).
-#define M3_SOLVER_REV 13 // rev 13: graph-colored solve order
+#define M3_SOLVER_REV 14 // rev 14: joints (spherical), jointed-pair filter
 
 // Def cookies: a def that did not come from its m3Default*Def factory
 // is rejected loudly (the Maul2D pattern).
@@ -47,6 +48,8 @@ typedef enum m3Op
     m3_opCreateShape = 6,
     m3_opCreateHullShape = 7, // carries the input points (the recipe)
     m3_opCreateMeshShape = 8, // header + exact-size vertex/index payload
+    m3_opCreateJoint = 9,
+    m3_opDestroyJoint = 10,
 } m3Op;
 
 // Immutable interned hull data (lifetime 3): vertices, face planes,
@@ -193,6 +196,12 @@ typedef struct m3CreateMeshShapeOp
     int32_t triangleCount;
 } m3CreateMeshShapeOp;
 
+typedef struct m3CreateJointOp
+{
+    m3JointDef def;
+    m3JointId expected;
+} m3CreateJointOp;
+
 typedef struct m3CreateHullShapeOp
 {
     m3ShapeDef def;
@@ -278,6 +287,23 @@ typedef struct m3World
     m3Manifold* manifolds;
     int32_t pairCount;
     int32_t pairCapacity;
+
+    // Joints (2c-2): SoA arenas, all persistent snapshot state. The
+    // warm-start impulse is simulation state (the architecture doc
+    // names it); the body lists drive the jointed-pair contact
+    // filter, the destroy cascade, and island coupling.
+    m3IdPool jointPool;
+    uint8_t* jointType;
+    int32_t* jointBodyA;
+    int32_t* jointBodyB;
+    m3Vec3* jointLocalA;
+    m3Vec3* jointLocalB;
+    uint8_t* jointCollide;
+    m3Vec3* jointImpulse; // warm-start linear impulse
+    int32_t* bodyJointHead;
+    int32_t* jointNextA; // next joint in body A's list
+    int32_t* jointNextB; // next joint in body B's list
+    int32_t jointCapacity;
 
     // Contact events (transient observers, never snapshotted;
     // cleared on step and on restore).
@@ -483,5 +509,9 @@ m3Manifold m3CollidePlaneSphere(m3Vec3 planeNormal, m3real dist, m3real radius);
 void m3StepInternal(m3World* world, float dt, int32_t substeps);
 
 void m3JournalRecord(m3World* world, int32_t op, const void* payload, int32_t bytes);
+
+int32_t m3JointSlot(const m3World* world, m3JointId jointId);
+int32_t m3CreateJointInternal(m3World* world, const m3JointDef* def, int32_t bodyA, int32_t bodyB);
+void m3DestroyJointInternal(m3World* world, int32_t index);
 
 #endif // MAUL3D_WORLD_INTERNAL_H

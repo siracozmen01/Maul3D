@@ -22,7 +22,7 @@
 #endif
 
 #define M3_SNAPSHOT_MAGIC   0x4D33534Eu // 'M3SN'
-#define M3_SNAPSHOT_VERSION 13u         // v13: mesh edge flags
+#define M3_SNAPSHOT_VERSION 14u         // v14: joints
 
 // The math types are canonical field data only because they are
 // provably padding-free; a change here is a format version bump.
@@ -60,11 +60,16 @@ typedef struct m3SnapshotHeader
     int32_t meshFreeHead;
     int32_t meshFreeCount;
     int32_t meshRetiredCount;
-    int32_t reserved; // keeps the 8-byte-aligned header padding-free
+    int32_t jointCapacity;
+    int32_t jointMaxIndex;
+    int32_t jointFreeHead;
+    int32_t jointFreeCount;
+    int32_t jointRetiredCount;
+    int32_t reserved[2]; // keeps the 8-byte-aligned header padding-free
     m3Vec3 gravity;
 } m3SnapshotHeader;
 
-_Static_assert(sizeof(m3SnapshotHeader) == 128, "snapshot header must be padding-free");
+_Static_assert(sizeof(m3SnapshotHeader) == 152, "snapshot header must be padding-free");
 
 static uint64_t ConfigHash(void)
 {
@@ -170,6 +175,19 @@ static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3Wal
     M3_BLOCK(world->meshPool.generations, world->meshCapacity * (int32_t)sizeof(uint16_t));
     M3_BLOCK(world->meshPool.alive, world->meshCapacity * (int32_t)sizeof(uint8_t));
     M3_BLOCK(world->meshPool.freeQueue, world->meshCapacity * (int32_t)sizeof(int32_t));
+    M3_BLOCK(world->jointType, world->jointCapacity * (int32_t)sizeof(uint8_t));
+    M3_BLOCK(world->jointBodyA, world->jointCapacity * (int32_t)sizeof(int32_t));
+    M3_BLOCK(world->jointBodyB, world->jointCapacity * (int32_t)sizeof(int32_t));
+    M3_BLOCK(world->jointLocalA, world->jointCapacity * (int32_t)sizeof(m3Vec3));
+    M3_BLOCK(world->jointLocalB, world->jointCapacity * (int32_t)sizeof(m3Vec3));
+    M3_BLOCK(world->jointCollide, world->jointCapacity * (int32_t)sizeof(uint8_t));
+    M3_BLOCK(world->jointImpulse, world->jointCapacity * (int32_t)sizeof(m3Vec3));
+    M3_BLOCK(world->jointNextA, world->jointCapacity * (int32_t)sizeof(int32_t));
+    M3_BLOCK(world->jointNextB, world->jointCapacity * (int32_t)sizeof(int32_t));
+    M3_BLOCK(world->bodyJointHead, cap * (int32_t)sizeof(int32_t));
+    M3_BLOCK(world->jointPool.generations, world->jointCapacity * (int32_t)sizeof(uint16_t));
+    M3_BLOCK(world->jointPool.alive, world->jointCapacity * (int32_t)sizeof(uint8_t));
+    M3_BLOCK(world->jointPool.freeQueue, world->jointCapacity * (int32_t)sizeof(int32_t));
     M3_BLOCK(world->manifolds, world->pairCapacity * (int32_t)sizeof(m3Manifold));
 
 #undef M3_BLOCK
@@ -223,8 +241,14 @@ int32_t m3World_Snapshot(m3WorldId worldId, void* out, int32_t capacity)
     header.hullFreeHead = world->hullPool.freeHead;
     header.hullFreeCount = world->hullPool.freeCount;
     header.hullRetiredCount = world->hullPool.retiredCount;
-    header.reserved = 0;
+    header.reserved[0] = 0;
+    header.reserved[1] = 0;
     header.meshCapacity = world->meshCapacity;
+    header.jointCapacity = world->jointCapacity;
+    header.jointMaxIndex = world->jointPool.maxIndex;
+    header.jointFreeHead = world->jointPool.freeHead;
+    header.jointFreeCount = world->jointPool.freeCount;
+    header.jointRetiredCount = world->jointPool.retiredCount;
     header.meshMaxIndex = world->meshPool.maxIndex;
     header.meshFreeHead = world->meshPool.freeHead;
     header.meshFreeCount = world->meshPool.freeCount;
@@ -248,7 +272,8 @@ bool m3World_Restore(m3WorldId worldId, const void* data, int32_t size)
     memcpy(&header, data, sizeof(header));
     if (header.magic != M3_SNAPSHOT_MAGIC || header.formatVersion != M3_SNAPSHOT_VERSION ||
         header.configHash != ConfigHash() || header.bodyCapacity != world->bodyCapacity ||
-        header.shapeCapacity != world->shapeCapacity || header.meshCapacity != world->meshCapacity)
+        header.shapeCapacity != world->shapeCapacity ||
+        header.meshCapacity != world->meshCapacity || header.jointCapacity != world->jointCapacity)
     {
         // Wrong world shape or wrong build semantics: refuse loudly,
         // never a partial restore.
@@ -274,6 +299,10 @@ bool m3World_Restore(m3WorldId worldId, const void* data, int32_t size)
     world->pairCount = header.pairCount;
     world->tree.root = header.treeRoot;
     world->tree.freeList = header.treeFreeList;
+    world->jointPool.maxIndex = header.jointMaxIndex;
+    world->jointPool.freeHead = header.jointFreeHead;
+    world->jointPool.freeCount = header.jointFreeCount;
+    world->jointPool.retiredCount = header.jointRetiredCount;
     world->meshPool.maxIndex = header.meshMaxIndex;
     world->meshPool.freeHead = header.meshFreeHead;
     world->meshPool.freeCount = header.meshFreeCount;
@@ -341,6 +370,23 @@ uint64_t m3World_Hash(m3WorldId worldId)
         h = m3Hash64(h, &world->shapeHullIndex[i], 4);
         h = m3Hash64(h, &world->shapeMeshIndex[i], 4);
     }
+    int32_t maxJoint = world->jointPool.maxIndex;
+    for (int32_t i = 0; i < maxJoint; ++i)
+    {
+        uint8_t alive = world->jointPool.alive[i];
+        h = m3Hash64(h, &alive, 1);
+        if (alive == 0)
+        {
+            continue;
+        }
+        h = m3Hash64(h, &world->jointType[i], 1);
+        h = m3Hash64(h, &world->jointBodyA[i], 4);
+        h = m3Hash64(h, &world->jointBodyB[i], 4);
+        h = m3Hash64(h, &world->jointLocalA[i], (int32_t)sizeof(m3Vec3));
+        h = m3Hash64(h, &world->jointLocalB[i], (int32_t)sizeof(m3Vec3));
+        h = m3Hash64(h, &world->jointImpulse[i], (int32_t)sizeof(m3Vec3));
+    }
+
     // Pairs and manifolds: warm-start impulses are simulation state
     // (they steer the next solve), so they are part of what the world
     // IS.

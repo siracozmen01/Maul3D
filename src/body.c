@@ -77,6 +77,11 @@ int32_t m3CreateBodyInternal(m3World* world, const m3BodyDef* def)
 
 void m3DestroyBodyInternal(m3World* world, int32_t index)
 {
+    // Destroy attached joints first (the cascade, like shapes).
+    while (world->bodyJointHead[index] != -1)
+    {
+        m3DestroyJointInternal(world, world->bodyJointHead[index]);
+    }
     // Cascade: a body takes its shapes with it (each destroy unlinks
     // the list head, so this drains deterministically).
     while (world->bodyShapeHead[index] != -1)

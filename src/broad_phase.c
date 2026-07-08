@@ -130,6 +130,18 @@ static int PairAllowed(const m3World* world, int32_t i, int32_t j)
     {
         return 0;
     }
+    // Jointed bodies skip contact unless the joint says otherwise
+    // (the chain-fight guard, 2c-2). Walk the shorter list.
+    for (int32_t jt = world->bodyJointHead[bodyI]; jt != -1;
+         jt = world->jointBodyA[jt] == bodyI ? world->jointNextA[jt] : world->jointNextB[jt])
+    {
+        int32_t other =
+            world->jointBodyA[jt] == bodyI ? world->jointBodyB[jt] : world->jointBodyA[jt];
+        if (other == bodyJ && world->jointCollide[jt] == 0)
+        {
+            return 0;
+        }
+    }
     return 1;
 }
 

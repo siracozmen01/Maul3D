@@ -38,6 +38,7 @@ m3WorldDef m3DefaultWorldDef(void)
     def.bodyCapacity = 1024;
     def.shapeCapacity = 2048;
     def.meshCapacity = 4;
+    def.jointCapacity = 64;
     def.workerCount = 1;
     def.internalValue = M3_WORLD_COOKIE;
     return def;
@@ -47,8 +48,8 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
 {
     m3WorldId nullId = {0, 0};
     if (def == NULL || def->internalValue != M3_WORLD_COOKIE || def->bodyCapacity <= 0 ||
-        def->shapeCapacity <= 0 || def->meshCapacity <= 0 || def->workerCount <= 0 ||
-        (def->enqueueTask == NULL) != (def->finishTask == NULL))
+        def->shapeCapacity <= 0 || def->meshCapacity <= 0 || def->jointCapacity <= 0 ||
+        def->workerCount <= 0 || (def->enqueueTask == NULL) != (def->finishTask == NULL))
     {
         // User-input validation is contract, not invariant: the API
         // promises a null id for a bad def (tests exercise this), so
@@ -77,6 +78,7 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     world->bodyCapacity = cap;
     world->shapeCapacity = def->shapeCapacity;
     world->meshCapacity = def->meshCapacity;
+    world->jointCapacity = def->jointCapacity;
     world->workerCount = def->workerCount;
     world->enqueueTask = def->enqueueTask;
     world->finishTask = def->finishTask;
@@ -132,6 +134,28 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     world->hullPool = m3IdPoolCreate(shapeCap);
     M3_ALLOC(world->hullData, shapeCap, m3HullData);
     M3_ALLOC(world->hullRefCounts, shapeCap, int32_t);
+    world->jointPool = m3IdPoolCreate(def->jointCapacity);
+    M3_ALLOC(world->jointType, def->jointCapacity, uint8_t);
+    M3_ALLOC(world->jointBodyA, def->jointCapacity, int32_t);
+    M3_ALLOC(world->jointBodyB, def->jointCapacity, int32_t);
+    M3_ALLOC(world->jointLocalA, def->jointCapacity, m3Vec3);
+    M3_ALLOC(world->jointLocalB, def->jointCapacity, m3Vec3);
+    M3_ALLOC(world->jointCollide, def->jointCapacity, uint8_t);
+    M3_ALLOC(world->jointImpulse, def->jointCapacity, m3Vec3);
+    M3_ALLOC(world->jointNextA, def->jointCapacity, int32_t);
+    M3_ALLOC(world->jointNextB, def->jointCapacity, int32_t);
+    M3_ALLOC(world->bodyJointHead, cap, int32_t);
+    for (int32_t i = 0; i < def->jointCapacity; ++i)
+    {
+        world->jointBodyA[i] = -1;
+        world->jointBodyB[i] = -1;
+        world->jointNextA[i] = -1;
+        world->jointNextB[i] = -1;
+    }
+    for (int32_t i = 0; i < cap; ++i)
+    {
+        world->bodyJointHead[i] = -1;
+    }
     world->meshPool = m3IdPoolCreate(def->meshCapacity);
     M3_ALLOC(world->meshData, def->meshCapacity, m3MeshData);
     M3_ALLOC(world->meshRefCounts, def->meshCapacity, int32_t);
@@ -208,6 +232,17 @@ void m3DestroyWorld(m3WorldId worldId)
     m3IdPoolDestroy(&world->hullPool);
     m3Free(world->hullData);
     m3Free(world->hullRefCounts);
+    m3IdPoolDestroy(&world->jointPool);
+    m3Free(world->jointType);
+    m3Free(world->jointBodyA);
+    m3Free(world->jointBodyB);
+    m3Free(world->jointLocalA);
+    m3Free(world->jointLocalB);
+    m3Free(world->jointCollide);
+    m3Free(world->jointImpulse);
+    m3Free(world->jointNextA);
+    m3Free(world->jointNextB);
+    m3Free(world->bodyJointHead);
     m3IdPoolDestroy(&world->meshPool);
     m3Free(world->meshData);
     m3Free(world->meshRefCounts);
@@ -516,6 +551,47 @@ bool m3World_JournalReplay(m3WorldId worldId, const void* data, int32_t size)
             {
                 return false; // id determinism holds for mesh shapes too
             }
+            break;
+        }
+        case m3_opCreateJoint:
+        {
+            m3CreateJointOp record;
+            if (bytes != (int32_t)sizeof(record))
+            {
+                return false;
+            }
+            memcpy(&record, payload, sizeof(record));
+            record.def.bodyA.world0 = world->worldIndex0;
+            record.def.bodyB.world0 = world->worldIndex0;
+            int32_t bodyA = m3BodySlot(world, record.def.bodyA);
+            int32_t bodyB = m3BodySlot(world, record.def.bodyB);
+            if (bodyA < 0 || bodyB < 0)
+            {
+                return false;
+            }
+            int32_t index = m3CreateJointInternal(world, &record.def, bodyA, bodyB);
+            if (index < 0 || index + 1 != record.expected.index1 ||
+                world->jointPool.generations[index] != record.expected.generation)
+            {
+                return false; // id determinism holds for joints too
+            }
+            break;
+        }
+        case m3_opDestroyJoint:
+        {
+            m3JointId id;
+            if (bytes != (int32_t)sizeof(id))
+            {
+                return false;
+            }
+            memcpy(&id, payload, sizeof(id));
+            id.world0 = world->worldIndex0;
+            int32_t index = m3JointSlot(world, id);
+            if (index < 0)
+            {
+                return false;
+            }
+            m3DestroyJointInternal(world, index);
             break;
         }
         case m3_opCreateHullShape:

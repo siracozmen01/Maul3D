@@ -58,6 +58,16 @@ extern "C"
         uint16_t generation;
     } m3ShapeId;
 
+    /// Joint handle, same 8-byte law as bodies and shapes.
+    typedef struct m3JointId
+    {
+        int32_t index1; // 1-based, 0 = null
+        uint16_t world0;
+        uint16_t generation;
+    } m3JointId;
+
+    static const m3JointId m3_nullJointId = {0, 0, 0};
+
     /// FNV-1a 64: the deterministic hash every gate is built on.
     /// Seed with M3_HASH_INIT, fold bytes in canonical order.
 #define M3_HASH_INIT 0xCBF29CE484222325ull

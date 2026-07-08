@@ -15,6 +15,7 @@ add_library(maul3d STATIC
     src/hull.c
     src/manifold.c
     src/quickhull.c
+    src/joint.c
     src/raycast.c
     src/math_functions.c
     src/shape.c
@@ -90,6 +91,11 @@ add_test(NAME queries COMMAND test_queries)
 add_executable(maul3d_bench bench/bench_main.c)
 target_link_libraries(maul3d_bench PRIVATE maul3d)
 maul3d_apply_flags(maul3d_bench)
+
+add_executable(test_joints test/test_joints.c)
+target_link_libraries(test_joints PRIVATE maul3d)
+maul3d_apply_flags(test_joints)
+add_test(NAME joints COMMAND test_joints)
 
 add_executable(test_hardening test/test_hardening.c)
 target_link_libraries(test_hardening PRIVATE maul3d)
