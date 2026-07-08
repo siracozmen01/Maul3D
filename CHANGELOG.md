@@ -4,6 +4,40 @@ All notable changes to Maul3D. Versions are tags on green CI SHAs;
 every entry's determinism gates were verified across all CI cells at
 tag time.
 
+## v1.1 (2026-07-08)
+
+The game-ready release: generic shape casts, the full joint set,
+and a character controller, all additive under the 1.x freeze.
+
+- Box and hull casts (`m3World_CastBoxClosest`,
+  `m3World_CastHullClosest`): oriented boxes and 24-point clouds
+  through the existing TOI kernel; skinless casts legal for real
+  clouds.
+- `m3_fixedJoint` (weld: create pose is the weld pose) and
+  `m3_distanceJoint` (rope, rod, soft spring; bias-pass-only
+  spring so relax cannot deaden it).
+- `m3_genericJoint`: per-axis lock/free/limited plus one motor on
+  any movable axis; the v1 angular contract (one limited angular
+  axis, neighbors both locked or both free).
+- The character controller: kinematic capsule, journaled
+  `m3Character_Move`, collide and slide, walkable slope law, snap,
+  step-up with the forward-probe floor classifier, dt-free push
+  contract (impulse = mass * blocked displacement, mass-ratio
+  cap), riders carried by their floor's rigid motion through the
+  slide casts, same-step airborne on carved floors, ground body
+  API.
+- The caster's float budget: any cast or move translation
+  component beyond 1e18 misses (or no-ops) by contract instead of
+  minting NaN.
+- Solver rev 19: the prismatic rotation-lock bias sign (a latent
+  positive-feedback amplifier no prismatic scene could express;
+  the weld found it).
+- Snapshot format v23 (character pool, stepHeight, mass, push
+  ratio, ground-body reference, generic joint state).
+- MANUAL chapters: shape casts, joints, the character controller.
+- Testbed: a playable character scene (WASD walk, carve the fort
+  from under your own feet).
+
 ## v1.0 (2026-07-08)
 
 The destruction phase (3), and the freeze. Voxel chunk shapes

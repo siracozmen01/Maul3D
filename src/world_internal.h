@@ -751,6 +751,12 @@ m3Manifold m3CollideSpheres(m3Vec3 d, m3real radiusA, m3real radiusB);
 m3Manifold m3CollidePlaneSphere(m3Vec3 planeNormal, m3real dist, m3real radius);
 
 // The step body: the journal replays through this exact path.
+// The caster's float budget (4-7 red team): a translation
+// component beyond this squares past FLT_MAX inside the kernels
+// and mints NaN. Every cast path refuses longer translations with
+// a documented miss; the character treats them as hostile no-ops.
+#define M3_CAST_LIMIT 1.0e18f
+
 void m3StepInternal(m3World* world, float dt, int32_t substeps);
 m3Mat3 m3WorldInvInertia(const m3World* world, int32_t body);
 void m3CharacterCarryRiders(m3World* world, const m3Pos3* com0, const m3Quat* rot0);

@@ -486,9 +486,14 @@ void m3Character_Move(m3CharacterId characterId, m3Vec3 translation)
 {
     m3World* world = m3WorldFromIndex0(characterId.world0);
     int32_t slot = world != NULL ? m3CharacterSlot(world, characterId) : -1;
-    if (slot < 0 || !m3FiniteV3(translation))
+    if (slot < 0 || !m3FiniteV3(translation) ||
+        !(translation.x >= -M3_CAST_LIMIT && translation.x <= M3_CAST_LIMIT) ||
+        !(translation.y >= -M3_CAST_LIMIT && translation.y <= M3_CAST_LIMIT) ||
+        !(translation.z >= -M3_CAST_LIMIT && translation.z <= M3_CAST_LIMIT))
     {
-        return; // stale id or hostile move: a documented no-op
+        return; // stale id or hostile move (non-finite, or past the
+                // caster's float budget): a documented no-op that
+                // never journals
     }
     if (world->journalActive != 0)
     {

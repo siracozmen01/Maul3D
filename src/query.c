@@ -79,7 +79,10 @@ int32_t m3World_CastRayAll(m3WorldId worldId, m3Pos3 origin, m3Vec3 translation,
 {
     m3World* world = m3WorldFromId(worldId);
     if (world == NULL || hits == NULL || capacity <= 0 ||
-        !(m3Dot3(translation, translation) > 0.0f))
+        !(m3Dot3(translation, translation) > 0.0f) ||
+        !(translation.x >= -M3_CAST_LIMIT && translation.x <= M3_CAST_LIMIT) ||
+        !(translation.y >= -M3_CAST_LIMIT && translation.y <= M3_CAST_LIMIT) ||
+        !(translation.z >= -M3_CAST_LIMIT && translation.z <= M3_CAST_LIMIT))
     {
         return 0;
     }
@@ -454,7 +457,10 @@ m3RayHit m3CastConvexClosestEx(m3World* worldPtr, m3Pos3 base, const m3Vec3* poi
     // boxes and hulls cast their corners; spheres and capsules keep
     // their mandatory skin.
     if (world == NULL || pointCount < 1 || pointCount > M3_HULL_MAX_VERTS || radius < 0.0f ||
-        !(radius > 0.0f || pointCount >= 2))
+        !(radius > 0.0f || pointCount >= 2) ||
+        !(translation.x >= -M3_CAST_LIMIT && translation.x <= M3_CAST_LIMIT) ||
+        !(translation.y >= -M3_CAST_LIMIT && translation.y <= M3_CAST_LIMIT) ||
+        !(translation.z >= -M3_CAST_LIMIT && translation.z <= M3_CAST_LIMIT))
     {
         return ctx.best;
     }

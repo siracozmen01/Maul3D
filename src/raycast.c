@@ -405,9 +405,13 @@ m3RayHit m3RayClosestInternal(m3World* world, m3Pos3 origin, m3Vec3 translation)
     m3RayCastContext ctx;
     memset(&ctx, 0, sizeof(ctx));
     ctx.best.fraction = 1.0f;
-    if (world == NULL || !(m3Dot3(translation, translation) > 0.0f))
+    if (world == NULL || !(m3Dot3(translation, translation) > 0.0f) ||
+        !(translation.x >= -M3_CAST_LIMIT && translation.x <= M3_CAST_LIMIT) ||
+        !(translation.y >= -M3_CAST_LIMIT && translation.y <= M3_CAST_LIMIT) ||
+        !(translation.z >= -M3_CAST_LIMIT && translation.z <= M3_CAST_LIMIT))
     {
-        return ctx.best; // null world or zero ray: a clean miss
+        return ctx.best; // null world, zero ray, or a translation
+                         // past the float budget: a clean miss
     }
     ctx.world = world;
     ctx.origin = origin;

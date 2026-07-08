@@ -15,6 +15,7 @@
 //   R (hold)    REWIND TIME through the snapshot ring
 //   F1          toggle AABBs F2      toggle contacts
 
+#include "maul3d/character.h"
 #include "maul3d/draw.h"
 #include "maul3d/joint.h"
 #include "maul3d/shape.h"
@@ -79,7 +80,9 @@ static void DrawPointCb(m3Pos3 p, m3real size, uint32_t color, void* context)
 typedef struct tbScene
 {
     m3WorldId world;
-    m3ShapeId chunk; // the carvable chunk, if the scene has one
+    m3ShapeId chunk;    // the carvable chunk, if the scene has one
+    m3CharacterId hero; // the playable walker, if the scene has one
+    m3BodyId ferry;     // the host-driven platform, if any
     const char* name;
     const char* blurb;
 } tbScene;
@@ -91,6 +94,7 @@ static m3WorldDef SceneDef(void)
     def.shapeCapacity = 1024;
     def.jointCapacity = 32;
     def.voxelCapacity = 2;
+    def.characterCapacity = 2;
     return def;
 }
 
@@ -299,8 +303,86 @@ static tbScene SceneMachines(void)
     return scene;
 }
 
+// Scene 4: the walker. Play the character controller inside a
+// carvable fort: WASD walks, SPACE jumps, E carves the floor from
+// under your own feet (airborne the same step), crates get shoved
+// by the dt-free push contract, and the ferry platform carries you
+// across the moat. Hold R and the WHOLE story rewinds, walker
+// included.
+static tbScene SceneWalker(void)
+{
+    tbScene scene;
+    memset(&scene, 0, sizeof(scene));
+    scene.name = "walker";
+    scene.blurb = "WASD walk, SPACE jump, E carve under feet, ride the ferry";
+    m3WorldDef def = SceneDef();
+    scene.world = m3CreateWorld(&def);
+    AddFloor(scene.world);
+
+    // The fort, same bones as the keep, with a stair ramp of voxel
+    // steps up the south face so the walker can climb in.
+    static uint8_t voxels[16 * 16 * 16];
+    memset(voxels, 0, sizeof(voxels));
+    for (int32_t z = 0; z < 16; ++z)
+    {
+        for (int32_t x = 0; x < 16; ++x)
+        {
+            voxels[x + 16 * (0 + 16 * z)] = 1;
+        }
+    }
+    for (int32_t y = 1; y <= 6; ++y)
+    {
+        for (int32_t i = 2; i <= 13; ++i)
+        {
+            voxels[i + 16 * (y + 16 * 2)] = 1;
+            voxels[i + 16 * (y + 16 * 13)] = 1;
+            voxels[2 + 16 * (y + 16 * i)] = 1;
+            voxels[13 + 16 * (y + 16 * i)] = 1;
+        }
+    }
+    // The doorway: knock a 2 x 3 hole in the south wall.
+    for (int32_t y = 1; y <= 3; ++y)
+    {
+        voxels[7 + 16 * (y + 16 * 2)] = 0;
+        voxels[8 + 16 * (y + 16 * 2)] = 0;
+    }
+    m3BodyDef gd = m3DefaultBodyDef();
+    gd.position = (m3Pos3){-8.0, 0.0, -8.0};
+    m3BodyId keep = m3CreateBody(scene.world, &gd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    sd.friction = 0.6f;
+    scene.chunk = m3CreateVoxelChunkShape(keep, &sd, voxels, NULL, 1.0f);
+
+    // Crates to shove around the yard.
+    m3ShapeDef crateShape = m3DefaultShapeDef();
+    crateShape.friction = 0.4f;
+    for (int32_t k = 0; k < 3; ++k)
+    {
+        m3BodyDef bd = m3DefaultBodyDef();
+        bd.type = m3_dynamicBody;
+        bd.position = (m3Pos3){-2.0 + (double)k * 1.6, 0.45, -3.0};
+        m3BodyId crate = m3CreateBody(scene.world, &bd);
+        m3CreateBoxShape(crate, &crateShape, (m3Vec3){0.45f, 0.45f, 0.45f});
+    }
+
+    // The ferry: a host-driven kinematic platform shuttling along z.
+    m3BodyDef fd = m3DefaultBodyDef();
+    fd.type = m3_kinematicBody;
+    fd.position = (m3Pos3){9.0, 0.6, 0.0};
+    scene.ferry = m3CreateBody(scene.world, &fd);
+    m3ShapeDef fsd = m3DefaultShapeDef();
+    fsd.friction = 0.8f;
+    m3CreateBoxShape(scene.ferry, &fsd, (m3Vec3){1.6f, 0.25f, 1.6f});
+    m3Body_SetLinearVelocity(scene.ferry, (m3Vec3){0.0f, 0.0f, 1.2f});
+
+    m3CharacterDef cd = m3DefaultCharacterDef();
+    cd.position = (m3Pos3){0.0, 1.0, 4.0};
+    scene.hero = m3CreateCharacter(scene.world, &cd);
+    return scene;
+}
+
 typedef tbScene (*SceneBuilder)(void);
-static const SceneBuilder s_builders[] = {SceneKeep, SceneRain, SceneMachines};
+static const SceneBuilder s_builders[] = {SceneKeep, SceneRain, SceneMachines, SceneWalker};
 #define SCENE_COUNT ((int32_t)(sizeof(s_builders) / sizeof(s_builders[0])))
 
 // ------------------------------------------------------ host recipes
@@ -437,25 +519,35 @@ int main(void)
         float panSpeed = 0.25f;
         Vector3 forward = {-cosf(s_yaw), 0.0f, -sinf(s_yaw)};
         Vector3 rightv = {-forward.z, 0.0f, forward.x};
-        if (IsKeyDown(KEY_W))
+        bool walkerScene = m3Character_IsValid(scene.hero);
+        if (!walkerScene)
         {
-            s_target.x += forward.x * panSpeed;
-            s_target.z += forward.z * panSpeed;
+            if (IsKeyDown(KEY_W))
+            {
+                s_target.x += forward.x * panSpeed;
+                s_target.z += forward.z * panSpeed;
+            }
+            if (IsKeyDown(KEY_S))
+            {
+                s_target.x -= forward.x * panSpeed;
+                s_target.z -= forward.z * panSpeed;
+            }
+            if (IsKeyDown(KEY_A))
+            {
+                s_target.x -= rightv.x * panSpeed;
+                s_target.z -= rightv.z * panSpeed;
+            }
+            if (IsKeyDown(KEY_D))
+            {
+                s_target.x += rightv.x * panSpeed;
+                s_target.z += rightv.z * panSpeed;
+            }
         }
-        if (IsKeyDown(KEY_S))
+        else
         {
-            s_target.x -= forward.x * panSpeed;
-            s_target.z -= forward.z * panSpeed;
-        }
-        if (IsKeyDown(KEY_A))
-        {
-            s_target.x -= rightv.x * panSpeed;
-            s_target.z -= rightv.z * panSpeed;
-        }
-        if (IsKeyDown(KEY_D))
-        {
-            s_target.x += rightv.x * panSpeed;
-            s_target.z += rightv.z * panSpeed;
+            // The camera shadows the walker; WASD belongs to it now.
+            m3Pos3 hp = m3Character_GetPosition(scene.hero);
+            s_target = (Vector3){(float)hp.x, (float)hp.y + 0.8f, (float)hp.z};
         }
         Camera3D camera = OrbitCamera();
 
@@ -481,8 +573,27 @@ int main(void)
             m3Sphere slug = {{0.0f, 0.0f, 0.0f}, 0.15f};
             m3CreateSphereShape(bullet, &sd, &slug);
         }
-        if (IsKeyPressed(KEY_E) && look.hit && m3Shape_IsValid(scene.chunk) &&
-            look.shape.index1 == scene.chunk.index1)
+        if (IsKeyPressed(KEY_E) && walkerScene && m3Shape_IsValid(scene.chunk))
+        {
+            // Carve the fort out from under your own feet: the
+            // grounding refresh flips the walker airborne the SAME
+            // step, live proof of the destruction interplay.
+            m3Pos3 hp = m3Character_GetPosition(scene.hero);
+            int32_t cx = (int32_t)floor(hp.x + 8.0);
+            int32_t cy = (int32_t)floor(hp.y - 0.93);
+            int32_t cz = (int32_t)floor(hp.z + 8.0);
+            if (cx >= 0 && cx <= 15 && cy >= 0 && cy <= 15 && cz >= 0 && cz <= 15)
+            {
+                int32_t lo[3] = {cx - 1 < 0 ? 0 : cx - 1, cy, cz - 1 < 0 ? 0 : cz - 1};
+                int32_t hi[3] = {cx + 1 > 15 ? 15 : cx + 1, cy, cz + 1 > 15 ? 15 : cz + 1};
+                if (m3VoxelChunk_ClearBox(scene.chunk, lo, hi) > 0)
+                {
+                    SpawnFragments(scene.world);
+                }
+            }
+        }
+        else if (IsKeyPressed(KEY_E) && look.hit && m3Shape_IsValid(scene.chunk) &&
+                 look.shape.index1 == scene.chunk.index1)
         {
             // The charge: world hit -> chunk coords (the keep sits at
             // (-8, 0, -8) with unit cells and identity rotation).
@@ -510,9 +621,13 @@ int main(void)
         }
 
         // ---- time: pause, step, rewind, run
-        if (IsKeyPressed(KEY_SPACE))
+        if (IsKeyPressed(KEY_SPACE) && !walkerScene)
         {
             paused = !paused;
+        }
+        if (IsKeyPressed(KEY_P))
+        {
+            paused = !paused; // the walker scene's pause (SPACE jumps)
         }
         if (IsKeyPressed(KEY_F1))
         {
@@ -560,6 +675,56 @@ int main(void)
                     m3Capsule capsule = {{-0.3f, 0.0f, 0.0f}, {0.3f, 0.0f, 0.0f}, 0.2f};
                     m3CreateCapsuleShape(body, &sd, &capsule);
                 }
+            }
+        }
+
+        // The walker: camera-relative WASD, host gravity, SPACE jump.
+        // The vertical velocity is host state (the engine's contract:
+        // gravity is the host's job), so the rewind ring restores the
+        // WORLD bit-exact and the host merely re-derives its intent.
+        static float heroVy = 0.0f;
+        if (rebuild)
+        {
+            heroVy = 0.0f;
+        }
+        if (walkerScene && !paused)
+        {
+            float mx = (IsKeyDown(KEY_D) ? 1.0f : 0.0f) - (IsKeyDown(KEY_A) ? 1.0f : 0.0f);
+            float mz = (IsKeyDown(KEY_W) ? 1.0f : 0.0f) - (IsKeyDown(KEY_S) ? 1.0f : 0.0f);
+            float speed = IsKeyDown(KEY_LEFT_SHIFT) ? 7.0f : 4.0f;
+            m3Vec3 wish = {forward.x * mz + rightv.x * mx, 0.0f, forward.z * mz + rightv.z * mx};
+            float wl = sqrtf(wish.x * wish.x + wish.z * wish.z);
+            if (wl > 0.0f)
+            {
+                wish.x *= speed / wl;
+                wish.z *= speed / wl;
+            }
+            bool grounded = m3Character_IsGrounded(scene.hero);
+            if (grounded && IsKeyPressed(KEY_SPACE))
+            {
+                heroVy = 5.2f;
+            }
+            else if (grounded && heroVy < 0.0f)
+            {
+                heroVy = -1.0f; // a firm stick-down keeps stairs honest
+            }
+            else
+            {
+                heroVy -= 9.8f / 60.0f;
+            }
+            m3Character_Move(scene.hero, (m3Vec3){wish.x / 60.0f, heroVy / 60.0f, wish.z / 60.0f});
+        }
+        // The ferry shuttles between the moat banks, host-driven.
+        if (walkerScene && m3Body_IsValid(scene.ferry) && !paused)
+        {
+            m3Pos3 fp = m3Body_GetPosition(scene.ferry);
+            if (fp.z > 6.0)
+            {
+                m3Body_SetLinearVelocity(scene.ferry, (m3Vec3){0.0f, 0.0f, -1.2f});
+            }
+            else if (fp.z < -6.0)
+            {
+                m3Body_SetLinearVelocity(scene.ferry, (m3Vec3){0.0f, 0.0f, 1.2f});
             }
         }
 
@@ -611,8 +776,11 @@ int main(void)
 
         DrawText(TextFormat("Maul3D testbed [%s] %s", scene.name, scene.blurb), 12, 12, 18,
                  RAYWHITE);
-        DrawText("RMB orbit | wheel zoom | WASD pan | LMB shoot | E carve | B crate | TAB scene "
-                 "| SPACE pause | F step | hold R REWIND",
+        DrawText(walkerScene
+                     ? "RMB orbit | WASD walk | SHIFT run | SPACE jump | E carve under feet | "
+                       "LMB shoot | B crate | TAB scene | P pause | hold R REWIND"
+                     : "RMB orbit | wheel zoom | WASD pan | LMB shoot | E carve | B crate | "
+                       "TAB scene | SPACE pause | F step | hold R REWIND",
                  12, 36, 14, (Color){170, 176, 190, 255});
         if (rewinding)
         {

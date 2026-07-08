@@ -207,9 +207,15 @@ the pointer).
   containment. All-hits results are sorted by fraction, ties by
   shape index; when the output array fills, the farthest hit drops.
 - Shape casts (`m3World_CastSphereClosest`,
-  `m3World_CastCapsuleClosest`) report the first time of impact
-  along a translation. A cast that starts overlapped reports
-  fraction zero with a zero normal.
+  `m3World_CastCapsuleClosest`, `m3World_CastBoxClosest`,
+  `m3World_CastHullClosest`) report the first time of impact along
+  a translation. A cast that starts overlapped reports fraction
+  zero with a zero normal. Box casts take a center, half extents,
+  and an orientation; hull casts take up to 24 base-relative cloud
+  points. A one-point skinless cloud misses by contract (that is a
+  ray). Any translation component beyond 1e18 misses by contract:
+  past that, the kernels' float arithmetic would overflow (the
+  caster's float budget).
 - `m3World_PointInside` treats planes as solid half-spaces and
   meshes as open surfaces (a point is never "inside" a mesh).
 - Overlap queries (`m3World_OverlapAabb`, `m3World_OverlapSphere`)
@@ -302,6 +308,73 @@ next step clears them, restore clears them. When one edit strands
 more islands than the event capacity (256), every island is STILL
 removed from the grid; only the reporting has a ceiling, and the
 dropped count says so loudly.
+
+## Joints
+
+Six types, every one built from the same proven row blocks (point,
+axial, rotation-vector) so a new joint is a recipe, not new math:
+
+- `m3_sphericalJoint`: a shared point, plus an optional cone limit
+  (`coneAngle`) and twist limit pair.
+- `m3_revoluteJoint`: hinge; angle limits and a motor
+  (`motorSpeed`, `maxMotorTorque`).
+- `m3_prismaticJoint`: slider; translation limits and a motor.
+- `m3_fixedJoint`: weld. The relative pose at create time IS the
+  weld pose (axes and limits are ignored by contract).
+- `m3_distanceJoint`: rope or rod along the anchor axis. Equal
+  bounds make a rod; `hertz`/`zeta` in the motor fields make a
+  soft spring whose rest length rides `coneAngle` and must lie
+  inside the bounds.
+- `m3_genericJoint`: per-axis `m3AxisMode` (locked, free, limited)
+  over three linear and three angular axes, plus one motor on any
+  movable axis. The v1 angular contract: at most one limited
+  angular axis, and its neighbors both locked or both free.
+
+Anchors are body-local; the joint frame's axis is local z. Joint
+impulses persist in the snapshot (warm starts are simulation
+state). Creation validates everything and returns the null id on
+any violation; destroying a body cascades through its joints.
+
+## The character controller
+
+A character (`m3CreateCharacter`) is a kinematic capsule the
+engine owns, driven only by `m3Character_Move`: a journaled,
+deterministic, rollback-covered command. The body has zero
+velocity by contract and never moves during `m3World_Step` except
+to ride its floor (below). Gravity is the host's job: add it to
+the move each tick, netcode style.
+
+- Collide and slide: the move casts the capsule, advances to the
+  first hit keeping `skin`, slides the remainder, up to four
+  times. Steep faces (steeper than `maxSlopeAngle`) are walls and
+  never mint upward motion out of horizontal intent.
+- Stairs: a grounded walker blocked by a steep face lifts up to
+  `stepHeight`, advances, and lands. The landing is accepted only
+  when a ray probing half a radius AHEAD of the landing axis finds
+  walkable floor and the net rise fits one step height (the ray,
+  not the capsule normal, is the floor classifier: capsule casts
+  read stair corners as steep, and an axis ray can be fooled by
+  low floor behind a ramp's crease).
+- Grounding: walkable contact grounds the character and records
+  the body under its feet (`m3Character_GetGroundBody`). A
+  descending character glues to floor within `snapDistance`; no
+  floor in reach means airborne, honestly.
+- Riders: each step ends by carrying grounded characters along
+  their ground body's rigid motion, THROUGH the slide casts, so a
+  platform can ferry a walker into a wall and the wall wins.
+  Kinematic platforms, elevators, carousels, and dynamic bodies
+  (fragments) all ferry riders.
+- Pushing: a move blocked by a dynamic body applies impulse =
+  `mass` * blocked displacement at the contact. Per tick that
+  displacement is the walker's velocity in tick units, so the
+  momentum flux comes out mass * speed with no dt in the contract.
+  Walkable floors are standing, not pushing; bodies heavier than
+  `pushMaxMassRatio` * `mass` are walls.
+- Destruction interplay: carving the floor from under a character
+  flips it airborne the SAME step (the voxel edit runs a grounding
+  refresh over overlapping characters).
+- Hostile moves (non-finite, or any component beyond the caster's
+  1e18 float budget) are documented no-ops that never journal.
 
 ## Units and conventions
 

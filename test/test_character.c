@@ -284,6 +284,265 @@ static void TestCharacterContracts(void)
 
 // 4-5: stairs, slopes, the voxel floor, and the welded seam.
 
+static void TestHostileMovesRedTeam(void)
+{
+    // Red team (4-7): the walker takes abuse without corruption. A
+    // planetary-scale move stops at the first wall like any other;
+    // denormal dust moves change not one bit; the world stays
+    // finite through all of it.
+    m3WorldId world = ArenaWorld();
+    m3ShapeDef sd = m3DefaultShapeDef();
+    m3BodyDef wd = m3DefaultBodyDef();
+    wd.position = (m3Pos3){6.0, 2.0, 0.0};
+    m3BodyId wall = m3CreateBody(world, &wd);
+    m3CreateBoxShape(wall, &sd, (m3Vec3){0.5f, 4.0f, 6.0f}); // face at x = 5.5
+
+    m3CharacterDef cd = m3DefaultCharacterDef();
+    cd.position = (m3Pos3){0.0, 2.0, 0.0};
+    m3CharacterId hero = m3CreateCharacter(world, &cd);
+    for (int32_t i = 0; i < 20; ++i)
+    {
+        m3Character_Move(hero, (m3Vec3){0.0f, -0.1f, 0.0f});
+    }
+
+    // Past the caster's float budget: hostile, a bitwise no-op.
+    m3Pos3 pre = m3Character_GetPosition(hero);
+    m3Character_Move(hero, (m3Vec3){1.0e30f, 0.0f, 0.0f});
+    m3Pos3 p = m3Character_GetPosition(hero);
+    CHECK(memcmp(&pre, &p, sizeof(pre)) == 0, "a planetary move is a hostile no-op");
+    // Merely enormous: legal, and the wall wins like always.
+    m3Character_Move(hero, (m3Vec3){1.0e6f, 0.0f, 0.0f});
+    p = m3Character_GetPosition(hero);
+    CHECK(p.x < 5.5 && p.x > 4.9, "a kilometer-scale move parks at the wall");
+    CHECK(isfinite(p.x) && isfinite(p.y) && isfinite(p.z), "the parked walker is finite");
+
+    // Denormal dust: below the slide's own noise floor, the move
+    // must be a bitwise no-op, a thousand times over.
+    m3Pos3 before = m3Character_GetPosition(hero);
+    float dust;
+    uint32_t dustBits = 0x00000001u; // the smallest positive denormal
+    memcpy(&dust, &dustBits, sizeof(dust));
+    for (int32_t i = 0; i < 1000; ++i)
+    {
+        m3Character_Move(hero, (m3Vec3){dust, dust, dust});
+    }
+    m3Pos3 after = m3Character_GetPosition(hero);
+    CHECK(memcmp(&before, &after, sizeof(before)) == 0, "denormal dust moves nothing");
+
+    m3Character_Move(hero, (m3Vec3){-1.0e6f, 0.0f, 0.0f});
+    p = m3Character_GetPosition(hero);
+    CHECK(isfinite(p.x), "the return trip stays finite");
+    m3World_Step(world, 1.0f / 60.0f, 4);
+    CHECK(m3World_Hash(world) != 0, "the abused world still hashes");
+    m3DestroyWorld(world);
+}
+
+static void TestCharacterOnCharacter(void)
+{
+    // One walker stands on another's head: the upper grounds on the
+    // lower's kinematic body, pushes nothing (kinematic bodies are
+    // not pushable), and when the lower walks away the upper's next
+    // moves land it honestly on the floor below.
+    m3WorldId world = ArenaWorld();
+    m3CharacterDef cd = m3DefaultCharacterDef();
+    cd.position = (m3Pos3){0.0, 2.0, 0.0};
+    m3CharacterId lower = m3CreateCharacter(world, &cd);
+    for (int32_t i = 0; i < 20; ++i)
+    {
+        m3Character_Move(lower, (m3Vec3){0.0f, -0.1f, 0.0f});
+    }
+    // Lower stands at 0.92; its head (capsule top) is at 1.84.
+    cd.position = (m3Pos3){0.0, 3.5, 0.0};
+    m3CharacterId upper = m3CreateCharacter(world, &cd);
+    for (int32_t i = 0; i < 20; ++i)
+    {
+        m3Character_Move(upper, (m3Vec3){0.0f, -0.1f, 0.0f});
+    }
+    CHECK(m3Character_IsGrounded(upper), "the upper walker stands on the head");
+    m3BodyId underBody = m3Character_GetGroundBody(upper);
+    CHECK(underBody.index1 != 0, "the head is a real ground body");
+    m3Pos3 lowerP = m3Character_GetPosition(lower);
+    CHECK(lowerP.y > 0.9 && lowerP.y < 0.94, "the lower walker carries no weight");
+
+    // The lower walks out; the upper's own moves find the truth.
+    for (int32_t i = 0; i < 60; ++i)
+    {
+        m3Character_Move(lower, (m3Vec3){0.05f, 0.0f, 0.0f});
+    }
+    for (int32_t i = 0; i < 40; ++i)
+    {
+        m3Character_Move(upper, (m3Vec3){0.0f, -0.1f, 0.0f});
+    }
+    m3Pos3 upperP = m3Character_GetPosition(upper);
+    CHECK(upperP.y > 0.9 && upperP.y < 0.94, "the upper walker lands on the floor");
+    CHECK(m3Character_IsGrounded(upper), "the landing grounds honestly");
+    m3DestroyWorld(world);
+}
+
+static void TestCharacterCapacitySweep(void)
+{
+    // Pool churn: create to refusal, destroy in a rotating order,
+    // repeat. Twin worlds run the identical churn and match bits;
+    // every stale id no-ops quietly.
+    uint64_t hashes[2];
+    for (int32_t run = 0; run < 2; ++run)
+    {
+        m3WorldDef def = m3DefaultWorldDef();
+        def.bodyCapacity = 16;
+        def.shapeCapacity = 16;
+        def.characterCapacity = 4;
+        m3WorldId world = m3CreateWorld(&def);
+        m3BodyDef gd = m3DefaultBodyDef();
+        m3BodyId ground = m3CreateBody(world, &gd);
+        m3ShapeDef sd = m3DefaultShapeDef();
+        m3Plane floor = {{0.0f, 1.0f, 0.0f}, 0.0f};
+        m3CreatePlaneShape(ground, &sd, &floor);
+
+        m3CharacterId stale = m3_nullCharacterId;
+        for (int32_t cycle = 0; cycle < 50; ++cycle)
+        {
+            m3CharacterId ids[4];
+            m3CharacterDef cd = m3DefaultCharacterDef();
+            for (int32_t k = 0; k < 4; ++k)
+            {
+                cd.position = (m3Pos3){(double)k * 2.0, 2.0, (double)(cycle % 3)};
+                ids[k] = m3CreateCharacter(world, &cd);
+                CHECK(m3Character_IsValid(ids[k]), "the pool serves to capacity");
+            }
+            cd.position = (m3Pos3){0.0, 8.0, 0.0};
+            CHECK(!m3Character_IsValid(m3CreateCharacter(world, &cd)),
+                  "the full pool refuses the fifth");
+            if (stale.index1 != 0)
+            {
+                m3Character_Move(stale, (m3Vec3){1.0f, 1.0f, 1.0f}); // stale: no-op
+                m3DestroyCharacter(stale);                           // stale: no-op
+            }
+            for (int32_t k = 0; k < 4; ++k)
+            {
+                m3Character_Move(ids[k], (m3Vec3){0.02f, -0.1f, 0.0f});
+            }
+            m3World_Step(world, 1.0f / 60.0f, 4);
+            for (int32_t k = 0; k < 4; ++k)
+            {
+                int32_t victim = (k + cycle) % 4;
+                if (k != 1)
+                {
+                    m3DestroyCharacter(ids[victim]);
+                }
+            }
+            // One survivor per cycle keeps slots rotating unevenly;
+            // sweep it too so the next cycle starts clean.
+            for (int32_t k = 0; k < 4; ++k)
+            {
+                if (m3Character_IsValid(ids[k]))
+                {
+                    stale = ids[k];
+                    m3DestroyCharacter(ids[k]);
+                }
+            }
+        }
+        hashes[run] = m3World_Hash(world);
+        m3DestroyWorld(world);
+    }
+    CHECK(hashes[0] == hashes[1], "twin churns are bit-identical");
+}
+
+static void TestFractureStorm(void)
+{
+    // The controller walks a voxel deck while the deck is shot out
+    // from under it, tick after tick: fracture events fire, the
+    // grounding refresh answers every edit, and twin worlds plus a
+    // mid-storm rollback agree to the bit. This is the destruction
+    // interplay no other engine can even pose, under red-team load.
+    static uint8_t snap[262144];
+    uint64_t hashes[2];
+    for (int32_t run = 0; run < 2; ++run)
+    {
+        m3WorldDef def = m3DefaultWorldDef();
+        def.bodyCapacity = 16;
+        def.shapeCapacity = 16;
+        def.voxelCapacity = 1;
+        def.characterCapacity = 1;
+        m3WorldId world = m3CreateWorld(&def);
+        static uint8_t voxels[16 * 16 * 16];
+        memset(voxels, 0, sizeof(voxels));
+        for (int32_t z = 0; z < 16; ++z)
+        {
+            for (int32_t x = 0; x < 16; ++x)
+            {
+                voxels[x + 16 * (0 + 16 * z)] = 1; // the deck: one anchored layer
+                voxels[x + 16 * (1 + 16 * z)] = 1; // and one walking layer
+            }
+        }
+        m3BodyDef gd = m3DefaultBodyDef();
+        m3BodyId deckBody = m3CreateBody(world, &gd);
+        m3ShapeDef sd = m3DefaultShapeDef();
+        m3ShapeId deck = m3CreateVoxelChunkShape(deckBody, &sd, voxels, NULL, 0.25f);
+        CHECK(m3Shape_IsValid(deck), "the deck creates");
+
+        m3CharacterDef cd = m3DefaultCharacterDef();
+        cd.radius = 0.2f;
+        cd.halfHeight = 0.3f;
+        cd.position = (m3Pos3){0.6, 1.5, 2.0};
+        m3CharacterId hero = m3CreateCharacter(world, &cd);
+        for (int32_t i = 0; i < 15; ++i)
+        {
+            m3Character_Move(hero, (m3Vec3){0.0f, -0.1f, 0.0f});
+        }
+        CHECK(m3Character_IsGrounded(hero), "the walker boards the deck");
+
+        int32_t snapBytes = 0;
+        uint64_t midHash = 0;
+        for (int32_t i = 0; i < 48; ++i)
+        {
+            m3Character_Move(hero, (m3Vec3){0.05f, -0.05f, 0.0f});
+            // Shoot the deck: clear the walking layer column just
+            // ahead, then one deck column, so fractures rain while
+            // the walker advances.
+            int32_t cx = (i / 3) % 16;
+            m3VoxelChunk_ClearVoxel(deck, cx, 1, 8);
+            if (i % 5 == 2)
+            {
+                int32_t lo[3] = {cx, 0, 6};
+                int32_t hi[3] = {cx, 1, 10};
+                m3VoxelChunk_ClearBox(deck, lo, hi);
+            }
+            m3World_Step(world, 1.0f / 60.0f, 4);
+            int32_t count = 0;
+            (void)m3World_FragmentEvents(world, &count); // drained, never spawned
+            m3Pos3 p = m3Character_GetPosition(hero);
+            CHECK(isfinite(p.x) && isfinite(p.y) && isfinite(p.z), "the storm stays finite");
+            if (i == 24 && run == 0)
+            {
+                snapBytes = m3World_Snapshot(world, snap, (int32_t)sizeof(snap));
+                CHECK(snapBytes > 0, "the mid-storm snapshot fits");
+            }
+        }
+        hashes[run] = m3World_Hash(world);
+        if (run == 0)
+        {
+            midHash = hashes[0];
+            CHECK(m3World_Restore(world, snap, snapBytes), "the mid-storm restore lands");
+            for (int32_t i = 25; i < 48; ++i)
+            {
+                m3Character_Move(hero, (m3Vec3){0.05f, -0.05f, 0.0f});
+                int32_t cx = (i / 3) % 16;
+                m3VoxelChunk_ClearVoxel(deck, cx, 1, 8);
+                if (i % 5 == 2)
+                {
+                    int32_t lo[3] = {cx, 0, 6};
+                    int32_t hi[3] = {cx, 1, 10};
+                    m3VoxelChunk_ClearBox(deck, lo, hi);
+                }
+                m3World_Step(world, 1.0f / 60.0f, 4);
+            }
+            CHECK(m3World_Hash(world) == midHash, "the re-fought storm is bit-identical");
+        }
+        m3DestroyWorld(world);
+    }
+    CHECK(hashes[0] == hashes[1], "twin storms are bit-identical");
+}
+
 static void TestPushCrate(void)
 {
     // A blocked walk shoves a light crate: impulse = mass * blocked
@@ -712,6 +971,10 @@ int main(void)
     TestPushCrate();
     TestPlatformRideAndElevator();
     TestCarouselAndFragmentSurf();
+    TestHostileMovesRedTeam();
+    TestCharacterOnCharacter();
+    TestCharacterCapacitySweep();
+    TestFractureStorm();
     if (s_failures == 0)
     {
         printf("test_character: all green\n");

@@ -714,6 +714,21 @@ static void TestGenericCasts(void)
     hit = m3World_CastBoxClosest(world, (m3Pos3){40.0, 4.0, 40.0}, (m3Vec3){0.5f, 0.5f, 0.5f},
                                  identity, (m3Vec3){0.0f, -2.0f, 0.0f});
     CHECK(!hit.hit, "a cast into open air misses");
+    // The float budget (4-7 red team): a finite translation whose
+    // square overflows float would mint NaN inside the kernels, so
+    // every cast path refuses it with a clean miss.
+    hit = m3World_CastSphereClosest(world, (m3Pos3){0.0, 4.0, 0.0}, 0.5f,
+                                    (m3Vec3){1.0e30f, 0.0f, 0.0f});
+    CHECK(!hit.hit, "a planetary sphere cast misses by contract");
+    hit = m3World_CastBoxClosest(world, (m3Pos3){0.0, 4.0, 0.0}, (m3Vec3){0.5f, 0.5f, 0.5f},
+                                 identity, (m3Vec3){0.0f, -1.0e30f, 0.0f});
+    CHECK(!hit.hit, "a planetary box cast misses by contract");
+    hit = m3World_CastRayClosest(world, (m3Pos3){0.0, 4.0, 0.0}, (m3Vec3){0.0f, -1.0e30f, 0.0f});
+    CHECK(!hit.hit, "a planetary ray misses by contract");
+    m3RayHit all[4];
+    CHECK(m3World_CastRayAll(world, (m3Pos3){0.0, 4.0, 0.0}, (m3Vec3){0.0f, -1.0e30f, 0.0f}, all,
+                             4) == 0,
+          "a planetary all-hits ray reports nothing");
     m3DestroyWorld(world);
 }
 
