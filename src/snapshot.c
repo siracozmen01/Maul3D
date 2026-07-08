@@ -22,7 +22,8 @@
 #endif
 
 #define M3_SNAPSHOT_MAGIC   0x4D33534Eu // 'M3SN'
-#define M3_SNAPSHOT_VERSION 23u
+#define M3_SNAPSHOT_VERSION 24u
+// v24: the vehicle pool and wheel arrays (5-1 raycast vehicles).
 // v23: character mass, push ratio, and the ground-body reference
 // (4-6 riders). v22: stepHeight. v21: the character pool.
 // v20: generic joint state. NOTE for the ledger: v19 (voxel fill
@@ -215,6 +216,38 @@ static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3Wal
     M3_BLOCK(world->charPool.generations, world->characterCapacity * (int32_t)sizeof(uint16_t));
     M3_BLOCK(world->charPool.alive, world->characterCapacity * (int32_t)sizeof(uint8_t));
     M3_BLOCK(world->charPool.freeQueue, world->characterCapacity * (int32_t)sizeof(int32_t));
+    M3_BLOCK(world->vehChassis, world->vehicleCapacity * (int32_t)sizeof(int32_t));
+    M3_BLOCK(world->vehChassisGen, world->vehicleCapacity * (int32_t)sizeof(uint16_t));
+    M3_BLOCK(world->vehWheelCount, world->vehicleCapacity * (int32_t)sizeof(int32_t));
+    M3_BLOCK(world->vehMaxSteer, world->vehicleCapacity * (int32_t)sizeof(m3real));
+    M3_BLOCK(world->vehDriveForce, world->vehicleCapacity * (int32_t)sizeof(m3real));
+    M3_BLOCK(world->vehBrakeForce, world->vehicleCapacity * (int32_t)sizeof(m3real));
+    M3_BLOCK(world->vehUserData, world->vehicleCapacity * (int32_t)sizeof(uint64_t));
+    M3_BLOCK(world->vehWheelAnchor,
+             world->vehicleCapacity * M3_VEHICLE_MAX_WHEELS * (int32_t)sizeof(m3Vec3));
+    M3_BLOCK(world->vehWheelDir,
+             world->vehicleCapacity * M3_VEHICLE_MAX_WHEELS * (int32_t)sizeof(m3Vec3));
+    M3_BLOCK(world->vehWheelRest,
+             world->vehicleCapacity * M3_VEHICLE_MAX_WHEELS * (int32_t)sizeof(m3real));
+    M3_BLOCK(world->vehWheelTravel,
+             world->vehicleCapacity * M3_VEHICLE_MAX_WHEELS * (int32_t)sizeof(m3real));
+    M3_BLOCK(world->vehWheelHertz,
+             world->vehicleCapacity * M3_VEHICLE_MAX_WHEELS * (int32_t)sizeof(m3real));
+    M3_BLOCK(world->vehWheelZeta,
+             world->vehicleCapacity * M3_VEHICLE_MAX_WHEELS * (int32_t)sizeof(m3real));
+    M3_BLOCK(world->vehWheelRadius,
+             world->vehicleCapacity * M3_VEHICLE_MAX_WHEELS * (int32_t)sizeof(m3real));
+    M3_BLOCK(world->vehWheelFlags,
+             world->vehicleCapacity * M3_VEHICLE_MAX_WHEELS * (int32_t)sizeof(uint8_t));
+    M3_BLOCK(world->vehWheelBrake,
+             world->vehicleCapacity * M3_VEHICLE_MAX_WHEELS * (int32_t)sizeof(m3real));
+    M3_BLOCK(world->vehWheelCompression,
+             world->vehicleCapacity * M3_VEHICLE_MAX_WHEELS * (int32_t)sizeof(m3real));
+    M3_BLOCK(world->vehWheelContact,
+             world->vehicleCapacity * M3_VEHICLE_MAX_WHEELS * (int32_t)sizeof(uint8_t));
+    M3_BLOCK(world->vehPool.generations, world->vehicleCapacity * (int32_t)sizeof(uint16_t));
+    M3_BLOCK(world->vehPool.alive, world->vehicleCapacity * (int32_t)sizeof(uint8_t));
+    M3_BLOCK(world->vehPool.freeQueue, world->vehicleCapacity * (int32_t)sizeof(int32_t));
     M3_BLOCK(world->meshRefCounts, world->meshCapacity * (int32_t)sizeof(int32_t));
     M3_BLOCK(world->meshPool.generations, world->meshCapacity * (int32_t)sizeof(uint16_t));
     M3_BLOCK(world->meshPool.alive, world->meshCapacity * (int32_t)sizeof(uint8_t));
@@ -519,6 +552,34 @@ uint64_t m3World_Hash(m3WorldId worldId)
         h = m3Hash64(h, &world->charPushMax[i], 4);
         h = m3Hash64(h, &world->charGroundBody[i], 4);
         h = m3Hash64(h, &world->charGroundGen[i], 2);
+    }
+    for (int32_t i = 0; i < world->vehPool.maxIndex; ++i)
+    {
+        if (world->vehPool.alive[i] == 0)
+        {
+            continue; // the additive-state golden rule: live slots only
+        }
+        h = m3Hash64(h, &world->vehChassis[i], 4);
+        h = m3Hash64(h, &world->vehChassisGen[i], 2);
+        h = m3Hash64(h, &world->vehWheelCount[i], 4);
+        h = m3Hash64(h, &world->vehMaxSteer[i], 4);
+        h = m3Hash64(h, &world->vehDriveForce[i], 4);
+        h = m3Hash64(h, &world->vehBrakeForce[i], 4);
+        for (int32_t w = 0; w < world->vehWheelCount[i]; ++w)
+        {
+            int32_t k = i * M3_VEHICLE_MAX_WHEELS + w;
+            h = m3Hash64(h, &world->vehWheelAnchor[k], (int32_t)sizeof(m3Vec3));
+            h = m3Hash64(h, &world->vehWheelDir[k], (int32_t)sizeof(m3Vec3));
+            h = m3Hash64(h, &world->vehWheelRest[k], 4);
+            h = m3Hash64(h, &world->vehWheelTravel[k], 4);
+            h = m3Hash64(h, &world->vehWheelHertz[k], 4);
+            h = m3Hash64(h, &world->vehWheelZeta[k], 4);
+            h = m3Hash64(h, &world->vehWheelRadius[k], 4);
+            h = m3Hash64(h, &world->vehWheelFlags[k], 1);
+            h = m3Hash64(h, &world->vehWheelBrake[k], 4);
+            h = m3Hash64(h, &world->vehWheelCompression[k], 4);
+            h = m3Hash64(h, &world->vehWheelContact[k], 1);
+        }
     }
 
     // Voxel chunk content is simulation state (destruction edits it

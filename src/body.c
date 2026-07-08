@@ -118,6 +118,15 @@ void m3DestroyBodyInternal(m3World* world, int32_t index)
             world->charGroundGen[c] = 0;
         }
     }
+    // A chassis takes its vehicle with it (5-1): the cascade rule,
+    // same as shapes and joints, in ascending slot order.
+    for (int32_t v = 0; v < world->vehPool.maxIndex; ++v)
+    {
+        if (world->vehPool.alive[v] != 0 && world->vehChassis[v] == index)
+        {
+            m3DestroyVehicleInternal(world, v);
+        }
+    }
     m3IdPoolFree(&world->bodyPool, index);
 }
 

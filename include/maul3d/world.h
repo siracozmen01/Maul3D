@@ -36,6 +36,7 @@ extern "C"
         int32_t jointCapacity;
         int32_t voxelCapacity;        // voxel chunk slots (3-1)
         int32_t characterCapacity;    // character controllers (4-4)
+        int32_t vehicleCapacity;      // raycast vehicles (5-1)
         int32_t workerCount;          // twin worlds with different counts must hash equal
         m3EnqueueTaskFn* enqueueTask; // both null = serial (the default)
         m3FinishTaskFn* finishTask;
@@ -44,8 +45,9 @@ extern "C"
     } m3WorldDef;
 
     /// The pinned world defaults: gravity (0, -10, 0), 1024 bodies,
-    /// 2048 shapes, 64 joints, 4 meshes, 4 voxel chunks, one worker,
-    /// no task hooks, and the def cookie every create demands.
+    /// 2048 shapes, 64 joints, 4 meshes, 4 voxel chunks, 4
+    /// characters, 2 vehicles, one worker, no task hooks, and the
+    /// def cookie every create demands.
     M3_API m3WorldDef m3DefaultWorldDef(void);
 
     /// Create a world. Returns the null id on an invalid def or an

@@ -2474,6 +2474,11 @@ void m3StepInternal(m3World* world, float dt, int32_t substeps)
         rot0[i] = world->transforms[i].q;
     }
 
+    // The suspension pass (5-1): vehicle impulses land here so the
+    // narrowphase and solver see the sprung chassis the same way
+    // they see gravity. Serial, slot order, canonical.
+    m3VehicleApplySuspension(world, dt);
+
     if (m3UpdatePairs(world) != m3_success ||
         m3UpdateContacts(world, oldKeys, oldManifolds, oldCount) != m3_success)
     {

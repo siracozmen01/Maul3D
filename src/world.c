@@ -41,6 +41,7 @@ m3WorldDef m3DefaultWorldDef(void)
     def.jointCapacity = 64;
     def.voxelCapacity = 4;
     def.characterCapacity = 4;
+    def.vehicleCapacity = 2;
     def.workerCount = 1;
     def.internalValue = M3_WORLD_COOKIE;
     return def;
@@ -51,8 +52,9 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     m3WorldId nullId = {0, 0};
     if (def == NULL || def->internalValue != M3_WORLD_COOKIE || def->bodyCapacity <= 0 ||
         def->shapeCapacity <= 0 || def->meshCapacity <= 0 || def->jointCapacity <= 0 ||
-        def->voxelCapacity <= 0 || def->characterCapacity <= 0 || def->workerCount <= 0 ||
-        (def->enqueueTask == NULL) != (def->finishTask == NULL) || !m3FiniteV3(def->gravity))
+        def->voxelCapacity <= 0 || def->characterCapacity <= 0 || def->vehicleCapacity <= 0 ||
+        def->workerCount <= 0 || (def->enqueueTask == NULL) != (def->finishTask == NULL) ||
+        !m3FiniteV3(def->gravity))
     {
         // User-input validation is contract, not invariant: the API
         // promises a null id for a bad def (tests exercise this), so
@@ -83,6 +85,7 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     world->meshCapacity = def->meshCapacity;
     world->voxelCapacity = def->voxelCapacity;
     world->characterCapacity = def->characterCapacity;
+    world->vehicleCapacity = def->vehicleCapacity;
     world->jointCapacity = def->jointCapacity;
     world->workerCount = def->workerCount;
     world->enqueueTask = def->enqueueTask;
@@ -172,6 +175,29 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     M3_ALLOC(world->charPushMax, def->characterCapacity, m3real);
     M3_ALLOC(world->charGroundBody, def->characterCapacity, int32_t);
     M3_ALLOC(world->charGroundGen, def->characterCapacity, uint16_t);
+    world->vehPool = m3IdPoolCreate(def->vehicleCapacity);
+    M3_ALLOC(world->vehChassis, def->vehicleCapacity, int32_t);
+    M3_ALLOC(world->vehChassisGen, def->vehicleCapacity, uint16_t);
+    M3_ALLOC(world->vehWheelCount, def->vehicleCapacity, int32_t);
+    M3_ALLOC(world->vehMaxSteer, def->vehicleCapacity, m3real);
+    M3_ALLOC(world->vehDriveForce, def->vehicleCapacity, m3real);
+    M3_ALLOC(world->vehBrakeForce, def->vehicleCapacity, m3real);
+    M3_ALLOC(world->vehUserData, def->vehicleCapacity, uint64_t);
+    M3_ALLOC(world->vehWheelAnchor, def->vehicleCapacity * M3_VEHICLE_MAX_WHEELS, m3Vec3);
+    M3_ALLOC(world->vehWheelDir, def->vehicleCapacity * M3_VEHICLE_MAX_WHEELS, m3Vec3);
+    M3_ALLOC(world->vehWheelRest, def->vehicleCapacity * M3_VEHICLE_MAX_WHEELS, m3real);
+    M3_ALLOC(world->vehWheelTravel, def->vehicleCapacity * M3_VEHICLE_MAX_WHEELS, m3real);
+    M3_ALLOC(world->vehWheelHertz, def->vehicleCapacity * M3_VEHICLE_MAX_WHEELS, m3real);
+    M3_ALLOC(world->vehWheelZeta, def->vehicleCapacity * M3_VEHICLE_MAX_WHEELS, m3real);
+    M3_ALLOC(world->vehWheelRadius, def->vehicleCapacity * M3_VEHICLE_MAX_WHEELS, m3real);
+    M3_ALLOC(world->vehWheelFlags, def->vehicleCapacity * M3_VEHICLE_MAX_WHEELS, uint8_t);
+    M3_ALLOC(world->vehWheelBrake, def->vehicleCapacity * M3_VEHICLE_MAX_WHEELS, m3real);
+    M3_ALLOC(world->vehWheelCompression, def->vehicleCapacity * M3_VEHICLE_MAX_WHEELS, m3real);
+    M3_ALLOC(world->vehWheelContact, def->vehicleCapacity * M3_VEHICLE_MAX_WHEELS, uint8_t);
+    for (int32_t v = 0; v < def->vehicleCapacity; ++v)
+    {
+        world->vehChassis[v] = -1;
+    }
     M3_ALLOC(world->charGrounded, def->characterCapacity, uint8_t);
     M3_ALLOC(world->charGroundNormal, def->characterCapacity, m3Vec3);
     for (int32_t i = 0; i < def->characterCapacity; ++i)
@@ -325,6 +351,25 @@ void m3DestroyWorld(m3WorldId worldId)
     m3Free(world->charPushMax);
     m3Free(world->charGroundBody);
     m3Free(world->charGroundGen);
+    m3IdPoolDestroy(&world->vehPool);
+    m3Free(world->vehChassis);
+    m3Free(world->vehChassisGen);
+    m3Free(world->vehWheelCount);
+    m3Free(world->vehMaxSteer);
+    m3Free(world->vehDriveForce);
+    m3Free(world->vehBrakeForce);
+    m3Free(world->vehUserData);
+    m3Free(world->vehWheelAnchor);
+    m3Free(world->vehWheelDir);
+    m3Free(world->vehWheelRest);
+    m3Free(world->vehWheelTravel);
+    m3Free(world->vehWheelHertz);
+    m3Free(world->vehWheelZeta);
+    m3Free(world->vehWheelRadius);
+    m3Free(world->vehWheelFlags);
+    m3Free(world->vehWheelBrake);
+    m3Free(world->vehWheelCompression);
+    m3Free(world->vehWheelContact);
     m3Free(world->charGrounded);
     m3Free(world->charGroundNormal);
     m3Free(world->jointNextA);
@@ -997,6 +1042,44 @@ static bool JournalReplayApply(m3World* world, const void* data, int32_t size)
                 return false;
             }
             m3CharacterMoveInternal(world, slot, record.translation);
+            break;
+        }
+        case m3_opCreateVehicle:
+        {
+            struct
+            {
+                m3VehicleDef def;
+                m3VehicleId expected;
+            } record;
+            if (bytes != (int32_t)sizeof(record))
+            {
+                return false;
+            }
+            memcpy(&record, payload, sizeof(record));
+            record.def.chassis.world0 = world->worldIndex0;
+            int32_t slot = m3CreateVehicleInternal(world, &record.def);
+            if (slot < 0 || slot + 1 != record.expected.index1 ||
+                world->vehPool.generations[slot] != record.expected.generation)
+            {
+                return false; // id determinism holds for vehicles too
+            }
+            break;
+        }
+        case m3_opDestroyVehicle:
+        {
+            m3VehicleId id;
+            if (bytes != (int32_t)sizeof(id))
+            {
+                return false;
+            }
+            memcpy(&id, payload, sizeof(id));
+            id.world0 = world->worldIndex0;
+            int32_t slot = m3VehicleSlot(world, id);
+            if (slot < 0)
+            {
+                return false;
+            }
+            m3DestroyVehicleInternal(world, slot);
             break;
         }
         default:

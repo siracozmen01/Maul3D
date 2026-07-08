@@ -303,12 +303,18 @@ typedef struct m3RayCastContext
     m3Vec3 translation;
     m3RayHit best;
     int32_t bestShape;
+    int32_t ignoreBody; // -1 none: the suspension casts' self filter
 } m3RayCastContext;
 
 static void RayTestShape(m3RayCastContext* ctx, int32_t shape)
 {
     m3World* world = ctx->world;
     int32_t body = world->shapeBody[shape];
+    if (body == ctx->ignoreBody)
+    {
+        return; // the caller's own body never blocks its ray (4-4's
+                // cast hook, extended to rays for the vehicle arc)
+    }
     const m3Transform* xf = &world->transforms[body];
 
     // Localize the double origin into the body frame.
@@ -385,6 +391,9 @@ m3RayHit m3RayTestOneShape(m3World* world, int32_t shape, m3Pos3 origin, m3Vec3 
 {
     m3RayCastContext ctx;
     memset(&ctx, 0, sizeof(ctx));
+    ctx.ignoreBody = -1; // zero after memset would silently filter
+                         // body slot ZERO (the 5-1 lesson: a new
+                         // context field visits every constructor)
     ctx.best.fraction = 1.0f;
     ctx.world = world;
     ctx.origin = origin;
@@ -400,10 +409,12 @@ static bool RayQueryCallback(int32_t shape, void* userContext)
     return true;
 }
 
-m3RayHit m3RayClosestInternal(m3World* world, m3Pos3 origin, m3Vec3 translation)
+m3RayHit m3RayClosestInternalEx(m3World* world, m3Pos3 origin, m3Vec3 translation,
+                                int32_t ignoreBody)
 {
     m3RayCastContext ctx;
     memset(&ctx, 0, sizeof(ctx));
+    ctx.ignoreBody = ignoreBody;
     ctx.best.fraction = 1.0f;
     if (world == NULL || !(m3Dot3(translation, translation) > 0.0f) ||
         !(translation.x >= -M3_CAST_LIMIT && translation.x <= M3_CAST_LIMIT) ||
@@ -442,6 +453,11 @@ m3RayHit m3RayClosestInternal(m3World* world, m3Pos3 origin, m3Vec3 translation)
         }
     }
     return ctx.best;
+}
+
+m3RayHit m3RayClosestInternal(m3World* world, m3Pos3 origin, m3Vec3 translation)
+{
+    return m3RayClosestInternalEx(world, origin, translation, -1);
 }
 
 m3RayHit m3World_CastRayClosest(m3WorldId worldId, m3Pos3 origin, m3Vec3 translation)

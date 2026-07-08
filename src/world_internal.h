@@ -16,6 +16,7 @@
 #include "maul3d/character.h"
 #include "maul3d/joint.h"
 #include "maul3d/shape.h"
+#include "maul3d/vehicle.h"
 #include "maul3d/world.h"
 
 #define M3_MAX_WORLDS 64
@@ -68,6 +69,8 @@ typedef enum m3Op
     m3_opCreateCharacter = 16,       // def + expected id
     m3_opDestroyCharacter = 17,      // id
     m3_opCharacterMove = 18,         // id + translation
+    m3_opCreateVehicle = 19,         // def + expected id (5-1)
+    m3_opDestroyVehicle = 20,        // id
 } m3Op;
 
 // Immutable interned hull data (lifetime 3): vertices, face planes,
@@ -433,6 +436,31 @@ typedef struct m3World
     int32_t* charGroundBody; // body slot under our feet, -1 none
     uint16_t* charGroundGen; // that body's generation when recorded
 
+    // Vehicles (5-1): pooled raycast vehicles. Per-slot config plus
+    // per-wheel arrays at slot * M3_VEHICLE_MAX_WHEELS + wheel. All
+    // persistent simulation state: snapshotted, hashed for live
+    // slots (the additive-state golden rule).
+    int32_t vehicleCapacity;
+    m3IdPool vehPool;
+    int32_t* vehChassis;     // chassis body slot, -1 free
+    uint16_t* vehChassisGen; // its generation at create
+    int32_t* vehWheelCount;
+    m3real* vehMaxSteer;
+    m3real* vehDriveForce;
+    m3real* vehBrakeForce;
+    uint64_t* vehUserData;
+    m3Vec3* vehWheelAnchor;
+    m3Vec3* vehWheelDir;
+    m3real* vehWheelRest;
+    m3real* vehWheelTravel;
+    m3real* vehWheelHertz;
+    m3real* vehWheelZeta;
+    m3real* vehWheelRadius;
+    uint8_t* vehWheelFlags; // bit0 steerable, bit1 driven
+    m3real* vehWheelBrake;
+    m3real* vehWheelCompression; // last step's suspension state
+    uint8_t* vehWheelContact;
+
     // Generic 6-DOF state (4-3): packed modes (2 bits per axis,
     // linear 0..5, angular 6..11, motor axis 12..15) and per-axis
     // limit vectors. Folded into the hash only for generic-typed
@@ -760,6 +788,12 @@ m3Manifold m3CollidePlaneSphere(m3Vec3 planeNormal, m3real dist, m3real radius);
 void m3StepInternal(m3World* world, float dt, int32_t substeps);
 m3Mat3 m3WorldInvInertia(const m3World* world, int32_t body);
 void m3CharacterCarryRiders(m3World* world, const m3Pos3* com0, const m3Quat* rot0);
+int32_t m3VehicleSlot(const m3World* world, m3VehicleId vehicleId);
+int32_t m3CreateVehicleInternal(m3World* world, const m3VehicleDef* def);
+void m3DestroyVehicleInternal(m3World* world, int32_t slot);
+void m3VehicleApplySuspension(m3World* world, float dt);
+m3RayHit m3RayClosestInternalEx(m3World* world, m3Pos3 origin, m3Vec3 translation,
+                                int32_t ignoreBody);
 
 void m3JournalRecord(m3World* world, int32_t op, const void* payload, int32_t bytes);
 
