@@ -4,7 +4,7 @@
 cmake_minimum_required(VERSION 3.16)
 project(maul3d_consumer LANGUAGES C)
 
-find_package(maul3d 0.3 REQUIRED CONFIG)
+find_package(maul3d 0.9 REQUIRED CONFIG)
 
 add_executable(consumer consumer.c)
 target_link_libraries(consumer PRIVATE maul3d::maul3d)

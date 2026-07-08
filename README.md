@@ -8,9 +8,13 @@ Sibling of [Maul2D](https://github.com/siracozmen01/Maul2D), which
 validated the solver core and the determinism discipline this engine
 is built on.
 
-## Status: v0.3, joints, queries, and the profiled midphase
+## Status: v0.9, the 1.0 release candidate
 
-Phases 2b and 2c are complete. The engine simulates:
+Phases 2b, 2c, and the 2d hardening pass are complete: red-team
+rounds, 93 percent measured coverage, an installable package with a
+consumer gate, a manual, and a twenty-thousand-step soak under
+sanitizers. The API is a 1.0 candidate; the 1.0 tag waits for the
+destruction phase's first consumer. The engine simulates:
 
 - **Shapes**: spheres, boxes, capsules, convex hulls from point
   clouds (built-in QuickHull with coplanar face merging and exact
@@ -146,10 +150,10 @@ one mid-range x86-64 core, Release, 300 steps:
 
 ## Roadmap
 
-- Phase 2d: hardening and release. Red-team rounds, coverage, a
-  v1.0-grade maturity pass (the constitution freezes the API at 1.x).
-- Phase 3: destruction. Fracture fragments are QuickHull cells, and
-  the rollback spine is what makes networked destruction possible.
+- Phase 3: destruction and voxels, the reason this engine exists.
+  Two-tier voxel storage, deterministic fracture as voxel-state
+  transitions inside the rollback delta, fragment hulls from the
+  built-in QuickHull.
 
 ## License
 
