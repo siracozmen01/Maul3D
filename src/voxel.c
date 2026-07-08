@@ -42,6 +42,7 @@ int32_t m3VoxelPack(m3VoxelChunkData* chunk, const uint8_t* voxels, const uint16
         {
             VoxelSet(chunk, v);
             chunk->payload[v] = payload != NULL ? payload[v] : 0;
+            chunk->fill[v] = 255; // whole voxels at birth; SetFill wears them down
             filled += 1;
         }
     }
@@ -266,6 +267,7 @@ bool m3VoxelSetInternal(m3World* world, int32_t shape, int32_t x, int32_t y, int
     bool wasFilled = m3VoxelGet(chunk, x, y, z);
     chunk->occupancy[v >> 3] |= (uint8_t)(1u << (v & 7));
     chunk->payload[v] = payload;
+    chunk->fill[v] = 255; // a set voxel is a whole voxel
     if (!wasFilled)
     {
         chunk->filledCount += 1;
@@ -290,6 +292,7 @@ bool m3VoxelClearInternal(m3World* world, int32_t shape, int32_t x, int32_t y, i
     {
         chunk->occupancy[v >> 3] &= (uint8_t)~(1u << (v & 7));
         chunk->payload[v] = 0;
+        chunk->fill[v] = 0;
         chunk->filledCount -= 1;
         m3VoxelSurfaceBuild(&world->voxelSurface[slot], chunk);
         m3VoxelFractureSweep(world, shape);
@@ -317,6 +320,7 @@ int32_t m3VoxelClearBoxInternal(m3World* world, int32_t shape, const int32_t lo[
                     int32_t v = x + M3_VOXEL_DIM * (y + M3_VOXEL_DIM * z);
                     chunk->occupancy[v >> 3] &= (uint8_t)~(1u << (v & 7));
                     chunk->payload[v] = 0;
+                    chunk->fill[v] = 0;
                     cleared += 1;
                 }
             }
@@ -331,6 +335,23 @@ int32_t m3VoxelClearBoxInternal(m3World* world, int32_t shape, const int32_t lo[
     }
     VoxelWakeRegion(world, shape, lo, hi);
     return cleared;
+}
+
+bool m3VoxelSetFillInternal(m3World* world, int32_t shape, int32_t x, int32_t y, int32_t z,
+                            uint8_t fill)
+{
+    int32_t slot = world->shapeVoxelIndex[shape];
+    m3VoxelChunkData* chunk = &world->voxelData[slot];
+    if (!m3VoxelGet(chunk, x, y, z))
+    {
+        return false; // fill describes an occupied voxel, nothing else
+    }
+    int32_t v = x + M3_VOXEL_DIM * (y + M3_VOXEL_DIM * z);
+    chunk->fill[v] = fill;
+    // Mass bookkeeping only: no surface rebuild (geometry is
+    // untouched), no wake (a static chunk's mass moves nothing
+    // dynamic until fracture delivers it).
+    return true;
 }
 
 // Public entries: validate, journal, apply (the command pattern).
@@ -397,6 +418,39 @@ bool m3VoxelChunk_ClearVoxel(m3ShapeId shapeId, int32_t x, int32_t y, int32_t z)
         m3JournalRecord(world, m3_opVoxelClear, &record, (int32_t)sizeof(record));
     }
     return m3VoxelClearInternal(world, shape, x, y, z);
+}
+
+bool m3VoxelChunk_SetFill(m3ShapeId shapeId, int32_t x, int32_t y, int32_t z, uint8_t fill)
+{
+    int32_t shape;
+    m3World* world = ResolveVoxelShape(shapeId, &shape);
+    if (world == NULL || !VoxelCoordsValid(x, y, z) || fill == 0)
+    {
+        return false; // fill zero is a clear in disguise: refused
+    }
+    int32_t slot = world->shapeVoxelIndex[shape];
+    if (!m3VoxelGet(&world->voxelData[slot], x, y, z))
+    {
+        return false;
+    }
+    if (world->journalActive != 0)
+    {
+        struct
+        {
+            m3ShapeId id;
+            int32_t x, y, z;
+            uint8_t fill;
+            uint8_t pad[3];
+        } record;
+        memset(&record, 0, sizeof(record));
+        record.id = shapeId;
+        record.x = x;
+        record.y = y;
+        record.z = z;
+        record.fill = fill;
+        m3JournalRecord(world, m3_opVoxelSetFill, &record, (int32_t)sizeof(record));
+    }
+    return m3VoxelSetFillInternal(world, shape, x, y, z, fill);
 }
 
 int32_t m3VoxelChunk_ClearBox(m3ShapeId shapeId, const int32_t lo[3], const int32_t hi[3])
@@ -509,6 +563,7 @@ void m3VoxelFractureSweep(m3World* world, int32_t shape)
         // edit's state transition) and emit the event.
         m3real cell = chunk->cellSize;
         m3Vec3 com = {0.0f, 0.0f, 0.0f};
+        int64_t fillSum = 0;
         uint8_t lo[3] = {255, 255, 255};
         uint8_t hi[3] = {0, 0, 0};
         for (int32_t k = 0; k < count; ++k)
@@ -517,10 +572,14 @@ void m3VoxelFractureSweep(m3World* world, int32_t shape)
             int32_t x = v % M3_VOXEL_DIM;
             int32_t y = (v / M3_VOXEL_DIM) % M3_VOXEL_DIM;
             int32_t z = v / (M3_VOXEL_DIM * M3_VOXEL_DIM);
+            m3real w = (m3real)chunk->fill[v]; // fill-weighted (3-6)
+            fillSum += (int64_t)chunk->fill[v];
             chunk->occupancy[v >> 3] &= (uint8_t)~(1u << (v & 7));
             chunk->payload[v] = 0;
-            com = m3Add3(com, (m3Vec3){((m3real)x + 0.5f) * cell, ((m3real)y + 0.5f) * cell,
-                                       ((m3real)z + 0.5f) * cell});
+            chunk->fill[v] = 0;
+            com = m3Add3(com,
+                         m3MulSV3(w, (m3Vec3){((m3real)x + 0.5f) * cell, ((m3real)y + 0.5f) * cell,
+                                              ((m3real)z + 0.5f) * cell}));
             lo[0] = x < lo[0] ? (uint8_t)x : lo[0];
             lo[1] = y < lo[1] ? (uint8_t)y : lo[1];
             lo[2] = z < lo[2] ? (uint8_t)z : lo[2];
@@ -530,7 +589,7 @@ void m3VoxelFractureSweep(m3World* world, int32_t shape)
         }
         chunk->filledCount -= count;
         removedAny = true;
-        com = m3MulSV3(1.0f / (m3real)count, com);
+        com = m3MulSV3(1.0f / (m3real)fillSum, com);
 
         if (world->fragmentEventCount >= M3_FRAGMENT_EVENT_CAP)
         {
@@ -565,7 +624,7 @@ void m3VoxelFractureSweep(m3World* world, int32_t shape)
         m3Vec3 r = m3RotateVec3(xf->q, com);
         ev->comWorld =
             (m3Pos3){xf->p.x + (double)r.x, xf->p.y + (double)r.y, xf->p.z + (double)r.z};
-        ev->mass = (m3real)count * cell * cell * cell;
+        ev->mass = ((m3real)fillSum / 255.0f) * cell * cell * cell;
         for (int32_t k = 0; k < 3; ++k)
         {
             ev->boundsLo[k] = lo[k];
@@ -580,6 +639,103 @@ void m3VoxelFractureSweep(m3World* world, int32_t shape)
         m3VoxelSurfaceBuild(&world->voxelSurface[slot], chunk);
         m3VoxelCoverageRefreshAround(world, slot);
     }
+}
+
+// Interior depenetration (3-6): a body center INSIDE the solid
+// (spawn mistakes, monster impulses) escapes through the nearest
+// exposed face found by a deterministic BFS over the grid (fixed
+// seed, fixed neighbor order). Returns false when the point is not
+// inside solid. The out parameters name the exit: a chunk-frame
+// axis normal and the exit plane coordinate along it.
+bool m3VoxelEscape(const m3World* world, int32_t slot, m3Vec3 localPoint, m3Vec3* outNormal,
+                   m3real* outPlane)
+{
+    const m3VoxelChunkData* chunk = &world->voxelData[slot];
+    m3real cell = chunk->cellSize;
+    int32_t sx = (int32_t)(localPoint.x / cell);
+    int32_t sy = (int32_t)(localPoint.y / cell);
+    int32_t sz = (int32_t)(localPoint.z / cell);
+    if (localPoint.x < 0.0f || localPoint.y < 0.0f || localPoint.z < 0.0f || sx >= M3_VOXEL_DIM ||
+        sy >= M3_VOXEL_DIM || sz >= M3_VOXEL_DIM || !m3VoxelGet(chunk, sx, sy, sz))
+    {
+        return false;
+    }
+    static const int32_t offsets[6][3] = {{-1, 0, 0}, {1, 0, 0},  {0, -1, 0},
+                                          {0, 1, 0},  {0, 0, -1}, {0, 0, 1}};
+    uint8_t visited[M3_VOXEL_COUNT];
+    memset(visited, 0, sizeof(visited));
+    uint16_t queue[M3_VOXEL_COUNT];
+    int32_t head = 0;
+    int32_t tail = 0;
+    int32_t start = sx + M3_VOXEL_DIM * (sy + M3_VOXEL_DIM * sz);
+    queue[tail++] = (uint16_t)start;
+    visited[start] = 1;
+    while (head < tail)
+    {
+        uint16_t v = queue[head++];
+        int32_t x = v % M3_VOXEL_DIM;
+        int32_t y = (v / M3_VOXEL_DIM) % M3_VOXEL_DIM;
+        int32_t z = v / (M3_VOXEL_DIM * M3_VOXEL_DIM);
+        for (int32_t n = 0; n < 6; ++n)
+        {
+            int32_t nx = x + offsets[n][0];
+            int32_t ny = y + offsets[n][1];
+            int32_t nz = z + offsets[n][2];
+            bool exit = false;
+            if (nx < 0 || nx >= M3_VOXEL_DIM || ny < 0 || ny >= M3_VOXEL_DIM || nz < 0 ||
+                nz >= M3_VOXEL_DIM)
+            {
+                // The chunk boundary: an exit unless a welded
+                // neighbor continues the solid there.
+                int32_t link = world->voxelNeighbors[slot * 6 + n];
+                if (link < 0)
+                {
+                    exit = true;
+                }
+                else
+                {
+                    int32_t mx = (nx + M3_VOXEL_DIM) % M3_VOXEL_DIM;
+                    int32_t my = (ny + M3_VOXEL_DIM) % M3_VOXEL_DIM;
+                    int32_t mz = (nz + M3_VOXEL_DIM) % M3_VOXEL_DIM;
+                    exit = !m3VoxelGet(&world->voxelData[link], mx, my, mz);
+                }
+            }
+            else if (!m3VoxelGet(chunk, nx, ny, nz))
+            {
+                exit = true;
+            }
+            if (exit)
+            {
+                int32_t axis = n / 2;
+                m3real sign = (n & 1) != 0 ? 1.0f : -1.0f;
+                *outNormal = (m3Vec3){0.0f, 0.0f, 0.0f};
+                int32_t faceCell = (n & 1) != 0 ? (axis == 0 ? x + 1 : (axis == 1 ? y + 1 : z + 1))
+                                                : (axis == 0 ? x : (axis == 1 ? y : z));
+                if (axis == 0)
+                {
+                    outNormal->x = sign;
+                }
+                else if (axis == 1)
+                {
+                    outNormal->y = sign;
+                }
+                else
+                {
+                    outNormal->z = sign;
+                }
+                *outPlane = (m3real)faceCell * cell;
+                return true;
+            }
+            int32_t nv = nx + M3_VOXEL_DIM * (ny + M3_VOXEL_DIM * nz);
+            if (visited[nv] == 0)
+            {
+                visited[nv] = 1;
+                queue[tail++] = (uint16_t)nv;
+            }
+        }
+    }
+    return false; // a chunk with no exposed face anywhere: welded
+                  // solid on all sides; the neighbor owns the escape
 }
 
 // ---------------------------------------------------------------

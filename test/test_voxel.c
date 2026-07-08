@@ -895,6 +895,126 @@ static void TestShapeCastsAgainstVoxels(void)
     m3DestroyWorld(world);
 }
 
+static void TestFillWeightsFragments(void)
+{
+    // Gap 6: half-destroyed voxels weigh half, and the fragment
+    // center of mass leans toward the heavy end. A hanging two-arm
+    // island with fills 255 and 85 (a 3:1 ratio) has its analytic
+    // weighted center at the quarter point.
+    m3WorldId world = SmallWorld();
+    m3BodyDef gd = m3DefaultBodyDef();
+    m3BodyId ground = m3CreateBody(world, &gd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    static uint8_t voxels[M3_VOXEL_COUNT];
+    memset(voxels, 0, sizeof(voxels));
+    for (int32_t y = 0; y <= 5; ++y)
+    {
+        voxels[8 + M3_VOXEL_DIM * (y + M3_VOXEL_DIM * 8)] = 1; // column
+    }
+    voxels[9 + M3_VOXEL_DIM * (5 + M3_VOXEL_DIM * 8)] = 1;  // arm near
+    voxels[10 + M3_VOXEL_DIM * (5 + M3_VOXEL_DIM * 8)] = 1; // arm far
+    m3ShapeId tee = m3CreateVoxelChunkShape(ground, &sd, voxels, NULL, 1.0f);
+
+    CHECK(m3VoxelChunk_SetFill(tee, 9, 5, 8, 255), "the near arm keeps full fill");
+    CHECK(m3VoxelChunk_SetFill(tee, 10, 5, 8, 85), "the far arm wears to a third");
+
+    CHECK(m3VoxelChunk_ClearVoxel(tee, 8, 5, 8), "the connector clears");
+    int32_t count = 0;
+    const m3FragmentEvent* events = m3World_FragmentEvents(world, &count);
+    CHECK(count == 1, "the two-arm island strands as one fragment");
+    // Mass: (255 + 85) / 255 cells = 4/3 of a unit cell.
+    CHECK(events[0].mass > 1.32f && events[0].mass < 1.34f, "the fragment weighs its fills");
+    // Weighted COM: (3 * 9.5 + 1 * 10.5) / 4 = 9.75 along x.
+    CHECK(events[0].comChunk.x > 9.74f && events[0].comChunk.x < 9.76f,
+          "the center of mass leans toward the full voxel");
+    m3DestroyWorld(world);
+}
+
+static void TestSetFillContracts(void)
+{
+    m3WorldId world = SmallWorld();
+    m3BodyDef gd = m3DefaultBodyDef();
+    m3BodyId ground = m3CreateBody(world, &gd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    static uint8_t voxels[M3_VOXEL_COUNT];
+    FillSlab(voxels, 2);
+    m3ShapeId chunkShape = m3CreateVoxelChunkShape(ground, &sd, voxels, NULL, 1.0f);
+
+    CHECK(!m3VoxelChunk_SetFill(chunkShape, 0, 5, 0, 100), "fill on an empty voxel refuses");
+    CHECK(!m3VoxelChunk_SetFill(chunkShape, 0, 0, 0, 0), "zero fill refuses (that is a clear)");
+    CHECK(!m3VoxelChunk_SetFill(chunkShape, 16, 0, 0, 100), "out-of-range fill refuses");
+
+    // Fill is state (the hash moves) and never geometry (the
+    // surface does not move by a single byte).
+    static m3VoxelSurface before;
+    memcpy(&before, SurfaceOf(world, chunkShape), sizeof(m3VoxelSurface));
+    uint64_t hashBefore = m3World_Hash(world);
+    CHECK(m3VoxelChunk_SetFill(chunkShape, 3, 1, 3, 77), "the fill lands");
+    CHECK(m3World_Hash(world) != hashBefore, "fill is state: the hash moves");
+    CHECK(memcmp(&before, SurfaceOf(world, chunkShape), sizeof(m3VoxelSurface)) == 0,
+          "fill is not geometry: the surface is untouched");
+
+    // And it rides the snapshot like every other bit of state.
+    int32_t snapBytes = m3World_SnapshotSize(world);
+    uint8_t* snap = (uint8_t*)malloc((size_t)snapBytes);
+    CHECK(m3World_Snapshot(world, snap, snapBytes) == snapBytes, "the fill snapshot writes");
+    uint64_t at77 = m3World_Hash(world);
+    CHECK(m3VoxelChunk_SetFill(chunkShape, 3, 1, 3, 200), "the second fill lands");
+    CHECK(m3World_Restore(world, snap, snapBytes), "the fill rollback lands");
+    CHECK(m3World_Hash(world) == at77, "fill rides the rollback delta");
+    free(snap);
+    m3DestroyWorld(world);
+}
+
+static void TestEmbeddedRecovery(void)
+{
+    // Gap 7: a ball born INSIDE a solid voxel block walks out
+    // through the nearest exposed face with bounded speed, then
+    // rests on the surface. Never a launch, never a NaN, twins.
+    uint64_t hashes[2];
+    for (int32_t run = 0; run < 2; ++run)
+    {
+        m3WorldId world = SmallWorld();
+        m3BodyDef gd = m3DefaultBodyDef();
+        m3BodyId ground = m3CreateBody(world, &gd);
+        m3ShapeDef sd = m3DefaultShapeDef();
+        static uint8_t voxels[M3_VOXEL_COUNT];
+        FillSlab(voxels, 6); // a solid slab, top face at y = 6
+        m3ShapeId block = m3CreateVoxelChunkShape(ground, &sd, voxels, NULL, 1.0f);
+        CHECK(m3Shape_IsValid(block), "the solid block creates");
+
+        m3BodyDef bd = m3DefaultBodyDef();
+        bd.type = m3_dynamicBody;
+        bd.position = (m3Pos3){8.5, 4.5, 8.5}; // buried: nearest exit is up
+        m3BodyId ball = m3CreateBody(world, &bd);
+        m3Sphere sphere = {{0.0f, 0.0f, 0.0f}, 0.4f};
+        m3CreateSphereShape(ball, &sd, &sphere);
+
+        float maxSpeed = 0.0f;
+        for (int32_t i = 0; i < 600; ++i)
+        {
+            m3World_Step(world, 1.0f / 60.0f, 4);
+            m3Vec3 v = m3Body_GetLinearVelocity(ball);
+            float speed2 = v.x * v.x + v.y * v.y + v.z * v.z;
+            if (speed2 > maxSpeed)
+            {
+                maxSpeed = speed2;
+            }
+        }
+        m3Pos3 p = m3Body_GetPosition(ball);
+        CHECK(p.y > 6.3 && p.y < 6.5, "the buried ball surfaces and rests on top");
+        CHECK(maxSpeed < 100.0f, "the recovery speed stays bounded (no launch)");
+        // PointInside finds the ball's own sphere (a center is
+        // always inside its own shape); the assertion is that the
+        // CHUNK no longer contains it.
+        CHECK(m3World_PointInside(world, p).index1 != block.index1,
+              "the rest position is outside the solid block");
+        hashes[run] = m3World_Hash(world);
+        m3DestroyWorld(world);
+    }
+    CHECK(hashes[0] == hashes[1], "the embedded recovery is bit-deterministic");
+}
+
 int main(void)
 {
     TestGreedyMergeAnalytics();
@@ -912,6 +1032,9 @@ int main(void)
     TestVoxelMeetsHeightfield();
     TestBulletVsVoxelWall();
     TestShapeCastsAgainstVoxels();
+    TestFillWeightsFragments();
+    TestSetFillContracts();
+    TestEmbeddedRecovery();
     if (s_failures == 0)
     {
         printf("test_voxel: all green\n");

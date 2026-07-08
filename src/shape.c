@@ -802,12 +802,15 @@ m3ShapeId m3CreateVoxelChunkShape(m3BodyId bodyId, const m3ShapeDef* def, const 
         record.expected = id;
         record.cellSize = cellSize;
         uint8_t payloadBuf[sizeof(record) + sizeof(((m3VoxelChunkData*)0)->occupancy) +
-                           sizeof(((m3VoxelChunkData*)0)->payload)];
+                           sizeof(((m3VoxelChunkData*)0)->payload) +
+                           sizeof(((m3VoxelChunkData*)0)->fill)];
         memcpy(payloadBuf, &record, sizeof(record));
         const m3VoxelChunkData* stored = &world->voxelData[world->shapeVoxelIndex[index]];
         memcpy(payloadBuf + sizeof(record), stored->occupancy, sizeof(stored->occupancy));
         memcpy(payloadBuf + sizeof(record) + sizeof(stored->occupancy), stored->payload,
                sizeof(stored->payload));
+        memcpy(payloadBuf + sizeof(record) + sizeof(stored->occupancy) + sizeof(stored->payload),
+               stored->fill, sizeof(stored->fill));
         m3JournalRecord(world, m3_opCreateVoxelChunkShape, payloadBuf, (int32_t)sizeof(payloadBuf));
     }
     return id;

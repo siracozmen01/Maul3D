@@ -1952,6 +1952,65 @@ static void CollideVoxelConvex(m3World* world, m3Manifold* fresh, int32_t voxelS
     }
     m3real reach = radius + M3_SPECULATIVE_DISTANCE;
 
+    // Interior depenetration (3-6): when the OTHER shape's center
+    // is inside the solid, the surface candidates are meaningless
+    // (every nearby face is interior). A grid BFS names the nearest
+    // exposed face; one synthetic contact walks the body out at a
+    // depth clamped to two cells per step, so the soft solver's
+    // pushout stays gentle by construction: recovery, never launch.
+    {
+        m3Vec3 center;
+        if (otherType == (uint8_t)m3_hullShape)
+        {
+            center = m3Add3(m3RotateVec3(qRel, otherHull->unitCom), pRel);
+        }
+        else if (otherType == (uint8_t)m3_sphereShape)
+        {
+            center = s1;
+        }
+        else
+        {
+            center = m3MulSV3(0.5f, m3Add3(s1, s2));
+        }
+        m3Vec3 escapeNormal;
+        m3real escapePlane;
+        if (m3VoxelEscape(world, slot, center, &escapeNormal, &escapePlane))
+        {
+            m3real along = m3Dot3(escapeNormal, center);
+            m3real plane = escapePlane *
+                           (escapeNormal.x + escapeNormal.y + escapeNormal.z > 0.0f ? 1.0f : -1.0f);
+            m3real depth = plane - along; // distance from center to the
+                                          // exit plane along the normal
+            m3real maxStep = 2.0f * cell;
+            depth = m3MinF(depth, maxStep);
+            m3Manifold escape;
+            memset(&escape, 0, sizeof(escape));
+            escape.normal = escapeNormal;
+            escape.pointCount = 1;
+            escape.points[0].anchorA = m3Add3(center, m3MulSV3(depth, escapeNormal));
+            escape.points[0].anchorB = center;
+            escape.points[0].separation = -(depth + radius);
+            escape.points[0].id = 0x7FFE; // the reserved escape feature
+            fresh->normal = m3RotateVec3(xfV->q, escape.normal);
+            fresh->pointCount = 1;
+            m3Vec3 rA = m3RotateVec3(xfV->q, escape.points[0].anchorA);
+            m3Vec3 rB = m3RotateVec3(xfV->q, escape.points[0].anchorB);
+            fresh->points[0] = escape.points[0];
+            fresh->points[0].anchorA = FromCom(world, voxelBody, xfV->p.x + (double)rA.x,
+                                               xfV->p.y + (double)rA.y, xfV->p.z + (double)rA.z);
+            fresh->points[0].anchorB = FromCom(world, otherBody, xfV->p.x + (double)rB.x,
+                                               xfV->p.y + (double)rB.y, xfV->p.z + (double)rB.z);
+            if (!voxelIsA)
+            {
+                fresh->normal = m3Neg3(fresh->normal);
+                m3Vec3 tmp = fresh->points[0].anchorA;
+                fresh->points[0].anchorA = fresh->points[0].anchorB;
+                fresh->points[0].anchorB = tmp;
+            }
+            return;
+        }
+    }
+
     uint16_t gather[M3_MESH_MAX_TRIS];
     int32_t gatherCount = m3MeshBvhGather(
         &surface->bvh, (m3Vec3){boundLo.x - reach, boundLo.y - reach, boundLo.z - reach},

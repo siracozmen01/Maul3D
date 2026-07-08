@@ -758,7 +758,8 @@ static bool JournalReplayApply(m3World* world, const void* data, int32_t size)
             } record;
             int32_t occBytes = (int32_t)(M3_VOXEL_COUNT / 8);
             int32_t payBytes = (int32_t)(M3_VOXEL_COUNT * sizeof(uint16_t));
-            if (bytes != (int32_t)sizeof(record) + occBytes + payBytes)
+            int32_t fillBytes = (int32_t)M3_VOXEL_COUNT;
+            if (bytes != (int32_t)sizeof(record) + occBytes + payBytes + fillBytes)
             {
                 return false;
             }
@@ -779,6 +780,8 @@ static bool JournalReplayApply(m3World* world, const void* data, int32_t size)
             memcpy(chunk->occupancy, (const uint8_t*)payload + sizeof(record), (size_t)occBytes);
             memcpy(chunk->payload, (const uint8_t*)payload + sizeof(record) + occBytes,
                    (size_t)payBytes);
+            memcpy(chunk->fill, (const uint8_t*)payload + sizeof(record) + occBytes + payBytes,
+                   (size_t)fillBytes);
             int32_t filled = 0;
             for (int32_t v = 0; v < M3_VOXEL_COUNT; ++v)
             {
@@ -840,6 +843,29 @@ static bool JournalReplayApply(m3World* world, const void* data, int32_t size)
                 return false;
             }
             m3VoxelClearInternal(world, shape, record.x, record.y, record.z);
+            break;
+        }
+        case m3_opVoxelSetFill:
+        {
+            struct
+            {
+                m3ShapeId id;
+                int32_t x, y, z;
+                uint8_t fill;
+                uint8_t pad[3];
+            } record;
+            if (bytes != (int32_t)sizeof(record))
+            {
+                return false;
+            }
+            memcpy(&record, payload, sizeof(record));
+            record.id.world0 = world->worldIndex0;
+            int32_t shape = m3ShapeSlot(world, record.id);
+            if (shape < 0 || world->shapeType[shape] != (uint8_t)m3_voxelShape || record.fill == 0)
+            {
+                return false;
+            }
+            m3VoxelSetFillInternal(world, shape, record.x, record.y, record.z, record.fill);
             break;
         }
         case m3_opVoxelClearBox:

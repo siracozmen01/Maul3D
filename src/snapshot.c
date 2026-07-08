@@ -466,6 +466,7 @@ uint64_t m3World_Hash(m3WorldId worldId)
         h = m3Hash64(h, world->voxelData[i].occupancy,
                      (int32_t)sizeof(world->voxelData[i].occupancy));
         h = m3Hash64(h, world->voxelData[i].payload, (int32_t)sizeof(world->voxelData[i].payload));
+        h = m3Hash64(h, world->voxelData[i].fill, (int32_t)sizeof(world->voxelData[i].fill));
     }
     int32_t maxJoint = world->jointPool.maxIndex;
     for (int32_t i = 0; i < maxJoint; ++i)

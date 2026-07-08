@@ -58,6 +58,7 @@ typedef enum m3Op
     m3_opVoxelSet = 12,              // shape id + coords + payload
     m3_opVoxelClear = 13,            // shape id + coords
     m3_opVoxelClearBox = 14,         // shape id + inclusive region
+    m3_opVoxelSetFill = 15,          // shape id + coords + fill byte
 } m3Op;
 
 // Immutable interned hull data (lifetime 3): vertices, face planes,
@@ -185,9 +186,16 @@ typedef struct m3VoxelChunkData
     int32_t filledCount;
     uint8_t occupancy[M3_VOXEL_COUNT / 8];
     uint16_t payload[M3_VOXEL_COUNT];
+    // Fill fraction (3-6): 255 = a whole voxel, 1 = a sliver; zero
+    // never occurs on an occupied voxel (clearing is ClearVoxel's
+    // job). Fill is a MASS and destruction property, never a
+    // geometry property: a half-destroyed voxel still collides as
+    // a full box, but its fragment weighs half.
+    uint8_t fill[M3_VOXEL_COUNT];
 } m3VoxelChunkData;
 
-_Static_assert(sizeof(m3VoxelChunkData) == 8 + 512 + 8192, "voxel chunk must be padding-free");
+_Static_assert(sizeof(m3VoxelChunkData) == 8 + 512 + 8192 + 4096,
+               "voxel chunk must be padding-free");
 
 typedef struct m3VoxelSurface
 {
@@ -561,6 +569,10 @@ bool m3VoxelSetInternal(m3World* world, int32_t shape, int32_t x, int32_t y, int
 bool m3VoxelClearInternal(m3World* world, int32_t shape, int32_t x, int32_t y, int32_t z);
 int32_t m3VoxelClearBoxInternal(m3World* world, int32_t shape, const int32_t lo[3],
                                 const int32_t hi[3]);
+bool m3VoxelSetFillInternal(m3World* world, int32_t shape, int32_t x, int32_t y, int32_t z,
+                            uint8_t fill);
+bool m3VoxelEscape(const m3World* world, int32_t slot, m3Vec3 localPoint, m3Vec3* outNormal,
+                   m3real* outPlane);
 
 // Narrowphase v1: rebuild manifolds for the current pairs in pair
 // order, carrying warm-start impulses forward by feature id from the

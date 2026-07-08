@@ -162,6 +162,14 @@ extern "C"
     /// or -1 on a stale id, a non-voxel shape, or a bad region.
     M3_API int32_t m3VoxelChunk_ClearBox(m3ShapeId shapeId, const int32_t lo[3],
                                          const int32_t hi[3]);
+    /// Fill fraction (3-6): 255 is a whole voxel, 1 a sliver. A
+    /// mass and destruction property, never geometry: the voxel
+    /// still collides as a full box, but its fragment mass scales
+    /// by fill / 255. Refuses zero fill (that is a clear: use
+    /// m3VoxelChunk_ClearVoxel) and empty voxels. Journaled state,
+    /// hashed, inside the rollback delta like every edit.
+    M3_API bool m3VoxelChunk_SetFill(m3ShapeId shapeId, int32_t x, int32_t y, int32_t z,
+                                     uint8_t fill);
 
     M3_API bool m3Shape_IsValid(m3ShapeId shapeId);
 
