@@ -471,6 +471,123 @@ construction, under the same four gates as everything else.
   rope BALANCES on its end forever, because bit-exact floats
   carry no noise to seed the buckle. Give real scenes a nudge.
 
+## Collision filters
+
+Every shape carries `categoryBits` (default 1), `maskBits`
+(default all), and `groupIndex` (default 0). Two shapes meet only
+when each one's category intersects the other's mask, both ways; a
+shared positive group forces collision, a shared negative group
+forbids it. One chokepoint gates ordinary pairs, sensors, and the
+continuous phase alike. Queries behave like shapes: the `Ex`
+variants of every ray, cast, and overlap take an `m3QueryFilter`.
+Filters are state (snapshot v29) and hash only off-default.
+
+## Forces and impulses
+
+`m3Body_ApplyForce`, `ApplyTorque`, and `ApplyForceAtPoint`
+accumulate for exactly one step: integrated beside gravity every
+substep, consumed after the last. `ApplyLinearImpulse`,
+`ApplyAngularImpulse`, and `ApplyImpulseAtPoint` act immediately.
+At-point arms are measured from the center of mass. Pending
+accumulators are snapshot state: a snapshot taken between an
+application and its step re-lands the same trajectory. Targets
+must be dynamic with mass; anything nonzero wakes the body.
+
+## Runtime body control
+
+`m3Body_SetTransform` teleports and wakes both the departure and
+arrival neighborhoods. `m3Body_SetTargetTransform` is a kinematic
+servo: the body lands exactly on the target next step and the
+order clears; the exit velocity stays yours by contract.
+`m3Body_SetType` flips dynamic/kinematic/static with a full mass
+rebuild. `m3Body_SetEnabled(false)` removes the body from
+contacts, CCD, rays, casts, overlaps, and soft-lattice collision.
+`m3Body_SetMotionLocks` freezes any subset of the six axes (bits
+0..2 linear xyz, 3..5 angular xyz), re-zeroed every substep so
+contacts cannot bank motion on a frozen axis.
+`m3Body_SetSleepControls` gives a per-body threshold and a
+canSleep override; `m3Body_SetAwake` forces either edge.
+
+## Materials and world tuning
+
+Shape materials are runtime-settable and journaled:
+`m3Shape_SetFriction`, `SetRestitution`, `SetRollingResistance`,
+and `SetDensity` (the latter with an optional mass rebuild).
+Contacts read materials at prepare, so changes bind next step; a
+sleeping stack keeps its old mix until something wakes it. World
+knobs: `m3World_SetGravity` (sleepers stay asleep until
+disturbed), `SetContactTuning` (hertz, damping ratio, max
+depenetration speed; static contacts run twice the hertz),
+`SetRestitutionThreshold`, `SetMaximumLinearSpeed` (a hard
+per-substep clamp), `EnableSleeping` (off wakes everyone), and
+`EnableContinuous`. Knobs are STATE, not config: they journal,
+they snapshot, and they hash only off-default. The config hash
+stays version + solver revision + precision + FP policy, because
+a config-hash knob would refuse the journal instead of replaying
+it.
+
+## Hit events, move events, and the pre-solve veto
+
+Hit events are opt-in per shape (`m3Shape_EnableHitEvents`) and
+fire at most once per contact per step, for the fastest
+approaching manifold point, when the approach speed clears
+`m3World_SetHitEventThreshold`. Body move events arrive one per
+mover per step in ascending body order with the post-step
+transform and a fell-asleep mark; sleeping bodies cost nothing.
+The joint break stream reports joints that destroyed themselves
+this step; the id inside is already stale, use it as a key. The
+pre-solve veto (`m3World_SetPreSolveCallback` plus
+`m3Shape_EnablePreSolve`) runs serially in canonical pair order
+and may disable any flagged contact for the step: the one-way
+platform tool. THE CONTRACT, LOUD: the callback must be a pure
+function of its arguments; the journal records inputs, never host
+whims, so an impure callback breaks YOUR replay, not the
+engine's. All event streams are transient observers: the next
+step or a restore clears them.
+
+## Joint runtime control, drives, and breakage
+
+`m3Joint_SetLimits` and `m3Joint_SetMotor` rebind mid-run
+(toggling zeroes the row's stored impulse).
+`m3Joint_SetCollideConnected` lets the two jointed bodies collide.
+`m3Joint_SetSpring(enable, hertz, dampingRatio)` arms the position
+drive on revolute (target angle), prismatic (target translation),
+and spherical (target rotation) joints;
+`m3Joint_SetTargetAngle/SetTargetTranslation/SetTargetRotation`
+move the goal. The rotation target lives in the JOINT FRAMES
+(frame z is the create-time local axis). Reaction readback:
+`m3Joint_GetConstraintForce/GetConstraintTorque` return last-step
+magnitudes assembled per type; they read 0 until the first step
+after a restore. Breakage: `m3Joint_SetBreakThresholds` arms
+force/torque caps (zero = off); an over-threshold reaction
+destroys the joint at the end of the step and emits the break
+event. Breakage is an in-step deterministic transition on
+purpose: a host poll would race the journal under rollback.
+
+## The integration checklist
+
+What an engine evaluator wires first, and where Maul3D answers:
+
+1. Create a world, step it, read transforms: `m3CreateWorld`,
+   `m3World_Step`, body move events (no polling).
+2. Spawn and destroy at runtime: create ops are journaled with id
+   verification; destroys cascade shapes, joints, and anchors.
+3. Layers and masks: collision filters, filtered queries.
+4. Apply gameplay forces: the force/impulse family.
+5. Teleports, character platforms, elevators: SetTransform, the
+   kinematic servo, motion locks.
+6. Tune materials live: the material setters and world knobs.
+7. Contact callbacks: begin/end events, opt-in hit events, the
+   pre-solve veto with its purity contract.
+8. Motorized doors, servos, breakable structures: joint runtime
+   control, drives, and breakage with the break stream.
+9. Queries: rays, casts, overlaps, all filtered, plus the
+   character controller, vehicles, voxels, and soft bodies from
+   earlier arcs.
+10. Determinism: every one of the above is journaled, snapshot
+    round-trips bit-exactly, and CI enforces cross-platform
+    equality on every commit. That last line is the moat.
+
 ## Units and conventions
 
 SI units: meters, kilograms, seconds, radians. Gravity defaults to

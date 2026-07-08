@@ -4,6 +4,41 @@ All notable changes to Maul3D. Versions are tags on green CI SHAs;
 every entry's determinism gates were verified across all CI cells at
 tag time.
 
+## v1.5 (2026-07-08)
+
+The table-stakes release: everything an engine evaluator checks
+first, all of it journaled, snapshotted, and bit-stable.
+
+- Collision filters: category/mask/group on every shape, one
+  chokepoint for pairs, sensors, and the continuous phase;
+  filtered variants of every ray, cast, and overlap query.
+- Forces and impulses: the six-op family with one-step force
+  accumulators (snapshot state) and analytic books.
+- Runtime body control: teleport with two-neighborhood wake, the
+  kinematic servo, type flips with mass rebuild, enable/disable
+  ghosting everywhere, per-axis motion locks, per-body sleep
+  controls.
+- Central friction (solver rev 21, the second argued golden
+  move): the reference 3D layout, one coupled tangent row per
+  manifold at the mean anchors plus a twist row, pass-local
+  Coulomb budgets, rolling resistance in the manifold warm start.
+  Convicted by the slide-distance law, proven against Maul2D and
+  the reference; the law test now pins v*v/(2*mu*g) for good.
+- Materials and world tuning: runtime friction/restitution/
+  rolling/density setters (density with mass rebuild), gravity,
+  contact tuning, restitution threshold, a hard linear speed cap,
+  sleep and continuous toggles. Knobs are state, not config.
+- Events: opt-in hit events at the analytic impact speed, body
+  move events with the fell-asleep edge, the joint break stream,
+  and the pre-solve veto under a loud purity contract.
+- Joint runtime control: limits, motors, collide-connected, break
+  thresholds (a deliberate addition over the reference: breakage
+  is a deterministic in-step transition, not a host poll),
+  reaction readback, and position drives: the three reference
+  spring rows toward runtime targets.
+- Snapshot v29 through v36; journal ops 26 through 57; 30 suites;
+  the shared cell runs 20. Golden moved once, argued, with rev 21.
+
 ## v1.4 (2026-07-08)
 
 The soft body release, and the close of the ratified roadmap.

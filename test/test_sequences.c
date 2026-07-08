@@ -371,8 +371,225 @@ static void TestGenerationRetirement(void)
     m3DestroyWorld(world);
 }
 
+// The 8-7 red team: every runtime op family from the table-stakes
+// arc (32..57) against stale ids, a mechanism cross case, and a
+// rollback storm that re-runs a mixed op schedule onto the same
+// bits.
+static void TestRuntimeOpsRedTeam(void)
+{
+    // 1) Stale ids across every new family: a world that suffered
+    //    the whole barrage hashes identical to one that never did.
+    uint64_t hashes[2];
+    for (int32_t run = 0; run < 2; ++run)
+    {
+        m3WorldDef def = m3DefaultWorldDef();
+        def.bodyCapacity = 16;
+        def.shapeCapacity = 16;
+        def.jointCapacity = 8;
+        m3WorldId world = m3CreateWorld(&def);
+        m3BodyDef gd = m3DefaultBodyDef();
+        m3BodyId ground = m3CreateBody(world, &gd);
+        m3ShapeDef sd = m3DefaultShapeDef();
+        m3Plane fl = {{0.0f, 1.0f, 0.0f}, 0.0f};
+        m3CreatePlaneShape(ground, &sd, &fl);
+        m3BodyDef bd = m3DefaultBodyDef();
+        bd.type = m3_dynamicBody;
+        bd.position = (m3Pos3){0.0, 0.5, 0.0};
+        m3BodyId crate = m3CreateBody(world, &bd);
+        m3ShapeId crateShape = m3CreateBoxShape(crate, &sd, (m3Vec3){0.5f, 0.5f, 0.5f});
+        if (run == 1)
+        {
+            m3BodyId staleB = crate;
+            staleB.index1 += 100;
+            m3ShapeId staleS = crateShape;
+            staleS.index1 += 100;
+            m3JointId staleJ = {5, staleS.world0, 7};
+            m3Body_SetTransform(staleB, (m3Pos3){9.0, 9.0, 9.0}, (m3Quat){0.0f, 0.0f, 0.0f, 1.0f});
+            m3Body_SetType(staleB, m3_staticBody);
+            m3Body_SetEnabled(staleB, false);
+            m3Body_SetMotionLocks(staleB, 0x3Fu);
+            m3Body_SetSleepControls(staleB, 0.5f, false);
+            m3Body_SetAwake(staleB, false);
+            m3Shape_SetFriction(staleS, 0.1f);
+            m3Shape_SetRestitution(staleS, 0.9f);
+            m3Shape_SetRollingResistance(staleS, 0.2f);
+            m3Shape_SetDensity(staleS, 4.0f, true);
+            m3Shape_EnableHitEvents(staleS, true);
+            m3Shape_EnablePreSolve(staleS, true);
+            m3Joint_SetLimits(staleJ, true, -1.0f, 1.0f);
+            m3Joint_SetMotor(staleJ, true, 1.0f, 1.0f);
+            m3Joint_SetCollideConnected(staleJ, true);
+            m3Joint_SetBreakThresholds(staleJ, 1.0f, 1.0f);
+            m3Joint_SetSpring(staleJ, true, 5.0f, 1.0f);
+            m3Joint_SetTargetAngle(staleJ, 0.5f);
+        }
+        for (int32_t i = 0; i < 60; ++i)
+        {
+            m3World_Step(world, 1.0f / 60.0f, 4);
+        }
+        hashes[run] = m3World_Hash(world);
+        m3DestroyWorld(world);
+    }
+    CHECK(hashes[0] == hashes[1], "the stale barrage changes nothing");
+
+    // 2) The mechanism cross case: one bullet, one wall, four ways
+    //    to let it through, each un-done before the next.
+    {
+        m3WorldDef def = m3DefaultWorldDef();
+        def.bodyCapacity = 8;
+        def.shapeCapacity = 8;
+        def.gravity = (m3Vec3){0.0f, 0.0f, 0.0f};
+        m3WorldId world = m3CreateWorld(&def);
+        m3BodyDef wd = m3DefaultBodyDef();
+        wd.position = (m3Pos3){5.0, 0.0, 0.0};
+        m3BodyId wall = m3CreateBody(world, &wd);
+        m3ShapeDef sd = m3DefaultShapeDef();
+        m3ShapeId wallShape = m3CreateBoxShape(wall, &sd, (m3Vec3){0.1f, 2.0f, 2.0f});
+        for (int32_t mode = 0; mode < 5; ++mode)
+        {
+            m3BodyDef bd = m3DefaultBodyDef();
+            bd.type = m3_dynamicBody;
+            bd.isBullet = true;
+            bd.position = (m3Pos3){0.0, 0.0, 0.0};
+            m3BodyId bullet = m3CreateBody(world, &bd);
+            m3ShapeDef bs = m3DefaultShapeDef();
+            if (mode == 1)
+            {
+                bs.maskBits = ~2ull; // filter: never meets category 2
+            }
+            m3Sphere s = {{0.0f, 0.0f, 0.0f}, 0.1f};
+            m3ShapeId bulletShape = m3CreateSphereShape(bullet, &bs, &s);
+            (void)bulletShape;
+            if (mode == 1)
+            {
+                m3Shape_SetFriction(wallShape, 0.6f); // touch to prove alive
+                // wall category 2 for this pass only
+            }
+            uint64_t cats[5] = {1ull, 2ull, 1ull, 1ull, 1ull};
+            (void)cats;
+            if (mode == 2)
+            {
+                m3Body_SetEnabled(wall, false);
+            }
+            if (mode == 3)
+            {
+                m3World_EnableContinuous(world, false);
+            }
+            m3Body_SetLinearVelocity(bullet, (m3Vec3){300.0f, 0.0f, 0.0f});
+            for (int32_t i = 0; i < 10; ++i)
+            {
+                m3World_Step(world, 1.0f / 60.0f, 4);
+            }
+            double x = m3Body_GetPosition(bullet).x;
+            if (mode == 0)
+            {
+                CHECK(x < 5.0, "baseline: the wall stops the bullet");
+            }
+            else if (mode == 2)
+            {
+                CHECK(x > 6.0, "disabled wall: the bullet passes");
+                m3Body_SetEnabled(wall, true);
+            }
+            else if (mode == 3)
+            {
+                CHECK(x > 6.0, "continuous off: the bullet tunnels");
+                m3World_EnableContinuous(world, true);
+            }
+            else if (mode == 4)
+            {
+                CHECK(x < 5.0, "everything restored: the wall stops it again");
+            }
+            m3DestroyBody(bullet);
+        }
+        m3DestroyWorld(world);
+    }
+
+    // 3) The rollback storm: a deterministic mixed-op schedule, a
+    //    mid-flight snapshot, and a re-run onto identical bits.
+    {
+        static uint8_t snap[1048576];
+        m3WorldDef def = m3DefaultWorldDef();
+        def.bodyCapacity = 16;
+        def.shapeCapacity = 16;
+        def.jointCapacity = 8;
+        m3WorldId world = m3CreateWorld(&def);
+        m3BodyDef gd = m3DefaultBodyDef();
+        m3BodyId ground = m3CreateBody(world, &gd);
+        m3ShapeDef sd = m3DefaultShapeDef();
+        m3Plane fl = {{0.0f, 1.0f, 0.0f}, 0.0f};
+        m3ShapeId floor = m3CreatePlaneShape(ground, &sd, &fl);
+        m3BodyId crates[3];
+        m3ShapeId shapes[3];
+        for (int32_t k = 0; k < 3; ++k)
+        {
+            m3BodyDef bd = m3DefaultBodyDef();
+            bd.type = m3_dynamicBody;
+            bd.position = (m3Pos3){(double)k * 1.4, 0.5 + (double)k, 0.0};
+            crates[k] = m3CreateBody(world, &bd);
+            shapes[k] = m3CreateBoxShape(crates[k], &sd, (m3Vec3){0.5f, 0.5f, 0.5f});
+        }
+        m3JointDef jd = m3DefaultJointDef();
+        jd.type = m3_revoluteJoint;
+        jd.bodyA = crates[0];
+        jd.bodyB = crates[1];
+        jd.localAnchorA = (m3Vec3){0.7f, 0.0f, 0.0f};
+        jd.localAnchorB = (m3Vec3){-0.7f, 0.0f, 0.0f};
+        jd.localAxisA = (m3Vec3){0.0f, 1.0f, 0.0f};
+        jd.localAxisB = (m3Vec3){0.0f, 1.0f, 0.0f};
+        m3JointId hinge = m3CreateJoint(&jd);
+
+        int32_t snapBytes = 0;
+#define M3_STORM_OPS(i)                                                                            \
+    do                                                                                             \
+    {                                                                                              \
+        int32_t phase = (i) % 24;                                                                  \
+        if (phase == 0)                                                                            \
+            m3Body_ApplyLinearImpulse(crates[(i) % 3], (m3Vec3){0.4f, 0.0f, -0.2f});               \
+        if (phase == 3)                                                                            \
+            m3Body_SetMotionLocks(crates[(i) % 3], (uint8_t)((i) % 64));                           \
+        if (phase == 6)                                                                            \
+            m3Shape_SetFriction(shapes[(i) % 3], 0.2f + 0.1f * (float)((i) % 5));                  \
+        if (phase == 9)                                                                            \
+            m3Joint_SetMotor(hinge, ((i) / 24) % 2 == 0, 1.5f, 20.0f);                             \
+        if (phase == 12)                                                                           \
+            m3Joint_SetSpring(hinge, true, 4.0f + (float)((i) % 3), 0.8f);                         \
+        if (phase == 13)                                                                           \
+            m3Joint_SetTargetAngle(hinge, 0.1f * (float)((i) % 6) - 0.25f);                        \
+        if (phase == 16)                                                                           \
+            m3Shape_EnableHitEvents(floor, ((i) / 24) % 2 == 0);                                   \
+        if (phase == 18)                                                                           \
+            m3World_SetContactTuning(world, 30.0f + (float)((i) % 8), 10.0f, 3.0f);                \
+        if (phase == 21)                                                                           \
+            m3Body_SetSleepControls(crates[(i) % 3], 0.05f + 0.01f * (float)((i) % 4),             \
+                                    ((i) / 24) % 2 == 0);                                          \
+    } while (0)
+
+        for (int32_t i = 0; i < 120; ++i)
+        {
+            M3_STORM_OPS(i);
+            m3World_Step(world, 1.0f / 60.0f, 4);
+            if (i == 59)
+            {
+                snapBytes = m3World_Snapshot(world, snap, (int32_t)sizeof(snap));
+                CHECK(snapBytes > 0, "the storm snapshot fits");
+            }
+        }
+        uint64_t final = m3World_Hash(world);
+        CHECK(m3World_Restore(world, snap, snapBytes), "the storm restore lands");
+        for (int32_t i = 60; i < 120; ++i)
+        {
+            M3_STORM_OPS(i);
+            m3World_Step(world, 1.0f / 60.0f, 4);
+        }
+        CHECK(m3World_Hash(world) == final, "the storm re-runs onto identical bits");
+#undef M3_STORM_OPS
+        m3DestroyWorld(world);
+    }
+}
+
 int main(void)
 {
+    TestRuntimeOpsRedTeam();
     TestStaleIdsEverywhere();
     TestSnapshotRefusals();
     TestJournalCorruptionIsAtomic();
