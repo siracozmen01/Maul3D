@@ -27,6 +27,8 @@ m3CharacterDef m3DefaultCharacterDef(void)
     def.snapDistance = 0.3f;
     def.skin = 0.02f;
     def.stepHeight = 0.35f;
+    def.mass = 80.0f;
+    def.pushMaxMassRatio = 2.0f;
     def.internalValue = M3_CHARACTER_COOKIE;
     return def;
 }
@@ -79,8 +81,12 @@ int32_t m3CreateCharacterInternal(m3World* world, const m3CharacterDef* def)
     world->charSnap[slot] = def->snapDistance;
     world->charSkin[slot] = def->skin;
     world->charStepHeight[slot] = def->stepHeight;
+    world->charMass[slot] = def->mass;
+    world->charPushMax[slot] = def->pushMaxMassRatio;
     world->charGrounded[slot] = 0;
     world->charGroundNormal[slot] = (m3Vec3){0.0f, 0.0f, 0.0f};
+    world->charGroundBody[slot] = -1;
+    world->charGroundGen[slot] = 0;
     return slot;
 }
 
@@ -98,8 +104,12 @@ void m3DestroyCharacterInternal(m3World* world, int32_t slot)
     world->charSnap[slot] = 0.0f;
     world->charSkin[slot] = 0.0f;
     world->charStepHeight[slot] = 0.0f;
+    world->charMass[slot] = 0.0f;
+    world->charPushMax[slot] = 0.0f;
     world->charGrounded[slot] = 0;
     world->charGroundNormal[slot] = (m3Vec3){0.0f, 0.0f, 0.0f};
+    world->charGroundBody[slot] = -1;
+    world->charGroundGen[slot] = 0;
     m3IdPoolFree(&world->charPool, slot);
 }
 
@@ -110,17 +120,38 @@ void m3DestroyCharacterInternal(m3World* world, int32_t slot)
 // capsule, and the ray contract (start-inside misses) filters self
 // for free.
 static bool WalkableBelow(m3World* world, int32_t slot, m3Pos3 center, m3real reach,
-                          m3Vec3* outNormal)
+                          m3RayHit* outHit)
 {
     m3real depth =
         world->charHalfHeight[slot] + world->charRadius[slot] + reach + world->charSkin[slot];
     m3RayHit hit = m3RayClosestInternal(world, center, (m3Vec3){0.0f, -depth, 0.0f});
     if (hit.hit && hit.normal.y >= world->charCosSlope[slot])
     {
-        *outNormal = hit.normal;
+        *outHit = hit;
         return true;
     }
     return false;
+}
+
+// Grounding is recorded WITH the body under the surface (4-6): the
+// carry pass ferries riders by that body's step motion, and the
+// generation guards against a recycled slot impersonating a floor.
+static void RecordGround(m3World* world, int32_t slot, const m3RayHit* hit)
+{
+    int32_t shape = hit->shape.index1 - 1;
+    int32_t under = world->shapeBody[shape];
+    world->charGrounded[slot] = 1;
+    world->charGroundNormal[slot] = hit->normal;
+    world->charGroundBody[slot] = under;
+    world->charGroundGen[slot] = world->bodyPool.generations[under];
+}
+
+static void ClearGround(m3World* world, int32_t slot)
+{
+    world->charGrounded[slot] = 0;
+    world->charGroundNormal[slot] = (m3Vec3){0.0f, 0.0f, 0.0f};
+    world->charGroundBody[slot] = -1;
+    world->charGroundGen[slot] = 0;
 }
 
 // One capsule cast from the character's center, excluding its own
@@ -143,8 +174,7 @@ void m3CharacterMoveInternal(m3World* world, int32_t slot, m3Vec3 translation)
     m3real stepHeight = world->charStepHeight[slot];
     int wasDescending = translation.y < 0.0f;
     int wasGrounded = world->charGrounded[slot] != 0;
-    world->charGrounded[slot] = 0;
-    world->charGroundNormal[slot] = (m3Vec3){0.0f, 0.0f, 0.0f};
+    ClearGround(world, slot);
 
     for (int32_t iteration = 0; iteration < M3_CHARACTER_SLIDE_ITERATIONS; ++iteration)
     {
@@ -184,7 +214,8 @@ void m3CharacterMoveInternal(m3World* world, int32_t slot, m3Vec3 translation)
                                    lifted.z + (double)(horizontal.z * invH * go)};
                 m3real reach = lift + stepHeight;
                 m3RayHit land = CharacterCast(world, slot, advanced, (m3Vec3){0.0f, -reach, 0.0f});
-                m3Vec3 floorNormal = {0.0f, 0.0f, 0.0f};
+                m3RayHit floorHit;
+                memset(&floorHit, 0, sizeof(floorHit));
                 // Acceptance is the RAY'S alone, and the ray probes
                 // HALF A RADIUS AHEAD of the landing axis. A steep
                 // ramp rising out of a walkable floor blocks the
@@ -203,12 +234,11 @@ void m3CharacterMoveInternal(m3World* world, int32_t slot, m3Vec3 translation)
                                 advanced.z + (double)(horizontal.z * invH * probeAhead)};
                 m3real drop = land.hit ? m3MaxF(land.fraction * reach - skin, 0.0f) : 0.0f;
                 double landedY = advanced.y - (double)drop;
-                if (land.hit && WalkableBelow(world, slot, probe, reach, &floorNormal) &&
+                if (land.hit && WalkableBelow(world, slot, probe, reach, &floorHit) &&
                     landedY - pos.y <= (double)(stepHeight + skin))
                 {
                     pos = (m3Pos3){advanced.x, landedY, advanced.z};
-                    world->charGrounded[slot] = 1;
-                    world->charGroundNormal[slot] = floorNormal;
+                    RecordGround(world, slot, &floorHit);
                     // The horizontal budget is spent; vertical intent
                     // (host gravity) dissolves into the landing.
                     m3real spent = hLen > 0.0f ? go * invH : 1.0f;
@@ -235,8 +265,40 @@ void m3CharacterMoveInternal(m3World* world, int32_t slot, m3Vec3 translation)
         m3Vec3 n = hit.normal;
         if (n.y >= cosSlope)
         {
-            world->charGrounded[slot] = 1;
-            world->charGroundNormal[slot] = n;
+            RecordGround(world, slot, &hit);
+        }
+        // The push (4-6): a blocked move shoves a dynamic body with
+        // impulse = mass * blocked displacement into the surface.
+        // Per tick that displacement IS the walker's velocity in
+        // tick units, so the momentum flux comes out mass * speed
+        // with no dt anywhere. Walkable floors are standing, not
+        // pushing (weight is not modeled), and bodies heavier than
+        // pushMaxMassRatio * mass are walls by contract.
+        {
+            int32_t hitShape = hit.shape.index1 - 1;
+            int32_t hitBody = world->shapeBody[hitShape];
+            m3real blocked = len - advance;
+            m3real into = -m3Dot3(remaining, n) * inv;
+            if (world->types[hitBody] == (uint8_t)m3_dynamicBody && n.y < cosSlope &&
+                world->invMass[hitBody] > 0.0f && world->charPushMax[slot] > 0.0f &&
+                1.0f <=
+                    world->charPushMax[slot] * world->charMass[slot] * world->invMass[hitBody] &&
+                blocked > 0.0f && into > 0.0f)
+            {
+                m3Vec3 impulse = m3MulSV3(-world->charMass[slot] * blocked * into, n);
+                m3Vec3 rlc =
+                    m3RotateVec3(world->transforms[hitBody].q, world->localCenters[hitBody]);
+                m3Vec3 arm = {(m3real)(hit.point.x - world->transforms[hitBody].p.x) - rlc.x,
+                              (m3real)(hit.point.y - world->transforms[hitBody].p.y) - rlc.y,
+                              (m3real)(hit.point.z - world->transforms[hitBody].p.z) - rlc.z};
+                world->linearVelocities[hitBody] = m3Add3(
+                    world->linearVelocities[hitBody], m3MulSV3(world->invMass[hitBody], impulse));
+                world->angularVelocities[hitBody] =
+                    m3Add3(world->angularVelocities[hitBody],
+                           m3MulMV3(m3WorldInvInertia(world, hitBody), m3Cross3(arm, impulse)));
+                world->awake[hitBody] = 1;
+                world->sleepTimes[hitBody] = 0.0f;
+            }
         }
         // Slide: everything not actually traveled stays in the
         // budget, minus its component into the surface. A steep
@@ -258,26 +320,28 @@ void m3CharacterMoveInternal(m3World* world, int32_t slot, m3Vec3 translation)
     {
         m3RayHit down =
             CharacterCast(world, slot, pos, (m3Vec3){0.0f, -world->charSnap[slot], 0.0f});
-        m3Vec3 floorNormal = {0.0f, 0.0f, 0.0f};
+        m3RayHit floorHit;
+        memset(&floorHit, 0, sizeof(floorHit));
         if (down.hit && (down.normal.y >= cosSlope ||
-                         WalkableBelow(world, slot, pos, world->charSnap[slot], &floorNormal)))
+                         WalkableBelow(world, slot, pos, world->charSnap[slot], &floorHit)))
         {
-            if (down.normal.y >= cosSlope)
-            {
-                floorNormal = down.normal;
-            }
             m3real drop = down.fraction * world->charSnap[slot] - skin;
             if (drop > 0.0f)
             {
                 pos.y -= (double)drop;
             }
-            world->charGrounded[slot] = 1;
-            world->charGroundNormal[slot] = floorNormal;
+            if (down.normal.y >= cosSlope)
+            {
+                RecordGround(world, slot, &down);
+            }
+            else
+            {
+                RecordGround(world, slot, &floorHit);
+            }
         }
         else if (!down.hit)
         {
-            world->charGrounded[slot] = 0;
-            world->charGroundNormal[slot] = (m3Vec3){0.0f, 0.0f, 0.0f};
+            ClearGround(world, slot);
         }
     }
 
@@ -287,21 +351,79 @@ void m3CharacterMoveInternal(m3World* world, int32_t slot, m3Vec3 translation)
     world->sleepTimes[body] = 0.0f;
 }
 
+static void RefreshGroundingCore(m3World* world, int32_t slot)
+{
+    m3Pos3 pos = world->transforms[world->charBody[slot]].p;
+    m3RayHit down = CharacterCast(world, slot, pos, (m3Vec3){0.0f, -world->charSnap[slot], 0.0f});
+    m3RayHit floorHit;
+    memset(&floorHit, 0, sizeof(floorHit));
+    if (down.hit && down.normal.y >= world->charCosSlope[slot])
+    {
+        RecordGround(world, slot, &down); // the floor may be a NEW body
+    }
+    else if (down.hit && WalkableBelow(world, slot, pos, world->charSnap[slot], &floorHit))
+    {
+        RecordGround(world, slot, &floorHit);
+    }
+    else
+    {
+        // The floor is gone: airborne the same step it vanished.
+        ClearGround(world, slot);
+    }
+}
+
 void m3CharacterRefreshGrounding(m3World* world, int32_t slot)
 {
     if (world->charGrounded[slot] == 0)
     {
         return; // airborne already tells the truth
     }
-    m3Pos3 pos = world->transforms[world->charBody[slot]].p;
-    m3RayHit down = CharacterCast(world, slot, pos, (m3Vec3){0.0f, -world->charSnap[slot], 0.0f});
-    m3Vec3 floorNormal = {0.0f, 0.0f, 0.0f};
-    if (!down.hit || (down.normal.y < world->charCosSlope[slot] &&
-                      !WalkableBelow(world, slot, pos, world->charSnap[slot], &floorNormal)))
+    RefreshGroundingCore(world, slot);
+}
+
+// Riders (4-6): after the step integrates every body, grounded
+// characters follow their ground body's rigid motion through the
+// regular slide casts, so platforms ferry walkers and walls still
+// block them. Serial in slot order: canonical. The begin-of-step
+// origin is reconstructed from the continuous pass's COM and
+// rotation capture; identical inputs give bit-identical rotation
+// math, so an unmoved body compares equal and carries nobody.
+void m3CharacterCarryRiders(m3World* world, const m3Pos3* com0, const m3Quat* rot0)
+{
+    for (int32_t slot = 0; slot < world->charPool.maxIndex; ++slot)
     {
-        // The floor is gone: airborne the same step it vanished.
-        world->charGrounded[slot] = 0;
-        world->charGroundNormal[slot] = (m3Vec3){0.0f, 0.0f, 0.0f};
+        if (world->charPool.alive[slot] == 0 || world->charGrounded[slot] == 0)
+        {
+            continue;
+        }
+        int32_t under = world->charGroundBody[slot];
+        if (under < 0 || world->bodyPool.alive[under] == 0 ||
+            world->bodyPool.generations[under] != world->charGroundGen[slot])
+        {
+            continue; // the floor body is gone; Move retells the truth
+        }
+        m3Vec3 rlc0 = m3RotateVec3(rot0[under], world->localCenters[under]);
+        m3Pos3 old = {com0[under].x - (double)rlc0.x, com0[under].y - (double)rlc0.y,
+                      com0[under].z - (double)rlc0.z};
+        const m3Transform* now = &world->transforms[under];
+        if (memcmp(&rot0[under], &now->q, sizeof(m3Quat)) == 0 && old.x == now->p.x &&
+            old.y == now->p.y && old.z == now->p.z)
+        {
+            continue; // the floor did not move this step
+        }
+        m3Pos3 p0 = world->transforms[world->charBody[slot]].p;
+        m3Vec3 rel = {(m3real)(p0.x - old.x), (m3real)(p0.y - old.y), (m3real)(p0.z - old.z)};
+        m3Vec3 out = m3RotateVec3(now->q, m3InvRotateVec3(rot0[under], rel));
+        m3Vec3 carry = {(m3real)(now->p.x + (double)out.x - p0.x),
+                        (m3real)(now->p.y + (double)out.y - p0.y),
+                        (m3real)(now->p.z + (double)out.z - p0.z)};
+        m3CharacterMoveInternal(world, slot, carry);
+        // A pure sideways carry ends the slide with no floor
+        // contact and Move's snap only serves descents; the rider
+        // still deserves the grounding truth, so ask the floor
+        // classifier directly (it re-grounds within snapDistance
+        // or honestly reports the ride ended in air).
+        RefreshGroundingCore(world, slot);
     }
 }
 
@@ -313,7 +435,8 @@ m3CharacterId m3CreateCharacter(m3WorldId worldId, const m3CharacterDef* def)
         !m3FiniteF(def->halfHeight) || def->halfHeight < 0.0f || !m3FiniteF(def->maxSlopeAngle) ||
         def->maxSlopeAngle <= 0.0f || def->maxSlopeAngle > 1.5f || !m3FiniteF(def->snapDistance) ||
         def->snapDistance < 0.0f || !m3FiniteF(def->skin) || !(def->skin > 0.0f) ||
-        !m3FiniteF(def->stepHeight) || def->stepHeight < 0.0f)
+        !m3FiniteF(def->stepHeight) || def->stepHeight < 0.0f || !m3FiniteF(def->mass) ||
+        !(def->mass > 0.0f) || !m3FiniteF(def->pushMaxMassRatio) || def->pushMaxMassRatio < 0.0f)
     {
         return m3_nullCharacterId;
     }
@@ -409,4 +532,21 @@ m3Vec3 m3Character_GetGroundNormal(m3CharacterId characterId)
         return (m3Vec3){0.0f, 0.0f, 0.0f};
     }
     return world->charGroundNormal[slot];
+}
+
+m3BodyId m3Character_GetGroundBody(m3CharacterId characterId)
+{
+    m3World* world = m3WorldFromIndex0(characterId.world0);
+    int32_t slot = world != NULL ? m3CharacterSlot(world, characterId) : -1;
+    if (slot < 0 || world->charGrounded[slot] == 0)
+    {
+        return m3_nullBodyId;
+    }
+    int32_t under = world->charGroundBody[slot];
+    if (under < 0 || world->bodyPool.alive[under] == 0 ||
+        world->bodyPool.generations[under] != world->charGroundGen[slot])
+    {
+        return m3_nullBodyId; // destroyed or recycled: no impostors
+    }
+    return (m3BodyId){under + 1, world->worldIndex0, world->bodyPool.generations[under]};
 }

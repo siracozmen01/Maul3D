@@ -168,6 +168,10 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     M3_ALLOC(world->charSnap, def->characterCapacity, m3real);
     M3_ALLOC(world->charSkin, def->characterCapacity, m3real);
     M3_ALLOC(world->charStepHeight, def->characterCapacity, m3real);
+    M3_ALLOC(world->charMass, def->characterCapacity, m3real);
+    M3_ALLOC(world->charPushMax, def->characterCapacity, m3real);
+    M3_ALLOC(world->charGroundBody, def->characterCapacity, int32_t);
+    M3_ALLOC(world->charGroundGen, def->characterCapacity, uint16_t);
     M3_ALLOC(world->charGrounded, def->characterCapacity, uint8_t);
     M3_ALLOC(world->charGroundNormal, def->characterCapacity, m3Vec3);
     for (int32_t i = 0; i < def->characterCapacity; ++i)
@@ -317,6 +321,10 @@ void m3DestroyWorld(m3WorldId worldId)
     m3Free(world->charSnap);
     m3Free(world->charSkin);
     m3Free(world->charStepHeight);
+    m3Free(world->charMass);
+    m3Free(world->charPushMax);
+    m3Free(world->charGroundBody);
+    m3Free(world->charGroundGen);
     m3Free(world->charGrounded);
     m3Free(world->charGroundNormal);
     m3Free(world->jointNextA);

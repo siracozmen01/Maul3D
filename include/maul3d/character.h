@@ -30,15 +30,22 @@ extern "C"
     {
         m3Pos3 position; // the capsule CENTER at spawn
         m3real radius;
-        m3real halfHeight;    // segment half length (total height =
-                              // 2 * (halfHeight + radius))
-        m3real maxSlopeAngle; // radians from horizontal; steeper
-                              // ground never counts as walkable
-        m3real snapDistance;  // how far down a grounded character
-                              // reaches to stay glued on descents
-        m3real skin;          // the standing gap casts preserve
-        m3real stepHeight;    // the tallest riser a walking
-                              // character mounts in one move (4-5)
+        m3real halfHeight;       // segment half length (total height =
+                                 // 2 * (halfHeight + radius))
+        m3real maxSlopeAngle;    // radians from horizontal; steeper
+                                 // ground never counts as walkable
+        m3real snapDistance;     // how far down a grounded character
+                                 // reaches to stay glued on descents
+        m3real skin;             // the standing gap casts preserve
+        m3real stepHeight;       // the tallest riser a walking
+                                 // character mounts in one move (4-5)
+        m3real mass;             // kilograms; a blocked move pushes
+                                 // dynamic bodies with impulse =
+                                 // mass * blocked displacement (4-6)
+        m3real pushMaxMassRatio; // the heaviest body a push moves,
+                                 // as a multiple of mass; heavier
+                                 // bodies are walls (zero: never
+                                 // push)
         uint64_t userData;
         int32_t internalValue;
     } m3CharacterDef;
@@ -64,6 +71,12 @@ extern "C"
     M3_API bool m3Character_IsGrounded(m3CharacterId characterId);
     /// The last walkable surface normal (zeros while airborne).
     M3_API m3Vec3 m3Character_GetGroundNormal(m3CharacterId characterId);
+    /// The body under the character's feet (null while airborne or
+    /// after that body is destroyed). Each m3World_Step carries
+    /// grounded characters along with this body's motion through
+    /// the regular slide casts: kinematic platforms, elevators, and
+    /// dynamic fragments all ferry their riders (4-6).
+    M3_API m3BodyId m3Character_GetGroundBody(m3CharacterId characterId);
 
     static const m3CharacterId m3_nullCharacterId = {0, 0, 0};
 

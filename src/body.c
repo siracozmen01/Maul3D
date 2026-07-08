@@ -107,6 +107,17 @@ void m3DestroyBodyInternal(m3World* world, int32_t index)
     world->angularDamping[index] = 0.0f;
     world->types[index] = 0;
     world->userData[index] = 0;
+    // Characters standing on this body lose their ground reference
+    // NOW (4-6): the generation guard would catch a recycled slot,
+    // but a cleared reference never even asks.
+    for (int32_t c = 0; c < world->charPool.maxIndex; ++c)
+    {
+        if (world->charPool.alive[c] != 0 && world->charGroundBody[c] == index)
+        {
+            world->charGroundBody[c] = -1;
+            world->charGroundGen[c] = 0;
+        }
+    }
     m3IdPoolFree(&world->bodyPool, index);
 }
 

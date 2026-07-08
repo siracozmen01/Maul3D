@@ -22,7 +22,9 @@
 #endif
 
 #define M3_SNAPSHOT_MAGIC   0x4D33534Eu // 'M3SN'
-#define M3_SNAPSHOT_VERSION 22u
+#define M3_SNAPSHOT_VERSION 23u
+// v23: character mass, push ratio, and the ground-body reference
+// (4-6 riders). v22: stepHeight. v21: the character pool.
 // v20: generic joint state. NOTE for the ledger: v19 (voxel fill
 // fractions, 3-6) shipped MISLABELED as 18: the bump script died
 // after a partial edit, the same failure mode as the rev-17 skip
@@ -206,6 +208,10 @@ static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3Wal
     M3_BLOCK(world->charStepHeight, world->characterCapacity * (int32_t)sizeof(m3real));
     M3_BLOCK(world->charGrounded, world->characterCapacity * (int32_t)sizeof(uint8_t));
     M3_BLOCK(world->charGroundNormal, world->characterCapacity * (int32_t)sizeof(m3Vec3));
+    M3_BLOCK(world->charMass, world->characterCapacity * (int32_t)sizeof(m3real));
+    M3_BLOCK(world->charPushMax, world->characterCapacity * (int32_t)sizeof(m3real));
+    M3_BLOCK(world->charGroundBody, world->characterCapacity * (int32_t)sizeof(int32_t));
+    M3_BLOCK(world->charGroundGen, world->characterCapacity * (int32_t)sizeof(uint16_t));
     M3_BLOCK(world->charPool.generations, world->characterCapacity * (int32_t)sizeof(uint16_t));
     M3_BLOCK(world->charPool.alive, world->characterCapacity * (int32_t)sizeof(uint8_t));
     M3_BLOCK(world->charPool.freeQueue, world->characterCapacity * (int32_t)sizeof(int32_t));
@@ -509,6 +515,10 @@ uint64_t m3World_Hash(m3WorldId worldId)
         h = m3Hash64(h, &world->charStepHeight[i], 4);
         h = m3Hash64(h, &world->charGrounded[i], 1);
         h = m3Hash64(h, &world->charGroundNormal[i], (int32_t)sizeof(m3Vec3));
+        h = m3Hash64(h, &world->charMass[i], 4);
+        h = m3Hash64(h, &world->charPushMax[i], 4);
+        h = m3Hash64(h, &world->charGroundBody[i], 4);
+        h = m3Hash64(h, &world->charGroundGen[i], 2);
     }
 
     // Voxel chunk content is simulation state (destruction edits it

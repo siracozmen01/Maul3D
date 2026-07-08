@@ -248,10 +248,17 @@ static void TestCharacterContracts(void)
     cd = m3DefaultCharacterDef();
     cd.maxSlopeAngle = 0.0f;
     CHECK(!m3Character_IsValid(m3CreateCharacter(world, &cd)), "a zero slope refuses");
+    cd = m3DefaultCharacterDef();
+    cd.mass = 0.0f;
+    CHECK(!m3Character_IsValid(m3CreateCharacter(world, &cd)), "a zero mass refuses");
+    cd = m3DefaultCharacterDef();
+    cd.pushMaxMassRatio = -1.0f;
+    CHECK(!m3Character_IsValid(m3CreateCharacter(world, &cd)), "a negative push ratio refuses");
 
     cd = m3DefaultCharacterDef();
     cd.position = (m3Pos3){0.0, 2.0, 0.0};
     m3CharacterId one = m3CreateCharacter(world, &cd);
+    CHECK(m3Character_GetGroundBody(one).index1 == 0, "an airborne spawn grounds on nothing");
     cd.position = (m3Pos3){3.0, 2.0, 0.0};
     m3CharacterId two = m3CreateCharacter(world, &cd);
     CHECK(m3Character_IsValid(one) && m3Character_IsValid(two), "the pool fills");
@@ -276,6 +283,200 @@ static void TestCharacterContracts(void)
 }
 
 // 4-5: stairs, slopes, the voxel floor, and the welded seam.
+
+static void TestPushCrate(void)
+{
+    // A blocked walk shoves a light crate: impulse = mass * blocked
+    // displacement, applied at the contact, so the crate gains both
+    // speed and forward spin. Heavier than pushMaxMassRatio * mass
+    // is a wall: not one millimeter per second.
+    m3WorldId world = ArenaWorld();
+    m3ShapeDef sd = m3DefaultShapeDef();
+    m3BodyDef bd = m3DefaultBodyDef();
+    bd.type = m3_dynamicBody;
+    bd.position = (m3Pos3){2.0, 0.5, 0.0};
+    m3BodyId crate = m3CreateBody(world, &bd);
+    m3CreateBoxShape(crate, &sd, (m3Vec3){0.5f, 0.5f, 0.5f}); // mass 1
+
+    m3CharacterDef cd = m3DefaultCharacterDef();
+    cd.position = (m3Pos3){0.9, 2.0, 0.0};
+    m3CharacterId hero = m3CreateCharacter(world, &cd);
+    for (int32_t i = 0; i < 40; ++i)
+    {
+        m3Character_Move(hero, (m3Vec3){0.0f, -0.1f, 0.0f});
+    }
+    // Park against the crate face at x = 1.5, then shove once.
+    for (int32_t i = 0; i < 4; ++i)
+    {
+        m3Character_Move(hero, (m3Vec3){0.05f, 0.0f, 0.0f});
+    }
+    m3Vec3 v0 = m3Body_GetLinearVelocity(crate);
+    CHECK(v0.x == 0.0f, "the parked crate has no velocity yet");
+    m3Character_Move(hero, (m3Vec3){0.05f, 0.0f, 0.0f});
+    m3Vec3 v = m3Body_GetLinearVelocity(crate);
+    m3Vec3 w = m3Body_GetAngularVelocity(crate);
+    CHECK(v.x > 0.5f, "the pressed crate takes real speed");
+    CHECK(v.x <= 80.0f * 0.05f + 0.01f, "the impulse never exceeds the full intent");
+    CHECK(w.z != 0.0f, "the off-center contact spins the crate");
+
+    // The heavy twin refuses: density 200 makes 200 kg against a
+    // cap of pushMaxMassRatio 2 * mass 80 = 160.
+    m3ShapeDef hd = m3DefaultShapeDef();
+    hd.density = 200.0f;
+    m3BodyDef hb = m3DefaultBodyDef();
+    hb.type = m3_dynamicBody;
+    hb.position = (m3Pos3){2.0, 0.5, 3.0};
+    m3BodyId heavy = m3CreateBody(world, &hb);
+    m3CreateBoxShape(heavy, &hd, (m3Vec3){0.5f, 0.5f, 0.5f});
+    m3CharacterDef cd2 = m3DefaultCharacterDef();
+    cd2.position = (m3Pos3){0.9, 2.0, 3.0};
+    m3CharacterId mover = m3CreateCharacter(world, &cd2);
+    for (int32_t i = 0; i < 40; ++i)
+    {
+        m3Character_Move(mover, (m3Vec3){0.0f, -0.1f, 0.0f});
+    }
+    for (int32_t i = 0; i < 8; ++i)
+    {
+        m3Character_Move(mover, (m3Vec3){0.05f, 0.0f, 0.0f});
+    }
+    m3Vec3 hv = m3Body_GetLinearVelocity(heavy);
+    CHECK(hv.x == 0.0f && hv.y == 0.0f && hv.z == 0.0f, "the heavy crate is a wall");
+    m3DestroyWorld(world);
+}
+
+static void TestPlatformRideAndElevator(void)
+{
+    // A kinematic platform ferries its rider sideways, then down,
+    // with no Move commands at all: the carry is the step's job.
+    // Twin worlds prove the ride deterministic; destroying the
+    // platform clears the ground body reference immediately.
+    uint64_t hashes[2];
+    for (int32_t run = 0; run < 2; ++run)
+    {
+        m3WorldId world = ArenaWorld();
+        m3ShapeDef sd = m3DefaultShapeDef();
+        m3BodyDef pd = m3DefaultBodyDef();
+        pd.type = m3_kinematicBody;
+        pd.position = (m3Pos3){0.0, 2.0, 0.0};
+        m3BodyId platform = m3CreateBody(world, &pd);
+        m3CreateBoxShape(platform, &sd, (m3Vec3){2.0f, 0.25f, 2.0f}); // top at 2.25
+
+        m3CharacterDef cd = m3DefaultCharacterDef();
+        cd.position = (m3Pos3){0.0, 3.5, 0.0};
+        m3CharacterId hero = m3CreateCharacter(world, &cd);
+        for (int32_t i = 0; i < 20; ++i)
+        {
+            m3Character_Move(hero, (m3Vec3){0.0f, -0.1f, 0.0f});
+        }
+        double y0 = m3Character_GetPosition(hero).y;
+        CHECK(m3Character_IsGrounded(hero), "the rider lands on the platform");
+        m3BodyId under = m3Character_GetGroundBody(hero);
+        CHECK(under.index1 == platform.index1 && under.generation == platform.generation,
+              "the ground body is the platform");
+
+        m3Body_SetLinearVelocity(platform, (m3Vec3){0.5f, 0.0f, 0.0f});
+        for (int32_t i = 0; i < 60; ++i)
+        {
+            m3World_Step(world, 1.0f / 60.0f, 4);
+        }
+        m3Pos3 p = m3Character_GetPosition(hero);
+        CHECK(p.x > 0.48 && p.x < 0.52, "the ride carries the full half meter");
+        CHECK(p.y > y0 - 0.02 && p.y < y0 + 0.02, "the ride keeps standing height");
+        CHECK(m3Character_IsGrounded(hero), "the ride never breaks grounding");
+
+        m3Body_SetLinearVelocity(platform, (m3Vec3){0.0f, -0.3f, 0.0f});
+        for (int32_t i = 0; i < 60; ++i)
+        {
+            m3World_Step(world, 1.0f / 60.0f, 4);
+        }
+        p = m3Character_GetPosition(hero);
+        CHECK(p.y > y0 - 0.32 && p.y < y0 - 0.28, "the elevator lowers its rider");
+        CHECK(m3Character_IsGrounded(hero), "the descent stays glued");
+
+        hashes[run] = m3World_Hash(world);
+        if (run == 1)
+        {
+            m3DestroyBody(platform);
+            m3BodyId gone = m3Character_GetGroundBody(hero);
+            CHECK(gone.index1 == 0, "a destroyed platform grounds nobody");
+        }
+        m3DestroyWorld(world);
+    }
+    CHECK(hashes[0] == hashes[1], "twin rides are bit-identical");
+}
+
+static void TestCarouselAndFragmentSurf(void)
+{
+    // A spinning platform sweeps its rider along the arc the rigid
+    // carry predicts, and a drifting dynamic body (a fragment in
+    // destruction terms) ferries a walker the same way. Standing
+    // is not pushing: the fragment takes no impulse from feet.
+    m3WorldId world = ArenaWorld();
+    m3ShapeDef sd = m3DefaultShapeDef();
+    m3BodyDef pd = m3DefaultBodyDef();
+    pd.type = m3_kinematicBody;
+    pd.position = (m3Pos3){0.0, 2.0, 0.0};
+    m3BodyId carousel = m3CreateBody(world, &pd);
+    m3CreateBoxShape(carousel, &sd, (m3Vec3){2.5f, 0.25f, 2.5f});
+
+    m3CharacterDef cd = m3DefaultCharacterDef();
+    cd.position = (m3Pos3){1.5, 3.5, 0.0};
+    m3CharacterId hero = m3CreateCharacter(world, &cd);
+    for (int32_t i = 0; i < 20; ++i)
+    {
+        m3Character_Move(hero, (m3Vec3){0.0f, -0.1f, 0.0f});
+    }
+    m3Pos3 start = m3Character_GetPosition(hero);
+    m3Body_SetAngularVelocity(carousel, (m3Vec3){0.0f, 0.4f, 0.0f});
+    for (int32_t i = 0; i < 90; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+    }
+    // Expected: the start offset swept by the platform's own
+    // accumulated rotation (read back, not assumed).
+    m3Quat q = m3Body_GetRotation(carousel);
+    m3Pos3 axis = m3Body_GetPosition(carousel);
+    m3Vec3 rel = {(float)(start.x - axis.x), 0.0f, (float)(start.z - axis.z)};
+    m3Vec3 swept = m3RotateVec3(q, rel);
+    m3Pos3 p = m3Character_GetPosition(hero);
+    CHECK(fabs(p.x - (axis.x + (double)swept.x)) < 0.03, "the carousel sweeps the rider (x)");
+    CHECK(fabs(p.z - (axis.z + (double)swept.z)) < 0.03, "the carousel sweeps the rider (z)");
+    CHECK(m3Character_IsGrounded(hero), "the carousel keeps its rider grounded");
+    m3DestroyWorld(world);
+
+    // Fragment surfing: gravity-free drifting box, walker on top.
+    m3WorldDef wd = m3DefaultWorldDef();
+    wd.characterCapacity = 1;
+    m3WorldId sea = m3CreateWorld(&wd);
+    m3ShapeDef fs = m3DefaultShapeDef();
+    m3BodyDef fd = m3DefaultBodyDef();
+    fd.type = m3_dynamicBody;
+    fd.position = (m3Pos3){0.0, 0.5, 0.0};
+    fd.gravityScale = 0.0f;
+    m3BodyId fragment = m3CreateBody(sea, &fd);
+    m3CreateBoxShape(fragment, &fs, (m3Vec3){0.6f, 0.5f, 0.6f}); // top at 1.0
+
+    m3CharacterDef cf = m3DefaultCharacterDef();
+    cf.position = (m3Pos3){0.0, 2.5, 0.0};
+    m3CharacterId surfer = m3CreateCharacter(sea, &cf);
+    for (int32_t i = 0; i < 20; ++i)
+    {
+        m3Character_Move(surfer, (m3Vec3){0.0f, -0.1f, 0.0f});
+    }
+    CHECK(m3Character_IsGrounded(surfer), "the surfer boards the fragment");
+    m3Body_SetLinearVelocity(fragment, (m3Vec3){0.8f, 0.0f, 0.0f});
+    for (int32_t i = 0; i < 30; ++i)
+    {
+        m3World_Step(sea, 1.0f / 60.0f, 4);
+    }
+    m3Pos3 sp = m3Character_GetPosition(surfer);
+    CHECK(sp.x > 0.38 && sp.x < 0.42, "the fragment ferries its surfer");
+    CHECK(m3Character_IsGrounded(surfer), "surfing never breaks grounding");
+    m3Vec3 fv = m3Body_GetLinearVelocity(fragment);
+    CHECK(fv.y == 0.0f, "standing is not pushing: no downward impulse from feet");
+    m3DestroyWorld(sea);
+}
+
 static void TestVoxelStairs(void)
 {
     // Four quarter-meter risers climb; a half-meter riser refuses
@@ -508,6 +709,9 @@ int main(void)
     TestSteepSlopeRefusal();
     TestCarvedFloorDrop();
     TestWeldedSeamWalk();
+    TestPushCrate();
+    TestPlatformRideAndElevator();
+    TestCarouselAndFragmentSurf();
     if (s_failures == 0)
     {
         printf("test_character: all green\n");

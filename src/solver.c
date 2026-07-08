@@ -117,7 +117,7 @@ static m3real EffectiveMass(const m3ContactConstraint* c, m3Vec3 rA, m3Vec3 rB, 
 // basis vectors. Frozen at prepare like the anchors (reference
 // discipline); the per-substep refresh arrives with the gyroscopic
 // slice (2b-6).
-static m3Mat3 WorldInvInertia(const m3World* world, int32_t body)
+m3Mat3 m3WorldInvInertia(const m3World* world, int32_t body)
 {
     if (world->types[body] != (uint8_t)m3_dynamicBody)
     {
@@ -172,8 +172,8 @@ static int32_t PrepareContacts(m3World* world, m3ContactConstraint* constraints,
         m3MakeTangentBasis(c->normal, &c->t1, &c->t2);
         c->invMassA = world->types[bodyA] == (uint8_t)m3_dynamicBody ? world->invMass[bodyA] : 0.0f;
         c->invMassB = world->types[bodyB] == (uint8_t)m3_dynamicBody ? world->invMass[bodyB] : 0.0f;
-        c->invIA = WorldInvInertia(world, bodyA);
-        c->invIB = WorldInvInertia(world, bodyB);
+        c->invIA = m3WorldInvInertia(world, bodyA);
+        c->invIB = m3WorldInvInertia(world, bodyB);
         // Reference mixing: friction geometric, restitution maximum.
         c->friction = sqrtf(world->shapeFriction[shapeA] * world->shapeFriction[shapeB]);
         c->restitution = m3MaxF(world->shapeRestitution[shapeA], world->shapeRestitution[shapeB]);
@@ -417,8 +417,8 @@ static int32_t PrepareJoints(m3World* world, m3JointConstraint* joints, m3real h
                                   (m3real)(xfB->p.z + (double)rlcB.z - xfA->p.z - (double)rlcA.z)};
         c->invMassA = world->types[bodyA] == (uint8_t)m3_dynamicBody ? world->invMass[bodyA] : 0.0f;
         c->invMassB = world->types[bodyB] == (uint8_t)m3_dynamicBody ? world->invMass[bodyB] : 0.0f;
-        c->invIA = WorldInvInertia(world, bodyA);
-        c->invIB = WorldInvInertia(world, bodyB);
+        c->invIA = m3WorldInvInertia(world, bodyA);
+        c->invIB = m3WorldInvInertia(world, bodyB);
         c->softness = MakeSoft(60.0f, 2.0f, h); // the reference joint stiffness
         c->impulse = world->jointImpulse[j];
         c->type = world->jointType[j];
@@ -2680,6 +2680,7 @@ void m3StepInternal(m3World* world, float dt, int32_t substeps)
 
     SolveContinuousPhase(world, com0, rot0);
     IslandSleepPass(world, islandParent, com0, rot0, dt);
+    m3CharacterCarryRiders(world, com0, rot0);
 
     world->stepCount += 1;
 }

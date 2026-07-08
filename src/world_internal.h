@@ -428,6 +428,10 @@ typedef struct m3World
     m3real* charStepHeight;
     uint8_t* charGrounded;
     m3Vec3* charGroundNormal;
+    m3real* charMass;        // kilograms; scales push impulses (4-6)
+    m3real* charPushMax;     // heaviest pushable body / mass ratio
+    int32_t* charGroundBody; // body slot under our feet, -1 none
+    uint16_t* charGroundGen; // that body's generation when recorded
 
     // Generic 6-DOF state (4-3): packed modes (2 bits per axis,
     // linear 0..5, angular 6..11, motor axis 12..15) and per-axis
@@ -748,6 +752,8 @@ m3Manifold m3CollidePlaneSphere(m3Vec3 planeNormal, m3real dist, m3real radius);
 
 // The step body: the journal replays through this exact path.
 void m3StepInternal(m3World* world, float dt, int32_t substeps);
+m3Mat3 m3WorldInvInertia(const m3World* world, int32_t body);
+void m3CharacterCarryRiders(m3World* world, const m3Pos3* com0, const m3Quat* rot0);
 
 void m3JournalRecord(m3World* world, int32_t op, const void* payload, int32_t bytes);
 
