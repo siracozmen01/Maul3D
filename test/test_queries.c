@@ -649,6 +649,74 @@ static void TestOverlapAndInsideFamilies(void)
     m3DestroyWorld(world);
 }
 
+// 4-1: the generic casts. Boxes carry orientation, hulls carry
+// their cloud, and every cast keeps the family contracts.
+static void TestGenericCasts(void)
+{
+    m3WorldDef def = m3DefaultWorldDef();
+    def.gravity = (m3Vec3){0.0f, 0.0f, 0.0f};
+    def.bodyCapacity = 8;
+    def.shapeCapacity = 8;
+    m3WorldId world = m3CreateWorld(&def);
+    m3BodyDef gd = m3DefaultBodyDef();
+    m3BodyId ground = m3CreateBody(world, &gd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    m3Plane floor = {{0.0f, 1.0f, 0.0f}, 0.0f};
+    m3ShapeId floorShape = m3CreatePlaneShape(ground, &sd, &floor);
+
+    // An axis-aligned unit box cast onto the plane: the lower face
+    // leads, contact when center reaches 0.5: fraction = 3.5 / 8
+    // within the conservative-advance slop band.
+    m3Quat identity = {0.0f, 0.0f, 0.0f, 1.0f};
+    m3RayHit hit =
+        m3World_CastBoxClosest(world, (m3Pos3){0.0, 4.0, 0.0}, (m3Vec3){0.5f, 0.5f, 0.5f}, identity,
+                               (m3Vec3){0.0f, -8.0f, 0.0f});
+    CHECK(hit.hit && hit.shape.index1 == floorShape.index1, "the box cast hits the plane");
+    CHECK(hit.fraction > 0.430f && hit.fraction < 0.440f, "the aligned fraction is analytic");
+
+    // The same box yawed 45 degrees about z: a corner leads, the
+    // vertical reach grows to sqrt(2)/2, so contact comes earlier:
+    // fraction = (4 - 0.7071) / 8 minus the slop band.
+    float s45 = 0.3826834f; // sin(pi/8)
+    float c45 = 0.9238795f; // cos(pi/8)
+    m3Quat yaw45 = {0.0f, 0.0f, s45, c45};
+    hit = m3World_CastBoxClosest(world, (m3Pos3){0.0, 4.0, 0.0}, (m3Vec3){0.5f, 0.5f, 0.5f}, yaw45,
+                                 (m3Vec3){0.0f, -8.0f, 0.0f});
+    CHECK(hit.hit, "the rotated box cast hits");
+    CHECK(hit.fraction > 0.404f && hit.fraction < 0.412f,
+          "the rotated fraction shows the leading corner");
+
+    // A tetrahedron cloud cast onto a box target: the cloud's
+    // lowest vertex leads.
+    m3BodyDef bd = m3DefaultBodyDef();
+    bd.position = (m3Pos3){5.0, 1.0, 0.0};
+    m3BodyId crateBody = m3CreateBody(world, &bd);
+    m3ShapeId crate = m3CreateBoxShape(crateBody, &sd, (m3Vec3){1.0f, 1.0f, 1.0f});
+    m3Vec3 tetra[4] = {
+        {0.0f, -0.4f, 0.0f}, {0.3f, 0.4f, 0.0f}, {-0.3f, 0.4f, 0.3f}, {-0.3f, 0.4f, -0.3f}};
+    hit = m3World_CastHullClosest(world, (m3Pos3){5.0, 6.0, 0.0}, tetra, 4,
+                                  (m3Vec3){0.0f, -8.0f, 0.0f});
+    CHECK(hit.hit && hit.shape.index1 == crate.index1, "the hull cast hits the crate");
+    // Crate top at y = 2, lowest cloud point 0.4 below base:
+    // fraction = (6 - 0.4 - 2) / 8 within the slop band.
+    CHECK(hit.fraction > 0.443f && hit.fraction < 0.452f, "the hull fraction is analytic");
+
+    // Start-overlapped and hostile contracts.
+    hit = m3World_CastBoxClosest(world, (m3Pos3){0.0, 0.2, 0.0}, (m3Vec3){0.5f, 0.5f, 0.5f},
+                                 identity, (m3Vec3){0.0f, -1.0f, 0.0f});
+    CHECK(hit.hit && hit.fraction == 0.0f, "a box born inside the plane reports zero");
+    hit = m3World_CastBoxClosest(world, (m3Pos3){0.0, 4.0, 0.0}, (m3Vec3){0.5f, 0.0f, 0.5f},
+                                 identity, (m3Vec3){0.0f, -8.0f, 0.0f});
+    CHECK(!hit.hit, "a flat box misses by contract");
+    hit = m3World_CastHullClosest(world, (m3Pos3){0.0, 4.0, 0.0}, tetra, 1,
+                                  (m3Vec3){0.0f, -8.0f, 0.0f});
+    CHECK(!hit.hit, "a one-point cloud misses by contract (that is a ray)");
+    hit = m3World_CastBoxClosest(world, (m3Pos3){40.0, 4.0, 40.0}, (m3Vec3){0.5f, 0.5f, 0.5f},
+                                 identity, (m3Vec3){0.0f, -2.0f, 0.0f});
+    CHECK(!hit.hit, "a cast into open air misses");
+    m3DestroyWorld(world);
+}
+
 int main(void)
 {
     TestContactEvents();
@@ -661,6 +729,7 @@ int main(void)
     TestPointAndOverlaps();
     TestCastsAgainstMeshAndPlane();
     TestOverlapAndInsideFamilies();
+    TestGenericCasts();
     TestSensorPassThrough();
     TestSensorSleepAndBullets();
     if (s_failures == 0)

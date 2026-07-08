@@ -888,6 +888,15 @@ static void TestShapeCastsAgainstVoxels(void)
                                     (m3Vec3){0.0f, -2.0f, 0.0f});
     CHECK(hit.hit && hit.fraction == 0.0f, "a cast born inside the chunk reports zero");
 
+    // A box cast lands on the chunk face at the same analytic
+    // height as the sphere (4-1: generic casts see voxels through
+    // the shared branch).
+    m3Quat identity = {0.0f, 0.0f, 0.0f, 1.0f};
+    hit = m3World_CastBoxClosest(world, (m3Pos3){8.0, 10.0, 8.0}, (m3Vec3){0.4f, 0.4f, 0.4f},
+                                 identity, (m3Vec3){0.0f, -8.0f, 0.0f});
+    CHECK(hit.hit && hit.shape.index1 == chunkShape.index1, "the box cast hits the chunk");
+    CHECK(hit.fraction > 0.69f && hit.fraction < 0.71f, "the voxel box-cast fraction is analytic");
+
     // A cast that misses the chunk entirely.
     hit = m3World_CastSphereClosest(world, (m3Pos3){40.0, 10.0, 8.0}, 0.3f,
                                     (m3Vec3){0.0f, -8.0f, 0.0f});

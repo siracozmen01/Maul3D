@@ -159,6 +159,16 @@ extern "C"
     /// that STARTS overlapped hits at fraction zero with a zero
     /// normal (the documented start-inside contract; rays instead
     /// MISS shapes they start inside, front faces only).
+    /// Generic convex casts (4-1): a box (with orientation) or a
+    /// caller point cloud (2..24 points, base-relative) swept along
+    /// a translation, skinless. Same contracts as every cast: the
+    /// earliest touch in [0, 1], start-overlapped reports fraction
+    /// zero with a zero normal, hostile inputs miss. A single point
+    /// is a ray: use the ray casts.
+    M3_API m3RayHit m3World_CastBoxClosest(m3WorldId worldId, m3Pos3 center, m3Vec3 halfExtents,
+                                           m3Quat rotation, m3Vec3 translation);
+    M3_API m3RayHit m3World_CastHullClosest(m3WorldId worldId, m3Pos3 base, const m3Vec3* points,
+                                            int32_t count, m3Vec3 translation);
     M3_API m3RayHit m3World_CastSphereClosest(m3WorldId worldId, m3Pos3 center, m3real radius,
                                               m3Vec3 translation);
     M3_API m3RayHit m3World_CastCapsuleClosest(m3WorldId worldId, m3Pos3 center, m3Vec3 point1,
