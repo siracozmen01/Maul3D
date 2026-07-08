@@ -168,6 +168,7 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     M3_ALLOC(world->meshData, def->meshCapacity, m3MeshData);
     M3_ALLOC(world->meshRefCounts, def->meshCapacity, int32_t);
     M3_ALLOC(world->shapeMeshIndex, shapeCap, int32_t);
+    M3_ALLOC(world->shapeSensor, shapeCap, uint8_t);
     for (int32_t i = 0; i < shapeCap; ++i)
     {
         world->shapeMeshIndex[i] = -1;
@@ -183,6 +184,8 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     world->pairCapacity = 8 * shapeCap;
     M3_ALLOC(world->beginEvents, world->pairCapacity, m3ContactEvent);
     M3_ALLOC(world->endEvents, world->pairCapacity, m3ContactEvent);
+    M3_ALLOC(world->sensorBeginEvents, world->pairCapacity, m3ContactEvent);
+    M3_ALLOC(world->sensorEndEvents, world->pairCapacity, m3ContactEvent);
     world->beginEventCount = 0;
     world->endEventCount = 0;
     M3_ALLOC(world->pairKeys, world->pairCapacity, uint64_t);
@@ -263,8 +266,11 @@ void m3DestroyWorld(m3WorldId worldId)
     m3Free(world->meshData);
     m3Free(world->meshRefCounts);
     m3Free(world->shapeMeshIndex);
+    m3Free(world->shapeSensor);
     m3Free(world->beginEvents);
     m3Free(world->endEvents);
+    m3Free(world->sensorBeginEvents);
+    m3Free(world->sensorEndEvents);
     m3TreeDestroy(&world->tree);
     m3Free(world->proxyIds);
     m3Free(world->pairKeys);
@@ -335,6 +341,36 @@ int32_t m3World_JournalEnd(m3WorldId worldId)
     world->journalActive = 0;
     world->journalOverflow = 0;
     return bytes;
+}
+
+const m3ContactEvent* m3World_SensorBeginEvents(m3WorldId worldId, int32_t* count)
+{
+    m3World* world = m3WorldFromId(worldId);
+    if (world == NULL || count == NULL)
+    {
+        if (count != NULL)
+        {
+            *count = 0;
+        }
+        return NULL;
+    }
+    *count = world->sensorBeginEventCount;
+    return world->sensorBeginEvents;
+}
+
+const m3ContactEvent* m3World_SensorEndEvents(m3WorldId worldId, int32_t* count)
+{
+    m3World* world = m3WorldFromId(worldId);
+    if (world == NULL || count == NULL)
+    {
+        if (count != NULL)
+        {
+            *count = 0;
+        }
+        return NULL;
+    }
+    *count = world->sensorEndEventCount;
+    return world->sensorEndEvents;
 }
 
 const m3ContactEvent* m3World_ContactBeginEvents(m3WorldId worldId, int32_t* count)

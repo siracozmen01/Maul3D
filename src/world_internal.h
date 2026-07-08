@@ -23,7 +23,11 @@
 // integration order, constants). Part of the snapshot config hash, so
 // a snapshot from a different behavior revision is refused loudly
 // instead of silently diverging (the Jolt friction-model lesson).
-#define M3_SOLVER_REV 16 // rev 16: prismatic joints
+// NOTE: rev 17 was skipped by a slipped edit in the 2c-5 slice (the
+// cone and twist limits shipped without their bump; same format,
+// new-capability-only, harmless in effect but a discipline miss,
+// recorded here so the ledger stays honest).
+#define M3_SOLVER_REV 18 // rev 18: spherical limits (late) + sensors
 
 // Def cookies: a def that did not come from its m3Default*Def factory
 // is rejected loudly (the Maul2D pattern).
@@ -261,6 +265,7 @@ typedef struct m3World
     int32_t* shapeNext;      // next shape on the same body, -1 end
     int32_t* shapeHullIndex; // interned hull slot, -1 for non-hulls
     int32_t* shapeMeshIndex; // mesh slot, -1 for non-meshes
+    uint8_t* shapeSensor;    // 1 = overlap detector, never contact response
 
     // The interned hull pool (immutable content, refcounted).
     m3IdPool hullPool;
@@ -317,8 +322,12 @@ typedef struct m3World
     // cleared on step and on restore).
     m3ContactEvent* beginEvents;
     m3ContactEvent* endEvents;
+    m3ContactEvent* sensorBeginEvents;
+    m3ContactEvent* sensorEndEvents;
     int32_t beginEventCount;
     int32_t endEventCount;
+    int32_t sensorBeginEventCount;
+    int32_t sensorEndEventCount;
 
     // Per-step scratch (lifetime 2: never snapshotted).
     m3Stack scratch;

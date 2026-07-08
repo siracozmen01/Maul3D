@@ -130,6 +130,11 @@ static int PairAllowed(const m3World* world, int32_t i, int32_t j)
     {
         return 0;
     }
+    // Sensors do not sense other sensors (the reference rule).
+    if (world->shapeSensor[i] != 0 && world->shapeSensor[j] != 0)
+    {
+        return 0;
+    }
     // Jointed bodies skip contact unless the joint says otherwise
     // (the chain-fight guard, 2c-2). Walk the shorter list.
     for (int32_t jt = world->bodyJointHead[bodyI]; jt != -1;

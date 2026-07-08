@@ -79,6 +79,12 @@ extern "C"
     M3_API const m3ContactEvent* m3World_ContactBeginEvents(m3WorldId worldId, int32_t* count);
     M3_API const m3ContactEvent* m3World_ContactEndEvents(m3WorldId worldId, int32_t* count);
 
+    /// Sensor overlap events, the same law as contact events but in
+    /// their own streams (a sensor touch is not a contact). shapeA
+    /// is the lower shape index; either side may be the sensor.
+    M3_API const m3ContactEvent* m3World_SensorBeginEvents(m3WorldId worldId, int32_t* count);
+    M3_API const m3ContactEvent* m3World_SensorEndEvents(m3WorldId worldId, int32_t* count);
+
     /// Closest-hit ray cast: origin in world doubles, translation =
     /// direction times reach. fraction in [0, 1] along the
     /// translation; front faces only (winding is a contract). Ties

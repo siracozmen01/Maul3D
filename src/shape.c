@@ -308,6 +308,7 @@ int32_t m3CreateShapeInternal(m3World* world, int32_t bodyIndex, uint8_t type,
     world->shapeFriction[index] = def->friction;
     world->shapeRestitution[index] = def->restitution;
     world->shapeUserData[index] = def->userData;
+    world->shapeSensor[index] = def->isSensor ? 1 : 0;
     // Push onto the body's list head (canonical: creation order is
     // recoverable because replay recreates in the same order).
     world->shapeNext[index] = world->bodyShapeHead[bodyIndex];
@@ -402,6 +403,7 @@ void m3DestroyShapeInternal(m3World* world, int32_t index)
     world->shapeFriction[index] = 0.0f;
     world->shapeRestitution[index] = 0.0f;
     world->shapeUserData[index] = 0;
+    world->shapeSensor[index] = 0;
     world->shapeNext[index] = -1;
     if (world->proxyIds[index] != M3_TREE_NULL)
     {

@@ -408,6 +408,126 @@ static void TestPointAndOverlaps(void)
     m3DestroyWorld(world);
 }
 
+static void TestSensorPassThrough(void)
+{
+    // A ball falls THROUGH a static sensor box: begin fires on
+    // entry, end on exit, and the fall never slows (the free-fall
+    // analytic is the no-response proof). The contact streams stay
+    // silent for the sensor pair.
+    m3WorldDef def = m3DefaultWorldDef();
+    def.bodyCapacity = 8;
+    def.shapeCapacity = 8;
+    m3WorldId world = m3CreateWorld(&def);
+    m3BodyDef gd = m3DefaultBodyDef();
+    gd.position = (m3Pos3){0.0, 3.0, 0.0};
+    m3BodyId zone = m3CreateBody(world, &gd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    sd.isSensor = true;
+    CHECK(m3Shape_IsValid(m3CreateBoxShape(zone, &sd, (m3Vec3){1.0f, 0.5f, 1.0f})),
+          "the sensor zone builds");
+
+    m3BodyDef bd = m3DefaultBodyDef();
+    bd.type = m3_dynamicBody;
+    bd.position = (m3Pos3){0.0, 6.0, 0.0};
+    m3BodyId ball = m3CreateBody(world, &bd);
+    m3ShapeDef bsd = m3DefaultShapeDef();
+    m3Sphere sphere = {{0.0f, 0.0f, 0.0f}, 0.3f};
+    m3CreateSphereShape(ball, &bsd, &sphere);
+
+    int32_t sensorBegins = 0;
+    int32_t sensorEnds = 0;
+    int32_t contactBegins = 0;
+    for (int32_t i = 0; i < 90; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+        int32_t n = 0;
+        m3World_SensorBeginEvents(world, &n);
+        sensorBegins += n;
+        m3World_SensorEndEvents(world, &n);
+        sensorEnds += n;
+        m3World_ContactBeginEvents(world, &n);
+        contactBegins += n;
+    }
+    CHECK(sensorBegins == 1, "one sensor begin on entry");
+    CHECK(sensorEnds == 1, "one sensor end on exit");
+    CHECK(contactBegins == 0, "the contact stream stays silent for sensors");
+    // Free fall for 1.5 s from rest: y = 6 - 0.5 * 10 * 1.5^2 = -5.25
+    // (substep integration lands within a band).
+    m3Pos3 p = m3Body_GetPosition(ball);
+    CHECK(p.y < -5.0 && p.y > -5.6, "the fall never slowed: sensors do not respond");
+    m3DestroyWorld(world);
+}
+
+static void TestSensorSleepAndBullets(void)
+{
+    // A sensor neither wakes a sleeper nor stops a bullet, and a
+    // body asleep INSIDE a sensor holds its begin without an end.
+    m3WorldDef def = m3DefaultWorldDef();
+    def.bodyCapacity = 8;
+    def.shapeCapacity = 8;
+    m3WorldId world = m3CreateWorld(&def);
+    m3BodyDef gd = m3DefaultBodyDef();
+    m3BodyId ground = m3CreateBody(world, &gd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    m3Plane floor = {{0.0f, 1.0f, 0.0f}, 0.0f};
+    m3CreatePlaneShape(ground, &sd, &floor);
+
+    m3BodyDef bd = m3DefaultBodyDef();
+    bd.type = m3_dynamicBody;
+    bd.position = (m3Pos3){0.0, 0.4, 0.0};
+    m3BodyId sleeper = m3CreateBody(world, &bd);
+    m3Sphere ball = {{0.0f, 0.0f, 0.0f}, 0.4f};
+    m3CreateSphereShape(sleeper, &sd, &ball);
+
+    // A sensor zone AROUND the resting spot, created before sleep.
+    m3BodyDef zd = m3DefaultBodyDef();
+    zd.position = (m3Pos3){0.0, 0.5, 0.0};
+    m3BodyId zone = m3CreateBody(world, &zd);
+    m3ShapeDef zsd = m3DefaultShapeDef();
+    zsd.isSensor = true;
+    m3CreateBoxShape(zone, &zsd, (m3Vec3){2.0f, 1.0f, 2.0f});
+
+    int32_t begins = 0;
+    int32_t ends = 0;
+    for (int32_t i = 0; i < 120; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+        int32_t n = 0;
+        m3World_SensorBeginEvents(world, &n);
+        begins += n;
+        m3World_SensorEndEvents(world, &n);
+        ends += n;
+    }
+    m3Vec3 v = m3Body_GetLinearVelocity(sleeper);
+    CHECK(v.x == 0.0f && v.y == 0.0f && v.z == 0.0f,
+          "the body sleeps INSIDE the sensor (overlap wakes no one)");
+    CHECK(begins == 1 && ends == 0, "the begin holds through sleep with no end");
+
+    // A bullet crosses a sensor wall without slowing.
+    m3BodyDef wd = m3DefaultBodyDef();
+    wd.position = (m3Pos3){10.0, 5.0, 0.0};
+    m3BodyId wall = m3CreateBody(world, &wd);
+    m3ShapeDef wsd = m3DefaultShapeDef();
+    wsd.isSensor = true;
+    m3CreateBoxShape(wall, &wsd, (m3Vec3){0.05f, 2.0f, 2.0f});
+
+    bd.position = (m3Pos3){4.0, 5.0, 0.0};
+    bd.linearVelocity = (m3Vec3){200.0f, 0.0f, 0.0f};
+    bd.gravityScale = 0.0f;
+    bd.isBullet = true;
+    m3BodyId bullet = m3CreateBody(world, &bd);
+    m3Sphere small = {{0.0f, 0.0f, 0.0f}, 0.1f};
+    m3CreateSphereShape(bullet, &sd, &small);
+
+    for (int32_t i = 0; i < 10; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+    }
+    m3Pos3 bp = m3Body_GetPosition(bullet);
+    CHECK(bp.x > 20.0, "the bullet crosses the sensor wall unimpeded");
+    m3DestroyWorld(world);
+}
+
 int main(void)
 {
     TestContactEvents();
@@ -418,6 +538,8 @@ int main(void)
     TestRayStartInsideContract();
     TestMultiHitSorted();
     TestPointAndOverlaps();
+    TestSensorPassThrough();
+    TestSensorSleepAndBullets();
     if (s_failures == 0)
     {
         printf("test_queries: all checks passed\n");

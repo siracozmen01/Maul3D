@@ -156,6 +156,10 @@ static int32_t PrepareContacts(m3World* world, m3ContactConstraint* constraints,
         {
             continue; // both sides frozen or immovable: impulses stay put
         }
+        if (world->shapeSensor[shapeA] != 0 || world->shapeSensor[shapeB] != 0)
+        {
+            continue; // sensors detect, they never respond
+        }
 
         m3ContactConstraint* c = constraints + count;
         count += 1;
@@ -1357,6 +1361,10 @@ static bool ContinuousQueryCallback(int32_t shape, void* userContext)
     {
         return true; // bullet versus bullet: skip (documented)
     }
+    if (world->shapeSensor[shape] != 0)
+    {
+        return true; // sensors never stop anything
+    }
     if (world->shapeType[shape] == (uint8_t)m3_meshShape)
     {
         // Mesh TOI (2b-9d): sweep the fast shape against every
@@ -1539,6 +1547,10 @@ static void SolveContinuousPhase(m3World* world, const m3Pos3* com0, const m3Qua
 
         for (int32_t s = world->bodyShapeHead[i]; s != -1; s = world->shapeNext[s])
         {
+            if (world->shapeSensor[s] != 0)
+            {
+                continue; // a sensor on a fast body blocks nothing
+            }
             ctx.fastShape = s;
             // Swept candidate box: both COM endpoints padded by the
             // body's max extent (a coarse superset; the TOI filters).
@@ -1639,8 +1651,14 @@ static int32_t* IslandWakePass(m3World* world)
             continue;
         }
         uint64_t key = world->pairKeys[i];
-        int32_t bodyA = world->shapeBody[(int32_t)(key >> 32)];
-        int32_t bodyB = world->shapeBody[(int32_t)(key & 0xFFFFFFFFu)];
+        int32_t shapeA = (int32_t)(key >> 32);
+        int32_t shapeB = (int32_t)(key & 0xFFFFFFFFu);
+        if (world->shapeSensor[shapeA] != 0 || world->shapeSensor[shapeB] != 0)
+        {
+            continue; // sensor overlap couples nothing and wakes no one
+        }
+        int32_t bodyA = world->shapeBody[shapeA];
+        int32_t bodyB = world->shapeBody[shapeB];
         int dynA = world->types[bodyA] == (uint8_t)m3_dynamicBody;
         int dynB = world->types[bodyB] == (uint8_t)m3_dynamicBody;
         if (dynA && dynB)
@@ -1859,6 +1877,8 @@ void m3StepInternal(m3World* world, float dt, int32_t substeps)
     // on purpose: appends must happen in pair order, bit-stably.
     world->beginEventCount = 0;
     world->endEventCount = 0;
+    world->sensorBeginEventCount = 0;
+    world->sensorEndEventCount = 0;
     {
         int32_t iNew = 0;
         int32_t iOld = 0;
@@ -1906,7 +1926,19 @@ void m3StepInternal(m3World* world, float dt, int32_t substeps)
                 (m3ShapeId){sA + 1, world->worldIndex0, world->shapePool.generations[sA]};
             event.shapeB =
                 (m3ShapeId){sB + 1, world->worldIndex0, world->shapePool.generations[sB]};
-            if (touchNew && world->beginEventCount < world->pairCapacity)
+            int sensorPair = world->shapeSensor[sA] != 0 || world->shapeSensor[sB] != 0;
+            if (sensorPair)
+            {
+                if (touchNew && world->sensorBeginEventCount < world->pairCapacity)
+                {
+                    world->sensorBeginEvents[world->sensorBeginEventCount++] = event;
+                }
+                else if (touchOld && world->sensorEndEventCount < world->pairCapacity)
+                {
+                    world->sensorEndEvents[world->sensorEndEventCount++] = event;
+                }
+            }
+            else if (touchNew && world->beginEventCount < world->pairCapacity)
             {
                 world->beginEvents[world->beginEventCount++] = event;
             }

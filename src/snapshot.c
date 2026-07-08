@@ -22,7 +22,7 @@
 #endif
 
 #define M3_SNAPSHOT_MAGIC   0x4D33534Eu // 'M3SN'
-#define M3_SNAPSHOT_VERSION 16u         // v16: prismatic joint state
+#define M3_SNAPSHOT_VERSION 17u         // v17: sensor flags
 
 // The math types are canonical field data only because they are
 // provably padding-free; a change here is a format version bump.
@@ -170,6 +170,7 @@ static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3Wal
     M3_BLOCK(world->hullPool.alive, shapeCap * (int32_t)sizeof(uint8_t));
     M3_BLOCK(world->hullPool.freeQueue, shapeCap * (int32_t)sizeof(int32_t));
     M3_BLOCK(world->shapeMeshIndex, shapeCap * (int32_t)sizeof(int32_t));
+    M3_BLOCK(world->shapeSensor, shapeCap * (int32_t)sizeof(uint8_t));
     M3_BLOCK(world->meshData, world->meshCapacity * (int32_t)sizeof(m3MeshData));
     M3_BLOCK(world->meshRefCounts, world->meshCapacity * (int32_t)sizeof(int32_t));
     M3_BLOCK(world->meshPool.generations, world->meshCapacity * (int32_t)sizeof(uint16_t));
@@ -318,6 +319,8 @@ bool m3World_Restore(m3WorldId worldId, const void* data, int32_t size)
     // Events are transient observers: a restore clears them.
     world->beginEventCount = 0;
     world->endEventCount = 0;
+    world->sensorBeginEventCount = 0;
+    world->sensorEndEventCount = 0;
     world->hullPool.maxIndex = header.hullMaxIndex;
     world->hullPool.freeHead = header.hullFreeHead;
     world->hullPool.freeCount = header.hullFreeCount;
@@ -377,6 +380,7 @@ uint64_t m3World_Hash(m3WorldId worldId)
         h = m3Hash64(h, &world->shapeRestitution[i], 4);
         h = m3Hash64(h, &world->shapeHullIndex[i], 4);
         h = m3Hash64(h, &world->shapeMeshIndex[i], 4);
+        h = m3Hash64(h, &world->shapeSensor[i], 1);
     }
     int32_t maxJoint = world->jointPool.maxIndex;
     for (int32_t i = 0; i < maxJoint; ++i)

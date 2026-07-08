@@ -41,6 +41,11 @@ extern "C"
         float friction;
         float restitution;
         uint64_t userData;
+        /// A sensor detects overlap and fires its own begin and end
+        /// events but never produces contact response: bodies pass
+        /// through, bullets do not stop, sleepers are not woken.
+        /// Sensors do not sense other sensors.
+        bool isSensor;
         int32_t internalValue;
     } m3ShapeDef;
 
