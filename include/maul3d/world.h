@@ -94,6 +94,38 @@ extern "C"
 
     M3_API m3RayHit m3World_CastRayClosest(m3WorldId worldId, m3Pos3 origin, m3Vec3 translation);
 
+    /// Every ray hit along the translation, one entry point per
+    /// shape, sorted by fraction (ties to the lower shape index).
+    /// Returns the count written (never more than capacity; excess
+    /// hits are dropped from the FAR end, deterministically).
+    M3_API int32_t m3World_CastRayAll(m3WorldId worldId, m3Pos3 origin, m3Vec3 translation,
+                                      m3RayHit* hits, int32_t capacity);
+
+    /// Closest-hit shape casts: sweep a sphere or a capsule along a
+    /// translation. fraction is the earliest touch in [0, 1]; a cast
+    /// that STARTS overlapped hits at fraction zero with a zero
+    /// normal (the documented start-inside contract; rays instead
+    /// MISS shapes they start inside, front faces only).
+    M3_API m3RayHit m3World_CastSphereClosest(m3WorldId worldId, m3Pos3 center, m3real radius,
+                                              m3Vec3 translation);
+    M3_API m3RayHit m3World_CastCapsuleClosest(m3WorldId worldId, m3Pos3 center, m3Vec3 point1,
+                                               m3Vec3 point2, m3real radius, m3Vec3 translation);
+
+    /// The first shape (lowest index) whose volume contains the
+    /// point, or the null id. Meshes are open surfaces and never
+    /// contain points; planes are solid half spaces.
+    M3_API m3ShapeId m3World_PointInside(m3WorldId worldId, m3Pos3 point);
+
+    /// Shapes whose tight bounds overlap the box, in ascending shape
+    /// index order. Returns the count written.
+    M3_API int32_t m3World_OverlapAabb(m3WorldId worldId, m3Pos3 lo, m3Pos3 hi, m3ShapeId* shapes,
+                                       int32_t capacity);
+
+    /// Shapes within reach of the sphere (exact per family), in
+    /// ascending shape index order. Returns the count written.
+    M3_API int32_t m3World_OverlapSphere(m3WorldId worldId, m3Pos3 center, m3real radius,
+                                         m3ShapeId* shapes, int32_t capacity);
+
     /// FNV-1a 64 over the curated deterministic state (transforms,
     /// velocities, mass, types, step count, gravity) in canonical slot
     /// order. The value every gate compares.

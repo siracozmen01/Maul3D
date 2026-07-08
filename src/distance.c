@@ -1041,6 +1041,7 @@ m3TOIOutput m3TimeOfImpact(const m3TOIInput* input)
     m3TOIOutput output;
     output.state = m3_toiStateUnknown;
     output.fraction = input->maxFraction;
+    output.normal = (m3Vec3){0.0f, 0.0f, 0.0f};
 
     m3Sweep sweepA = input->sweepA;
     m3Sweep sweepB = input->sweepB;
@@ -1097,6 +1098,9 @@ m3TOIOutput m3TimeOfImpact(const m3TOIInput* input)
         {
             output.state = m3_toiStateHit;
             output.fraction = t1;
+            // The distance normal lives in A's frame; rotation back
+            // out is translation-free, so it is valid for queries.
+            output.normal = m3RotateVec3(xfA.q, distanceOutput.normal);
             break;
         }
         if (distanceIterations == maxIterations)

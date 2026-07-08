@@ -485,6 +485,7 @@ typedef struct m3TOIOutput
 {
     m3TOIState state;
     m3real fraction;
+    m3Vec3 normal; // A toward B at the hit (valid on hit only)
 } m3TOIOutput;
 
 // Time of impact by conservative advancement with root finding

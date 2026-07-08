@@ -30,9 +30,9 @@ static m3RayLocalHit RaySphere(m3Vec3 o, m3Vec3 d, m3Vec3 center, m3real radius)
     m3real a = m3Dot3(d, d);
     m3real b = m3Dot3(m, d);
     m3real c = m3Dot3(m, m) - radius * radius;
-    if (c < 0.0f)
+    if (c <= 0.0f)
     {
-        return out; // starts inside: no front-face hit
+        return out; // inside OR on the surface: no front-face hit
     }
     m3real disc = b * b - a * c;
     if (!(a > 0.0f) || disc < 0.0f)
@@ -70,7 +70,7 @@ static m3RayLocalHit RayCapsule(m3Vec3 o, m3Vec3 d, m3Vec3 p1, m3Vec3 p2, m3real
         m3real a = m3Dot3(dPerp, dPerp);
         m3real b = m3Dot3(mPerp, dPerp);
         m3real c = m3Dot3(mPerp, mPerp) - radius * radius;
-        if (c >= 0.0f && a > 0.0f)
+        if (c > 0.0f && a > 0.0f)
         {
             m3real disc = b * b - a * c;
             if (disc >= 0.0f)
@@ -279,6 +279,21 @@ static void RayTestShape(m3RayCastContext* ctx, int32_t shape)
     ctx->best.shape =
         (m3ShapeId){shape + 1, world->worldIndex0, world->shapePool.generations[shape]};
     ctx->bestShape = shape;
+}
+
+// The single-shape test as an internal hook (the multi-hit query in
+// query.c walks candidates itself and reuses this).
+m3RayHit m3RayTestOneShape(m3World* world, int32_t shape, m3Pos3 origin, m3Vec3 translation)
+{
+    m3RayCastContext ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.best.fraction = 1.0f;
+    ctx.world = world;
+    ctx.origin = origin;
+    ctx.translation = translation;
+    ctx.bestShape = INT32_MAX;
+    RayTestShape(&ctx, shape);
+    return ctx.best;
 }
 
 static bool RayQueryCallback(int32_t shape, void* userContext)

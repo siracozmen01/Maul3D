@@ -247,12 +247,177 @@ static void TestEventDeterminism(void)
     CHECK(streamHash[0] != 0xcbf29ce484222325ull, "the stream is not empty");
 }
 
+static void TestShapeCasts(void)
+{
+    // A sphere cast toward a wall touches when the SURFACES meet:
+    // the fraction accounts for both radii, checked by hand.
+    m3WorldDef def = m3DefaultWorldDef();
+    def.gravity = (m3Vec3){0.0f, 0.0f, 0.0f};
+    def.bodyCapacity = 8;
+    def.shapeCapacity = 8;
+    m3WorldId world = m3CreateWorld(&def);
+    m3BodyDef bd = m3DefaultBodyDef();
+    bd.position = (m3Pos3){10.0, 0.0, 0.0};
+    m3BodyId wall = m3CreateBody(world, &bd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    m3CreateBoxShape(wall, &sd, (m3Vec3){0.5f, 2.0f, 2.0f});
+
+    // Cast a 0.5-radius sphere from the origin: the box face sits at
+    // x = 9.5, the sphere surface leads by 0.5, so centers touch at
+    // x = 9.0: fraction 9/20 = 0.45 (minus the slop skin).
+    m3RayHit hit = m3World_CastSphereClosest(world, (m3Pos3){0.0, 0.0, 0.0}, 0.5f,
+                                             (m3Vec3){20.0f, 0.0f, 0.0f});
+    CHECK(hit.hit, "the sphere cast hits");
+    CHECK(hit.fraction > 0.44f && hit.fraction < 0.4505f, "the cast fraction counts both skins");
+    CHECK(hit.normal.x < -0.99f, "the cast normal faces the caster");
+
+    // A capsule cast: the lower cap leads; the analytic touch uses
+    // the cap's forward surface exactly like the sphere.
+    hit = m3World_CastCapsuleClosest(world, (m3Pos3){0.0, 0.0, 0.0}, (m3Vec3){0.0f, -0.5f, 0.0f},
+                                     (m3Vec3){0.0f, 0.5f, 0.0f}, 0.3f, (m3Vec3){20.0f, 0.0f, 0.0f});
+    CHECK(hit.hit, "the capsule cast hits");
+    CHECK(hit.fraction > 0.45f && hit.fraction < 0.4605f, "the capsule fraction is analytic");
+
+    // Start overlapped: the documented contract is a hit at zero.
+    hit =
+        m3World_CastSphereClosest(world, (m3Pos3){9.6, 0.0, 0.0}, 0.5f, (m3Vec3){5.0f, 0.0f, 0.0f});
+    CHECK(hit.hit && hit.fraction == 0.0f, "a start-overlapped cast hits at zero");
+
+    // A cast that misses stays a miss.
+    hit = m3World_CastSphereClosest(world, (m3Pos3){0.0, 10.0, 0.0}, 0.5f,
+                                    (m3Vec3){20.0f, 0.0f, 0.0f});
+    CHECK(!hit.hit, "a clear cast misses");
+    m3DestroyWorld(world);
+}
+
+static void TestRayStartInsideContract(void)
+{
+    // The documented family-by-family contract: rays MISS shapes
+    // they start inside (front faces only, everywhere).
+    m3WorldDef def = m3DefaultWorldDef();
+    def.gravity = (m3Vec3){0.0f, 0.0f, 0.0f};
+    def.bodyCapacity = 8;
+    def.shapeCapacity = 8;
+    m3WorldId world = m3CreateWorld(&def);
+    m3BodyDef bd = m3DefaultBodyDef();
+    m3ShapeDef sd = m3DefaultShapeDef();
+
+    bd.position = (m3Pos3){0.0, 0.0, 0.0};
+    m3BodyId a = m3CreateBody(world, &bd);
+    m3Sphere ball = {{0.0f, 0.0f, 0.0f}, 1.0f};
+    m3CreateSphereShape(a, &sd, &ball);
+    m3RayHit hit =
+        m3World_CastRayClosest(world, (m3Pos3){0.0, 0.0, 0.0}, (m3Vec3){5.0f, 0.0f, 0.0f});
+    CHECK(!hit.hit, "a ray starting inside a sphere misses it");
+
+    bd.position = (m3Pos3){10.0, 0.0, 0.0};
+    m3BodyId b = m3CreateBody(world, &bd);
+    m3CreateBoxShape(b, &sd, (m3Vec3){1.0f, 1.0f, 1.0f});
+    hit = m3World_CastRayClosest(world, (m3Pos3){10.0, 0.0, 0.0}, (m3Vec3){5.0f, 0.0f, 0.0f});
+    CHECK(!hit.hit, "a ray starting inside a hull misses it");
+
+    bd.position = (m3Pos3){20.0, 0.0, 0.0};
+    m3BodyId c = m3CreateBody(world, &bd);
+    m3Capsule capsule = {{0.0f, -0.5f, 0.0f}, {0.0f, 0.5f, 0.0f}, 0.5f};
+    m3CreateCapsuleShape(c, &sd, &capsule);
+    hit = m3World_CastRayClosest(world, (m3Pos3){20.0, 0.0, 0.0}, (m3Vec3){5.0f, 0.0f, 0.0f});
+    CHECK(!hit.hit, "a ray starting inside a capsule misses it");
+    m3DestroyWorld(world);
+}
+
+static void TestMultiHitSorted(void)
+{
+    // Two spheres and the floor plane along one ray: three hits,
+    // sorted by fraction, and the capacity drop takes the far end.
+    m3WorldDef def = m3DefaultWorldDef();
+    def.gravity = (m3Vec3){0.0f, 0.0f, 0.0f};
+    def.bodyCapacity = 8;
+    def.shapeCapacity = 8;
+    m3WorldId world = m3CreateWorld(&def);
+    m3BodyDef gd = m3DefaultBodyDef();
+    m3BodyId ground = m3CreateBody(world, &gd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    m3Plane floor = {{0.0f, 1.0f, 0.0f}, 0.0f};
+    m3CreatePlaneShape(ground, &sd, &floor);
+
+    m3BodyDef bd = m3DefaultBodyDef();
+    bd.position = (m3Pos3){4.0, 4.0, 0.0};
+    m3BodyId nearBody = m3CreateBody(world, &bd);
+    m3Sphere s1 = {{0.0f, 0.0f, 0.0f}, 0.5f};
+    m3CreateSphereShape(nearBody, &sd, &s1);
+    bd.position = (m3Pos3){8.0, 2.0, 0.0};
+    m3BodyId midBody = m3CreateBody(world, &bd);
+    m3CreateSphereShape(midBody, &sd, &s1);
+
+    // A ray sloping down through both spheres into the floor.
+    m3RayHit hits[8];
+    int32_t n =
+        m3World_CastRayAll(world, (m3Pos3){0.0, 6.0, 0.0}, (m3Vec3){16.0f, -8.0f, 0.0f}, hits, 8);
+    CHECK(n == 3, "three hits along the ray");
+    CHECK(hits[0].fraction < hits[1].fraction && hits[1].fraction < hits[2].fraction,
+          "the hits are sorted by fraction");
+    CHECK(hits[2].normal.y > 0.99f, "the last hit is the floor");
+
+    // Capacity two: the FAR hit drops.
+    m3RayHit two[2];
+    int32_t n2 =
+        m3World_CastRayAll(world, (m3Pos3){0.0, 6.0, 0.0}, (m3Vec3){16.0f, -8.0f, 0.0f}, two, 2);
+    CHECK(n2 == 2, "capacity caps the count");
+    CHECK(two[0].fraction == hits[0].fraction && two[1].fraction == hits[1].fraction,
+          "the near hits survive the cap");
+    m3DestroyWorld(world);
+}
+
+static void TestPointAndOverlaps(void)
+{
+    m3WorldDef def = m3DefaultWorldDef();
+    def.gravity = (m3Vec3){0.0f, 0.0f, 0.0f};
+    def.bodyCapacity = 8;
+    def.shapeCapacity = 8;
+    m3WorldId world = m3CreateWorld(&def);
+    m3BodyDef gd = m3DefaultBodyDef();
+    m3BodyId ground = m3CreateBody(world, &gd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    m3Plane floor = {{0.0f, 1.0f, 0.0f}, 0.0f};
+    m3ShapeId floorShape = m3CreatePlaneShape(ground, &sd, &floor);
+
+    m3BodyDef bd = m3DefaultBodyDef();
+    bd.position = (m3Pos3){5.0, 2.0, 0.0};
+    m3BodyId boxBody = m3CreateBody(world, &bd);
+    m3ShapeId boxShape = m3CreateBoxShape(boxBody, &sd, (m3Vec3){1.0f, 1.0f, 1.0f});
+
+    // Point containment per family.
+    m3ShapeId inBox = m3World_PointInside(world, (m3Pos3){5.2, 2.3, 0.4});
+    CHECK(inBox.index1 == boxShape.index1, "the point inside the box finds the box");
+    m3ShapeId below = m3World_PointInside(world, (m3Pos3){100.0, -0.5, 0.0});
+    CHECK(below.index1 == floorShape.index1, "a point below the floor is inside the half space");
+    m3ShapeId nowhere = m3World_PointInside(world, (m3Pos3){5.0, 8.0, 0.0});
+    CHECK(nowhere.index1 == 0, "open air contains nothing");
+
+    // Overlaps: the AABB box catches the box, the sphere probes reach.
+    m3ShapeId found[8];
+    int32_t n =
+        m3World_OverlapAabb(world, (m3Pos3){4.0, 1.0, -1.0}, (m3Pos3){6.0, 3.0, 1.0}, found, 8);
+    CHECK(n == 1 && found[0].index1 == boxShape.index1, "the AABB overlap finds the box");
+    n = m3World_OverlapSphere(world, (m3Pos3){5.0, 4.5, 0.0}, 1.6f, found, 8);
+    CHECK(n == 1 && found[0].index1 == boxShape.index1, "the sphere overlap reaches the box");
+    n = m3World_OverlapSphere(world, (m3Pos3){5.0, 4.5, 0.0}, 1.4f, found, 8);
+    CHECK(n == 0, "just out of reach finds nothing");
+    n = m3World_OverlapSphere(world, (m3Pos3){0.0, 0.5, 0.0}, 0.6f, found, 8);
+    CHECK(n == 1 && found[0].index1 == floorShape.index1, "the sphere overlap reaches the floor");
+    m3DestroyWorld(world);
+}
+
 int main(void)
 {
     TestContactEvents();
     TestRayHitsEveryFamily();
     TestRayClosestOfMany();
     TestEventDeterminism();
+    TestShapeCasts();
+    TestRayStartInsideContract();
+    TestMultiHitSorted();
+    TestPointAndOverlaps();
     if (s_failures == 0)
     {
         printf("test_queries: all checks passed\n");

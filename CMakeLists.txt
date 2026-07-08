@@ -16,6 +16,7 @@ add_library(maul3d STATIC
     src/manifold.c
     src/quickhull.c
     src/joint.c
+    src/query.c
     src/raycast.c
     src/math_functions.c
     src/shape.c
