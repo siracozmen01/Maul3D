@@ -35,6 +35,7 @@ add_library(maul3d ${MAUL3D_LIB_KIND}
     src/math_functions.c
     src/shape.c
     src/snapshot.c
+    src/replay.c
     src/solver.c
     src/voxel.c
     src/world.c
@@ -182,6 +183,10 @@ add_executable(maul3d_bench bench/bench_main.c)
 target_link_libraries(maul3d_bench PRIVATE maul3d)
 maul3d_apply_flags(maul3d_bench)
 
+add_executable(m3replay tools/m3replay.c)
+target_link_libraries(m3replay PRIVATE maul3d)
+maul3d_apply_flags(m3replay)
+
 add_executable(test_joints test/test_joints.c)
 target_link_libraries(test_joints PRIVATE maul3d)
 maul3d_apply_flags(test_joints)
@@ -281,6 +286,11 @@ add_executable(test_jointdrive test/test_jointdrive.c)
 target_link_libraries(test_jointdrive PRIVATE maul3d)
 maul3d_apply_flags(test_jointdrive)
 add_test(NAME jointdrive COMMAND test_jointdrive)
+
+add_executable(test_replayfile test/test_replayfile.c)
+target_link_libraries(test_replayfile PRIVATE maul3d)
+maul3d_apply_flags(test_replayfile)
+add_test(NAME replayfile COMMAND test_replayfile)
 
 add_executable(test_fuzz test/test_fuzz.c)
 target_link_libraries(test_fuzz PRIVATE maul3d)
