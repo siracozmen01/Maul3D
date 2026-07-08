@@ -168,7 +168,265 @@ void m3DestroySoftBodyInternal(m3World* world, int32_t slot)
     m3IdPoolFree(&world->softPool, slot);
 }
 
-// The soft pass: XPBD small steps, planes only in 7-1.
+// Closest point on a triangle to a point (barycentric clamp, the
+// textbook regions walk).
+static m3Vec3 ClosestOnTriangle(m3Vec3 p, m3Vec3 a, m3Vec3 b, m3Vec3 c)
+{
+    m3Vec3 ab = m3Sub3(b, a);
+    m3Vec3 ac = m3Sub3(c, a);
+    m3Vec3 ap = m3Sub3(p, a);
+    m3real d1 = m3Dot3(ab, ap);
+    m3real d2 = m3Dot3(ac, ap);
+    if (d1 <= 0.0f && d2 <= 0.0f)
+    {
+        return a;
+    }
+    m3Vec3 bp = m3Sub3(p, b);
+    m3real d3 = m3Dot3(ab, bp);
+    m3real d4 = m3Dot3(ac, bp);
+    if (d3 >= 0.0f && d4 <= d3)
+    {
+        return b;
+    }
+    m3real vc = d1 * d4 - d3 * d2;
+    if (vc <= 0.0f && d1 >= 0.0f && d3 <= 0.0f)
+    {
+        m3real v = d1 / (d1 - d3);
+        return m3Add3(a, m3MulSV3(v, ab));
+    }
+    m3Vec3 cp = m3Sub3(p, c);
+    m3real d5 = m3Dot3(ab, cp);
+    m3real d6 = m3Dot3(ac, cp);
+    if (d6 >= 0.0f && d5 <= d6)
+    {
+        return c;
+    }
+    m3real vb = d5 * d2 - d1 * d6;
+    if (vb <= 0.0f && d2 >= 0.0f && d6 <= 0.0f)
+    {
+        m3real w = d2 / (d2 - d6);
+        return m3Add3(a, m3MulSV3(w, ac));
+    }
+    m3real va = d3 * d6 - d5 * d4;
+    if (va <= 0.0f && (d4 - d3) >= 0.0f && (d5 - d6) >= 0.0f)
+    {
+        m3real w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+        return m3Add3(b, m3MulSV3(w, m3Sub3(c, b)));
+    }
+    m3real denom = 1.0f / (va + vb + vc);
+    m3real v = vb * denom;
+    m3real w = vc * denom;
+    return m3Add3(a, m3Add3(m3MulSV3(v, ab), m3MulSV3(w, ac)));
+}
+
+// Apply a projection to particle k: push along n (unit, outward) by
+// depth, then the PBD friction rule against the shape's friction:
+// tangential motion this substep dies when it is smaller than
+// mu times the correction, and shrinks by that budget otherwise.
+static void SoftProject(m3World* world, int32_t k, m3Vec3 n, m3real depth, m3real mu)
+{
+    world->softPos[k].x += (double)(depth * n.x);
+    world->softPos[k].y += (double)(depth * n.y);
+    world->softPos[k].z += (double)(depth * n.z);
+    if (mu <= 0.0f)
+    {
+        return;
+    }
+    m3Vec3 move = {(m3real)(world->softPos[k].x - world->softPrev[k].x),
+                   (m3real)(world->softPos[k].y - world->softPrev[k].y),
+                   (m3real)(world->softPos[k].z - world->softPrev[k].z)};
+    m3Vec3 tang = m3Sub3(move, m3MulSV3(m3Dot3(move, n), n));
+    m3real tl = sqrtf(m3Dot3(tang, tang));
+    if (tl < 1.0e-9f)
+    {
+        return;
+    }
+    m3real budget = mu * depth;
+    m3real scale = tl <= budget ? 1.0f : budget / tl;
+    world->softPos[k].x -= (double)(tang.x * scale);
+    world->softPos[k].y -= (double)(tang.y * scale);
+    world->softPos[k].z -= (double)(tang.z * scale);
+}
+
+// One particle against one shape, in the shape body's local frame.
+static void SoftCollideParticle(m3World* world, int32_t slot, int32_t k, int32_t shape,
+                                uint8_t stype, int32_t body, m3real radius)
+{
+    (void)slot;
+    const m3Transform* xf = &world->transforms[body];
+    m3real mu = world->shapeFriction[shape];
+
+    if (stype == (uint8_t)m3_planeShape)
+    {
+        m3Vec3 n = m3RotateVec3(xf->q, world->shapeGeom[shape].v);
+        m3real offset =
+            world->shapeGeom[shape].s +
+            (m3real)((double)n.x * xf->p.x + (double)n.y * xf->p.y + (double)n.z * xf->p.z);
+        m3real dist =
+            (m3real)((double)n.x * world->softPos[k].x + (double)n.y * world->softPos[k].y +
+                     (double)n.z * world->softPos[k].z) -
+            offset - radius;
+        if (dist < 0.0f)
+        {
+            SoftProject(world, k, n, -dist, mu);
+        }
+        return;
+    }
+
+    // Localize the particle into the body frame.
+    m3Vec3 rel = {(m3real)(world->softPos[k].x - xf->p.x), (m3real)(world->softPos[k].y - xf->p.y),
+                  (m3real)(world->softPos[k].z - xf->p.z)};
+    m3Vec3 lp = m3InvRotateVec3(xf->q, rel);
+
+    if (stype == (uint8_t)m3_sphereShape)
+    {
+        m3Vec3 d = m3Sub3(lp, world->shapeGeom[shape].v);
+        m3real len = sqrtf(m3Dot3(d, d));
+        m3real gap = len - world->shapeGeom[shape].s - radius;
+        if (gap < 0.0f && len > 1.0e-9f)
+        {
+            m3Vec3 n = m3RotateVec3(xf->q, m3MulSV3(1.0f / len, d));
+            SoftProject(world, k, n, -gap, mu);
+        }
+        return;
+    }
+    if (stype == (uint8_t)m3_capsuleShape)
+    {
+        m3Vec3 a = world->shapeGeom[shape].v;
+        m3Vec3 ab = m3Sub3(world->shapeGeom[shape].v2, a);
+        m3real t = m3Dot3(m3Sub3(lp, a), ab) / m3MaxF(m3Dot3(ab, ab), 1.0e-12f);
+        t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+        m3Vec3 c = m3Add3(a, m3MulSV3(t, ab));
+        m3Vec3 d = m3Sub3(lp, c);
+        m3real len = sqrtf(m3Dot3(d, d));
+        m3real gap = len - world->shapeGeom[shape].s - radius;
+        if (gap < 0.0f && len > 1.0e-9f)
+        {
+            m3Vec3 n = m3RotateVec3(xf->q, m3MulSV3(1.0f / len, d));
+            SoftProject(world, k, n, -gap, mu);
+        }
+        return;
+    }
+    if (stype == (uint8_t)m3_hullShape)
+    {
+        // Boxes intern as hulls, so this branch carries them too.
+        // Face planes serve both sides: outside within radius of
+        // the closest face projects out; inside pushes along the
+        // least penetrated face. Edge and vertex regions round
+        // slightly toward the face answer: documented.
+        const m3HullData* hull = &world->hullData[world->shapeHullIndex[shape]];
+        m3real best = -3.4e38f;
+        int32_t bestFace = -1;
+        for (int32_t f = 0; f < hull->faceCount; ++f)
+        {
+            m3real sd = m3Dot3(hull->faceNormals[f], lp) - hull->faceOffsets[f];
+            if (sd > best)
+            {
+                best = sd;
+                bestFace = f;
+            }
+        }
+        if (bestFace >= 0)
+        {
+            m3real gap = best - world->shapeGeom[shape].s - radius;
+            if (gap < 0.0f)
+            {
+                m3Vec3 n = m3RotateVec3(xf->q, hull->faceNormals[bestFace]);
+                SoftProject(world, k, n, -gap, mu);
+            }
+        }
+        return;
+    }
+    if (stype == (uint8_t)m3_voxelShape)
+    {
+        int32_t vslot = world->shapeVoxelIndex[shape];
+        const m3VoxelChunkData* chunk = &world->voxelData[vslot];
+        m3real cell = chunk->cellSize;
+        int32_t cx = (int32_t)floorf(lp.x / cell);
+        int32_t cy = (int32_t)floorf(lp.y / cell);
+        int32_t cz = (int32_t)floorf(lp.z / cell);
+        if (cx >= 0 && cx < 16 && cy >= 0 && cy < 16 && cz >= 0 && cz < 16 &&
+            m3VoxelGet(chunk, cx, cy, cz))
+        {
+            // Deep inside filled voxels: the escape kernel owns it.
+            m3Vec3 ln;
+            m3real plane;
+            if (m3VoxelEscape(world, vslot, lp, &ln, &plane))
+            {
+                m3real depth = plane - m3Dot3(ln, lp) + radius;
+                if (depth > 0.0f)
+                {
+                    SoftProject(world, k, m3RotateVec3(xf->q, ln), depth, mu);
+                }
+            }
+            return;
+        }
+        // Near the surface: clamp against the merged boxes the BVH
+        // hands back around the particle.
+        const m3VoxelSurface* surface = &world->voxelSurface[vslot];
+        m3Vec3 qlo = {lp.x - radius, lp.y - radius, lp.z - radius};
+        m3Vec3 qhi = {lp.x + radius, lp.y + radius, lp.z + radius};
+        uint16_t boxes[32];
+        int32_t nb = m3MeshBvhGather(&surface->bvh, qlo, qhi, boxes);
+        nb = nb > 32 ? 32 : nb;
+        for (int32_t b = 0; b < nb; ++b)
+        {
+            m3Vec3 blo;
+            m3Vec3 bhi;
+            m3VoxelBoxBounds(surface, cell, (int32_t)boxes[b], &blo, &bhi);
+            m3Vec3 c = {lp.x < blo.x ? blo.x : (lp.x > bhi.x ? bhi.x : lp.x),
+                        lp.y < blo.y ? blo.y : (lp.y > bhi.y ? bhi.y : lp.y),
+                        lp.z < blo.z ? blo.z : (lp.z > bhi.z ? bhi.z : lp.z)};
+            m3Vec3 d = m3Sub3(lp, c);
+            m3real len2 = m3Dot3(d, d);
+            if (len2 > 1.0e-12f && len2 < radius * radius)
+            {
+                m3real len = sqrtf(len2);
+                m3Vec3 n = m3RotateVec3(xf->q, m3MulSV3(1.0f / len, d));
+                SoftProject(world, k, n, radius - len, mu);
+                // Re-localize after the push for the next box.
+                m3Vec3 rel2 = {(m3real)(world->softPos[k].x - xf->p.x),
+                               (m3real)(world->softPos[k].y - xf->p.y),
+                               (m3real)(world->softPos[k].z - xf->p.z)};
+                lp = m3InvRotateVec3(xf->q, rel2);
+            }
+        }
+        return;
+    }
+    if (stype == (uint8_t)m3_meshShape) // heightfields intern as meshes
+    {
+        const m3MeshData* mesh = &world->meshData[world->shapeMeshIndex[shape]];
+        const m3MeshBvh* bvh = &world->meshBvh[world->shapeMeshIndex[shape]];
+        m3Vec3 qlo = {lp.x - radius, lp.y - radius, lp.z - radius};
+        m3Vec3 qhi = {lp.x + radius, lp.y + radius, lp.z + radius};
+        uint16_t tris[32];
+        int32_t nt = m3MeshBvhGather(bvh, qlo, qhi, tris);
+        nt = nt > 32 ? 32 : nt;
+        for (int32_t t = 0; t < nt; ++t)
+        {
+            int32_t tri = (int32_t)tris[t];
+            m3Vec3 a = mesh->vertices[mesh->indices[3 * tri + 0]];
+            m3Vec3 bb2 = mesh->vertices[mesh->indices[3 * tri + 1]];
+            m3Vec3 cc = mesh->vertices[mesh->indices[3 * tri + 2]];
+            m3Vec3 cp = ClosestOnTriangle(lp, a, bb2, cc);
+            m3Vec3 d = m3Sub3(lp, cp);
+            m3real len2 = m3Dot3(d, d);
+            if (len2 > 1.0e-12f && len2 < radius * radius)
+            {
+                m3real len = sqrtf(len2);
+                m3Vec3 n = m3RotateVec3(xf->q, m3MulSV3(1.0f / len, d));
+                SoftProject(world, k, n, radius - len, mu);
+                m3Vec3 rel2 = {(m3real)(world->softPos[k].x - xf->p.x),
+                               (m3real)(world->softPos[k].y - xf->p.y),
+                               (m3real)(world->softPos[k].z - xf->p.z)};
+                lp = m3InvRotateVec3(xf->q, rel2);
+            }
+        }
+        return;
+    }
+}
+
+// The soft pass: XPBD small steps over the full shape set (7-2).
 void m3SoftBodyPass(m3World* world, float dt, int32_t substeps)
 {
     if (world->softPool.maxIndex == 0)
@@ -244,22 +502,20 @@ void m3SoftBodyPass(m3World* world, float dt, int32_t substeps)
                 world->softPos[kb].z -= (double)(wb * scale * diff.z);
             }
 
-            // Planes: project particles out along the plane normal
-            // (7-2 brings the rest of the shape set and friction).
+            // The world's surfaces (7-2): every particle projects
+            // out of every shape family through the shared local
+            // kernels, ascending shape order, friction from the
+            // touched shape (the PBD tangential rule). Planes stay
+            // world-frame; everything else works in body space.
             m3real radius = world->softRadius[slot];
             for (int32_t sShape = 0; sShape < maxShape; ++sShape)
             {
-                if (world->shapePool.alive[sShape] == 0 ||
-                    world->shapeType[sShape] != (uint8_t)m3_planeShape)
+                if (world->shapePool.alive[sShape] == 0 || world->shapeSensor[sShape] != 0)
                 {
                     continue;
                 }
+                uint8_t stype = world->shapeType[sShape];
                 int32_t body = world->shapeBody[sShape];
-                m3Vec3 n = m3RotateVec3(world->transforms[body].q, world->shapeGeom[sShape].v);
-                m3real offset = world->shapeGeom[sShape].s +
-                                (m3real)((double)n.x * world->transforms[body].p.x +
-                                         (double)n.y * world->transforms[body].p.y +
-                                         (double)n.z * world->transforms[body].p.z);
                 for (int32_t i = 0; i < count; ++i)
                 {
                     int32_t k = base + i;
@@ -267,16 +523,7 @@ void m3SoftBodyPass(m3World* world, float dt, int32_t substeps)
                     {
                         continue;
                     }
-                    m3real dist = (m3real)((double)n.x * world->softPos[k].x +
-                                           (double)n.y * world->softPos[k].y +
-                                           (double)n.z * world->softPos[k].z) -
-                                  offset - radius;
-                    if (dist < 0.0f)
-                    {
-                        world->softPos[k].x -= (double)(dist * n.x);
-                        world->softPos[k].y -= (double)(dist * n.y);
-                        world->softPos[k].z -= (double)(dist * n.z);
-                    }
+                    SoftCollideParticle(world, slot, k, sShape, stype, body, radius);
                 }
             }
         }
