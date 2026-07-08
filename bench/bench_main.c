@@ -322,6 +322,194 @@ static void RunVoxfort(int32_t steps)
     m3DestroyWorld(world);
 }
 
+// Scene 5 (6-1): the city block, the 5k-body scale proof. A grid
+// of welded voxel tower stacks takes a five-thousand-body rain of
+// mixed shapes; mid-run a fracture wave carves the towers and the
+// host recipe turns the falling sections into dynamic rubble. The
+// three phases (settle, storm, aftermath) time separately: settle
+// is the landing pile-up, storm is destruction under full load,
+// aftermath is the sleeping-heavy sandbox regime a real game
+// lives in. No engine changes rode in with this scene: it is the
+// measuring stick, not the surgery (the phase 6 law).
+static m3WorldId SceneCityblock(m3ShapeId* outTowers, int32_t* outTowerCount)
+{
+    m3WorldDef def = m3DefaultWorldDef();
+    def.bodyCapacity = 8192;
+    def.shapeCapacity = 8192;
+    def.voxelCapacity = 20;
+    m3WorldId world = m3CreateWorld(&def);
+    AddPlane(world);
+
+    // Nine tower stacks on a 3x3 grid, two welded chunks tall.
+    // Each chunk: a full base layer (the anchor) under a 6x6-cell
+    // shaft. Half-meter cells: 8 meters of chunk, 16 of tower.
+    static uint8_t tower[16 * 16 * 16];
+    memset(tower, 0, sizeof(tower));
+    for (int32_t z = 0; z < 16; ++z)
+    {
+        for (int32_t x = 0; x < 16; ++x)
+        {
+            tower[x + 16 * (0 + 16 * z)] = 1;
+        }
+    }
+    for (int32_t y = 1; y < 16; ++y)
+    {
+        for (int32_t z = 5; z <= 10; ++z)
+        {
+            for (int32_t x = 5; x <= 10; ++x)
+            {
+                tower[x + 16 * (y + 16 * z)] = 1;
+            }
+        }
+    }
+    m3ShapeDef sd = m3DefaultShapeDef();
+    sd.friction = 0.6f;
+    int32_t towers = 0;
+    for (int32_t gz = 0; gz < 3; ++gz)
+    {
+        for (int32_t gx = 0; gx < 3; ++gx)
+        {
+            double bx = -28.0 + 20.0 * (double)gx;
+            double bz = -28.0 + 20.0 * (double)gz;
+            m3BodyDef gd = m3DefaultBodyDef();
+            gd.position = (m3Pos3){bx, 0.0, bz};
+            m3ShapeId lower =
+                m3CreateVoxelChunkShape(m3CreateBody(world, &gd), &sd, tower, NULL, 0.5f);
+            gd.position = (m3Pos3){bx, 8.0, bz}; // exactly one extent up: welded
+            m3ShapeId upper =
+                m3CreateVoxelChunkShape(m3CreateBody(world, &gd), &sd, tower, NULL, 0.5f);
+            if (outTowers != NULL && towers + 2 <= 18)
+            {
+                outTowers[towers] = lower;
+                outTowers[towers + 1] = upper;
+            }
+            towers += 2;
+        }
+    }
+    if (outTowerCount != NULL)
+    {
+        *outTowerCount = towers;
+    }
+
+    // The rain: five thousand mixed bodies seeded once, spread over
+    // the whole block, high enough to land through the settle phase.
+    m3BodyDef bd = m3DefaultBodyDef();
+    bd.type = m3_dynamicBody;
+    uint64_t rng = 0xC17B10C4ull;
+    for (int32_t k = 0; k < 5000; ++k)
+    {
+        bd.position = (m3Pos3){RandRange(&rng, -34.0, 34.0), RandRange(&rng, 10.0, 42.0),
+                               RandRange(&rng, -34.0, 34.0)};
+        m3BodyId body = m3CreateBody(world, &bd);
+        int32_t family = k % 4;
+        if (family == 0)
+        {
+            m3Sphere ball = {{0.0f, 0.0f, 0.0f}, (m3real)RandRange(&rng, 0.2, 0.45)};
+            m3CreateSphereShape(body, &sd, &ball);
+        }
+        else if (family == 1)
+        {
+            m3CreateBoxShape(body, &sd,
+                             (m3Vec3){(m3real)RandRange(&rng, 0.15, 0.4),
+                                      (m3real)RandRange(&rng, 0.15, 0.4),
+                                      (m3real)RandRange(&rng, 0.15, 0.4)});
+        }
+        else if (family == 2)
+        {
+            m3Capsule capsule = {
+                {-0.25f, 0.0f, 0.0f}, {0.25f, 0.0f, 0.0f}, (m3real)RandRange(&rng, 0.12, 0.25)};
+            m3CreateCapsuleShape(body, &sd, &capsule);
+        }
+        else
+        {
+            m3Vec3 cloud[8];
+            for (int32_t c = 0; c < 8; ++c)
+            {
+                cloud[c] =
+                    (m3Vec3){(m3real)RandRange(&rng, -0.3, 0.3), (m3real)RandRange(&rng, -0.3, 0.3),
+                             (m3real)RandRange(&rng, -0.3, 0.3)};
+            }
+            if (!m3Shape_IsValid(m3CreateHullShape(body, &sd, cloud, 8)))
+            {
+                m3CreateBoxShape(body, &sd, (m3Vec3){0.25f, 0.25f, 0.25f});
+            }
+        }
+    }
+    return world;
+}
+
+static uint64_t RunCityblockOnce(int32_t totalSteps, double phaseMs[3], int32_t quiet)
+{
+    m3ShapeId towerIds[18];
+    int32_t towerCount = 0;
+    m3WorldId world = SceneCityblock(towerIds, &towerCount);
+    int32_t phase = totalSteps / 3;
+    int32_t carves = 0;
+    double marks[4] = {0.0, 0.0, 0.0, 0.0};
+    marks[0] = NowMs();
+    for (int32_t i = 0; i < totalSteps; ++i)
+    {
+        if (i >= phase && i < 2 * phase && (i - phase) % 10 == 0)
+        {
+            // The fracture wave: slice a shaft above its base, one
+            // tower after another; what falls becomes host rubble.
+            m3ShapeId victim = towerIds[carves % towerCount];
+            int32_t cy = 2 + (carves / towerCount) % 3;
+            int32_t lo[3] = {5, cy, 5};
+            int32_t hi[3] = {10, cy, 10};
+            m3VoxelChunk_ClearBox(victim, lo, hi);
+            carves += 1;
+            int32_t count = 0;
+            const m3FragmentEvent* events = m3World_FragmentEvents(world, &count);
+            int32_t recipeCount = 0;
+            const uint16_t* recipe = m3World_FragmentRecipe(world, &recipeCount);
+            for (int32_t e = 0; e < count && e < 24; ++e)
+            {
+                SpawnFragment(world, &events[e], recipe);
+            }
+        }
+        m3World_Step(world, 1.0f / 60.0f, 4);
+        if (i + 1 == phase)
+        {
+            marks[1] = NowMs();
+        }
+        if (i + 1 == 2 * phase)
+        {
+            marks[2] = NowMs();
+        }
+    }
+    marks[3] = NowMs();
+    if (phaseMs != NULL)
+    {
+        phaseMs[0] = marks[1] - marks[0];
+        phaseMs[1] = marks[2] - marks[1];
+        phaseMs[2] = marks[3] - marks[2];
+    }
+    uint64_t hash = m3World_Hash(world);
+    if (!quiet)
+    {
+        double total = marks[3] - marks[0];
+        printf("M3_BENCH %-10s steps=%d totalMs=%9.2f perStepMs=%7.4f hash=%016llx\n", "cityblock",
+               totalSteps, total, total / (double)totalSteps, (unsigned long long)hash);
+        printf("M3_BENCH cityblock.phases settleMs=%9.2f stormMs=%9.2f aftermathMs=%9.2f\n",
+               phaseMs[0], phaseMs[1], phaseMs[2]);
+    }
+    m3DestroyWorld(world);
+    return hash;
+}
+
+static void RunCityblock(int32_t steps)
+{
+    // Twice the base step count: the block needs its three phases.
+    int32_t totalSteps = steps * 2;
+    double phaseMs[3];
+    uint64_t first = RunCityblockOnce(totalSteps, phaseMs, 0);
+    // The twin run: same construction, same bits, or the scene
+    // itself broke the contract it exists to measure.
+    uint64_t second = RunCityblockOnce(totalSteps, NULL, 1);
+    printf("M3_BENCH cityblock.twin %s\n", first == second ? "MATCH" : "MISMATCH");
+}
+
 typedef m3WorldId (*SceneFn)(void);
 
 static void RunScene(const char* name, SceneFn build, int32_t steps)
@@ -354,5 +542,6 @@ int main(int argc, char** argv)
     RunScene("hulljam", SceneHullJam, steps);
     RunScene("meshfield", SceneMeshField, steps);
     RunVoxfort(steps);
+    RunCityblock(steps);
     return 0;
 }

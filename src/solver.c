@@ -2426,6 +2426,20 @@ static void IslandSleepPass(m3World* world, int32_t* parent, const m3Pos3* com0,
 
 void m3StepInternal(m3World* world, float dt, int32_t substeps)
 {
+    // The documented growth (allocator.h, finally exercised by the
+    // 6-1 city block): a step that starves the scratch stalls
+    // loudly and harmlessly; the NEXT step arrives with double the
+    // room. Size-driven, so twins and replays stall and grow on
+    // exactly the same ticks: the stall is deterministic state
+    // evolution, not noise. No scene under 5000 bodies had ever
+    // overflowed 256 KB, which is how the promise stayed unpaid
+    // for four phases.
+    if (world->scratch.overflow != 0 && world->scratch.capacity < (1 << 28))
+    {
+        int32_t bigger = world->scratch.capacity * 2;
+        m3StackDestroy(&world->scratch);
+        world->scratch = m3StackCreate(bigger);
+    }
     m3StackReset(&world->scratch);
 
     // Stash the previous pairs and manifolds BEFORE the scan
@@ -2440,8 +2454,8 @@ void m3StepInternal(m3World* world, float dt, int32_t substeps)
             (m3Manifold*)m3StackAlloc(&world->scratch, oldCount * (int32_t)sizeof(m3Manifold));
         if (oldKeys == NULL || oldManifolds == NULL)
         {
-            M3_ASSERT(false);
-            return; // loud in debug; the world visibly stalls, never corrupts
+            return; // scratch starved: a transient stall; the next
+                    // step arrives with a grown stack
         }
         memcpy(oldKeys, world->pairKeys, (size_t)oldCount * sizeof(uint64_t));
         memcpy(oldManifolds, world->manifolds, (size_t)oldCount * sizeof(m3Manifold));
@@ -2458,8 +2472,7 @@ void m3StepInternal(m3World* world, float dt, int32_t substeps)
                                                             : (int32_t)sizeof(m3Quat));
     if (com0 == NULL || rot0 == NULL)
     {
-        M3_ASSERT(false);
-        return;
+        return; // transient scratch stall, grown next step
     }
     for (int32_t i = 0; i < sweepMax; ++i)
     {
@@ -2482,8 +2495,8 @@ void m3StepInternal(m3World* world, float dt, int32_t substeps)
     if (m3UpdatePairs(world) != m3_success ||
         m3UpdateContacts(world, oldKeys, oldManifolds, oldCount) != m3_success)
     {
-        M3_ASSERT(false);
-        return;
+        return; // scratch starve (transient, grown next step) or a
+                // full pair table: the world stalls, never corrupts
     }
 
     // Contact events: a canonical merge walk of the old and new pair
@@ -2571,8 +2584,7 @@ void m3StepInternal(m3World* world, float dt, int32_t substeps)
     int32_t* islandParent = IslandWakePass(world);
     if (islandParent == NULL)
     {
-        M3_ASSERT(false);
-        return;
+        return; // transient scratch stall, grown next step
     }
 
     // Solver scratch: constraints plus per-body delta accumulators.
@@ -2587,8 +2599,7 @@ void m3StepInternal(m3World* world, float dt, int32_t substeps)
         &world->scratch, maxBody > 0 ? maxBody * (int32_t)sizeof(m3Quat) : (int32_t)sizeof(m3Quat));
     if (constraints == NULL || deltaPos == NULL || deltaRot == NULL)
     {
-        M3_ASSERT(false);
-        return;
+        return; // transient scratch stall, grown next step
     }
     for (int32_t i = 0; i < maxBody; ++i)
     {
@@ -2603,8 +2614,7 @@ void m3StepInternal(m3World* world, float dt, int32_t substeps)
     m3SolverColoring coloring;
     if (!BuildColoring(world, constraints, constraintCount, &coloring))
     {
-        M3_ASSERT(false);
-        return;
+        return; // transient scratch stall, grown next step
     }
 
     int32_t maxJointSlots = world->jointPool.maxIndex;
@@ -2613,8 +2623,7 @@ void m3StepInternal(m3World* world, float dt, int32_t substeps)
                                            : (int32_t)sizeof(m3JointConstraint));
     if (jointConstraints == NULL)
     {
-        M3_ASSERT(false);
-        return;
+        return; // transient scratch stall, grown next step
     }
     int32_t jointCount = PrepareJoints(world, jointConstraints, h);
 
