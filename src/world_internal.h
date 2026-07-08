@@ -93,6 +93,12 @@ typedef enum m3Op
     m3_opDestroySoftBody = 23,       // id
     m3_opSoftBodyPin = 24,           // id + particle index
     m3_opSoftBodyAnchor = 25,        // id + particle + body id (7-3)
+    m3_opApplyForce = 26,            // body + force at center (8-2)
+    m3_opApplyTorque = 27,           // body + torque
+    m3_opApplyLinearImpulse = 28,    // body + impulse at center
+    m3_opApplyAngularImpulse = 29,   // body + angular impulse
+    m3_opApplyForceAtPoint = 30,     // body + force + world point
+    m3_opApplyImpulseAtPoint = 31,   // body + impulse + world point
 } m3Op;
 
 // Immutable interned hull data (lifetime 3): vertices, face planes,
@@ -375,6 +381,9 @@ typedef struct m3World
     float* minExtents;    // per body: thinnest shape measure (CCD trigger)
     float* maxExtents;    // per body: farthest point from the COM (CCD arc bound)
     uint64_t* userData;
+    m3Vec3* bodyForce;      // host force accumulator (8-2): integrated
+    m3Vec3* bodyTorque;     // each substep, cleared after the step,
+                            // hashed only when nonzero (additive rule)
     int32_t* bodyShapeHead; // head of each body's shape list, -1 none
 
     // Shape identity and SoA shape state (persistent, walked).
@@ -586,6 +595,12 @@ m3World* m3WorldFromIndex0(uint16_t index0);
 
 // Slot lookup with generation check: -1 for a stale or foreign id.
 int32_t m3BodySlot(const m3World* world, m3BodyId bodyId);
+void m3ApplyForceInternal(m3World* world, int32_t index, m3Vec3 force);
+void m3ApplyTorqueInternal(m3World* world, int32_t index, m3Vec3 torque);
+void m3ApplyLinearImpulseInternal(m3World* world, int32_t index, m3Vec3 impulse);
+void m3ApplyAngularImpulseInternal(m3World* world, int32_t index, m3Vec3 impulse);
+void m3ApplyForceAtPointInternal(m3World* world, int32_t index, m3Vec3 force, m3Pos3 point);
+void m3ApplyImpulseAtPointInternal(m3World* world, int32_t index, m3Vec3 impulse, m3Pos3 point);
 
 // The filter rule (8-1), one function for pairs and queries alike.
 static inline int m3FilterPass(uint64_t catA, uint64_t maskA, uint64_t catB, uint64_t maskB)

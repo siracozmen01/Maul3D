@@ -2790,6 +2790,16 @@ void m3StepInternal(m3World* world, float dt, int32_t substeps)
             m3Vec3 v = world->linearVelocities[i];
             m3Vec3 w = world->angularVelocities[i];
             v = m3Add3(v, m3MulSV3(h * world->gravityScales[i], world->gravity));
+            // Host forces and torques (8-2) integrate beside
+            // gravity, every substep, so a force held for one step
+            // delivers exactly force times dt.
+            v = m3Add3(v, m3MulSV3(h * world->invMass[i], world->bodyForce[i]));
+            if (world->bodyTorque[i].x != 0.0f || world->bodyTorque[i].y != 0.0f ||
+                world->bodyTorque[i].z != 0.0f)
+            {
+                w = m3Add3(
+                    w, m3MulSV3(h, m3MulMV3(m3WorldInvInertia(world, i), world->bodyTorque[i])));
+            }
             v = m3MulSV3(1.0f / (1.0f + h * world->linearDamping[i]), v);
             w = m3MulSV3(1.0f / (1.0f + h * world->angularDamping[i]), w);
             w = GyroscopicOmega(world, i, w, h);
@@ -2830,6 +2840,14 @@ void m3StepInternal(m3World* world, float dt, int32_t substeps)
         // Relax: remove the bias energy (reference schedule).
         SolveJoints(world, jointConstraints, jointCount, deltaPos, deltaRot, h, invH, 0);
         RunColored(world, &coloring, constraints, deltaPos, deltaRot, invH, 0, 0);
+    }
+
+    // Host force accumulators are consumed: a force lives for one
+    // step (8-2). Only movers could carry one (application wakes).
+    for (int32_t m = 0; m < moverCount; ++m)
+    {
+        world->bodyForce[movers[m]] = (m3Vec3){0.0f, 0.0f, 0.0f};
+        world->bodyTorque[movers[m]] = (m3Vec3){0.0f, 0.0f, 0.0f};
     }
 
     Restitution(world, constraints, constraintCount);

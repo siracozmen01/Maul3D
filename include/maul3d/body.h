@@ -61,6 +61,20 @@ extern "C"
     M3_API m3BodyType m3Body_GetType(m3BodyId bodyId);
 
     /// Journaled setters: every mutation is a discrete op.
+    /// Forces and impulses (8-2), journaled like every mutation.
+    /// Forces and torques ACCUMULATE and act over the next step,
+    /// then clear; impulses change velocity immediately. Only
+    /// awake-able dynamic bodies respond: static and kinematic
+    /// targets and non-finite values are documented no-ops. A
+    /// nonzero application wakes the body. Points are world-space;
+    /// an off-center application adds the matching angular part.
+    M3_API void m3Body_ApplyForce(m3BodyId bodyId, m3Vec3 force);
+    M3_API void m3Body_ApplyTorque(m3BodyId bodyId, m3Vec3 torque);
+    M3_API void m3Body_ApplyLinearImpulse(m3BodyId bodyId, m3Vec3 impulse);
+    M3_API void m3Body_ApplyAngularImpulse(m3BodyId bodyId, m3Vec3 impulse);
+    M3_API void m3Body_ApplyForceAtPoint(m3BodyId bodyId, m3Vec3 force, m3Pos3 point);
+    M3_API void m3Body_ApplyLinearImpulseAtPoint(m3BodyId bodyId, m3Vec3 impulse, m3Pos3 point);
+
     M3_API void m3Body_SetLinearVelocity(m3BodyId bodyId, m3Vec3 velocity);
     M3_API void m3Body_SetAngularVelocity(m3BodyId bodyId, m3Vec3 velocity);
 

@@ -22,7 +22,8 @@
 #endif
 
 #define M3_SNAPSHOT_MAGIC   0x4D33534Eu // 'M3SN'
-#define M3_SNAPSHOT_VERSION 29u
+#define M3_SNAPSHOT_VERSION 30u
+// v30: host force and torque accumulators (8-2).
 // v29: collision filters (8-1).
 // v28: soft body anchors (7-3 coupling).
 // v27: the soft body pool (7-1 XPBD lattices).
@@ -165,6 +166,8 @@ static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3Wal
     M3_BLOCK(world->minExtents, cap * (int32_t)sizeof(float));
     M3_BLOCK(world->maxExtents, cap * (int32_t)sizeof(float));
     M3_BLOCK(world->userData, cap * (int32_t)sizeof(uint64_t));
+    M3_BLOCK(world->bodyForce, cap * (int32_t)sizeof(m3Vec3));
+    M3_BLOCK(world->bodyTorque, cap * (int32_t)sizeof(m3Vec3));
     // Identity is state: generations, liveness, and the FIFO queue
     // restore exactly, so post-rollback id minting cannot diverge.
     M3_BLOCK(world->bodyPool.generations, cap * (int32_t)sizeof(uint16_t));
@@ -538,6 +541,16 @@ uint64_t m3World_Hash(m3WorldId worldId)
         }
         h = m3Hash64(h, &world->transforms[i], (int32_t)sizeof(m3Transform));
         h = m3Hash64(h, &world->linearVelocities[i], (int32_t)sizeof(m3Vec3));
+        if (world->bodyForce[i].x != 0.0f || world->bodyForce[i].y != 0.0f ||
+            world->bodyForce[i].z != 0.0f || world->bodyTorque[i].x != 0.0f ||
+            world->bodyTorque[i].y != 0.0f || world->bodyTorque[i].z != 0.0f)
+        {
+            // Additive-state golden rule: pending host forces fold
+            // only when present (a mid-step snapshot must carry
+            // them; every force-free scene keeps its hash).
+            h = m3Hash64(h, &world->bodyForce[i], (int32_t)sizeof(m3Vec3));
+            h = m3Hash64(h, &world->bodyTorque[i], (int32_t)sizeof(m3Vec3));
+        }
         h = m3Hash64(h, &world->angularVelocities[i], (int32_t)sizeof(m3Vec3));
         h = m3Hash64(h, &world->invMass[i], (int32_t)sizeof(m3real));
         h = m3Hash64(h, &world->invInertiaLocal[i], (int32_t)sizeof(m3Mat3));

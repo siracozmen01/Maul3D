@@ -257,6 +257,11 @@ target_link_libraries(test_filter PRIVATE maul3d)
 maul3d_apply_flags(test_filter)
 add_test(NAME filter COMMAND test_filter)
 
+add_executable(test_force test/test_force.c)
+target_link_libraries(test_force PRIVATE maul3d)
+maul3d_apply_flags(test_force)
+add_test(NAME force COMMAND test_force)
+
 add_executable(test_fuzz test/test_fuzz.c)
 target_link_libraries(test_fuzz PRIVATE maul3d)
 maul3d_apply_flags(test_fuzz)

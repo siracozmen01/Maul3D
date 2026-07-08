@@ -114,6 +114,8 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     M3_ALLOC(world->minExtents, cap, float);
     M3_ALLOC(world->maxExtents, cap, float);
     M3_ALLOC(world->userData, cap, uint64_t);
+    M3_ALLOC(world->bodyForce, cap, m3Vec3);
+    M3_ALLOC(world->bodyTorque, cap, m3Vec3);
     M3_ALLOC(world->bodyShapeHead, cap, int32_t);
     for (int32_t i = 0; i < cap; ++i)
     {
@@ -333,6 +335,8 @@ void m3DestroyWorld(m3WorldId worldId)
     m3Free(world->minExtents);
     m3Free(world->maxExtents);
     m3Free(world->userData);
+    m3Free(world->bodyForce);
+    m3Free(world->bodyTorque);
     m3Free(world->bodyShapeHead);
     m3IdPoolDestroy(&world->shapePool);
     m3Free(world->shapeBody);
@@ -1244,6 +1248,75 @@ static bool JournalReplayApply(m3World* world, const void* data, int32_t size)
                 return false;
             }
             m3SoftBodyAnchorInternal(world, slot, record.particle, body);
+            break;
+        }
+        case m3_opApplyForce:
+        case m3_opApplyTorque:
+        case m3_opApplyLinearImpulse:
+        case m3_opApplyAngularImpulse:
+        {
+            struct
+            {
+                m3BodyId id;
+                m3Vec3 v;
+            } record;
+            if (bytes != (int32_t)sizeof(record))
+            {
+                return false;
+            }
+            memcpy(&record, payload, sizeof(record));
+            record.id.world0 = world->worldIndex0;
+            int32_t index = m3BodySlot(world, record.id);
+            if (index < 0)
+            {
+                return false;
+            }
+            if (op == m3_opApplyForce)
+            {
+                m3ApplyForceInternal(world, index, record.v);
+            }
+            else if (op == m3_opApplyTorque)
+            {
+                m3ApplyTorqueInternal(world, index, record.v);
+            }
+            else if (op == m3_opApplyLinearImpulse)
+            {
+                m3ApplyLinearImpulseInternal(world, index, record.v);
+            }
+            else
+            {
+                m3ApplyAngularImpulseInternal(world, index, record.v);
+            }
+            break;
+        }
+        case m3_opApplyForceAtPoint:
+        case m3_opApplyImpulseAtPoint:
+        {
+            struct
+            {
+                m3BodyId id;
+                m3Vec3 v;
+                m3Pos3 p;
+            } record;
+            if (bytes != (int32_t)sizeof(record))
+            {
+                return false;
+            }
+            memcpy(&record, payload, sizeof(record));
+            record.id.world0 = world->worldIndex0;
+            int32_t index = m3BodySlot(world, record.id);
+            if (index < 0)
+            {
+                return false;
+            }
+            if (op == m3_opApplyForceAtPoint)
+            {
+                m3ApplyForceAtPointInternal(world, index, record.v, record.p);
+            }
+            else
+            {
+                m3ApplyImpulseAtPointInternal(world, index, record.v, record.p);
+            }
             break;
         }
         default:
