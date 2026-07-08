@@ -25,6 +25,7 @@ typedef struct m3RayAllContext
     m3RayHit* hits;
     int32_t capacity;
     int32_t count;
+    m3QueryFilter filter; // 8-1
 } m3RayAllContext;
 
 // The single-shape ray test lives in raycast.c; queries reuse it
@@ -66,6 +67,11 @@ static void RayAllInsert(m3RayAllContext* ctx, const m3RayHit* hit, int32_t shap
 static bool RayAllCallback(int32_t shape, void* userContext)
 {
     m3RayAllContext* ctx = (m3RayAllContext*)userContext;
+    if (!m3FilterPass(ctx->filter.categoryBits, ctx->filter.maskBits,
+                      ctx->world->shapeCategory[shape], ctx->world->shapeMask[shape]))
+    {
+        return true; // filtered out (8-1)
+    }
     m3RayHit hit = m3RayTestOneShape(ctx->world, shape, ctx->origin, ctx->translation);
     if (hit.hit)
     {
@@ -74,8 +80,18 @@ static bool RayAllCallback(int32_t shape, void* userContext)
     return true;
 }
 
+int32_t m3World_CastRayAllEx(m3WorldId worldId, m3Pos3 origin, m3Vec3 translation, m3RayHit* hits,
+                             int32_t capacity, m3QueryFilter filter);
+
 int32_t m3World_CastRayAll(m3WorldId worldId, m3Pos3 origin, m3Vec3 translation, m3RayHit* hits,
                            int32_t capacity)
+{
+    return m3World_CastRayAllEx(worldId, origin, translation, hits, capacity,
+                                m3DefaultQueryFilter());
+}
+
+int32_t m3World_CastRayAllEx(m3WorldId worldId, m3Pos3 origin, m3Vec3 translation, m3RayHit* hits,
+                             int32_t capacity, m3QueryFilter filter)
 {
     m3World* world = m3WorldFromId(worldId);
     if (world == NULL || hits == NULL || capacity <= 0 ||
@@ -86,7 +102,8 @@ int32_t m3World_CastRayAll(m3WorldId worldId, m3Pos3 origin, m3Vec3 translation,
     {
         return 0;
     }
-    m3RayAllContext ctx = {world, origin, translation, hits, capacity, 0};
+    m3RayAllContext ctx = {world, origin, translation, hits, capacity, 0, m3DefaultQueryFilter()};
+    ctx.filter = filter;
     double lo[3];
     double hi[3];
     double ex = origin.x + (double)translation.x;
@@ -102,7 +119,9 @@ int32_t m3World_CastRayAll(m3WorldId worldId, m3Pos3 origin, m3Vec3 translation,
     int32_t maxShape = world->shapePool.maxIndex;
     for (int32_t s = 0; s < maxShape; ++s)
     {
-        if (world->shapePool.alive[s] != 0 && world->shapeType[s] == (uint8_t)m3_planeShape)
+        if (world->shapePool.alive[s] != 0 && world->shapeType[s] == (uint8_t)m3_planeShape &&
+            m3FilterPass(filter.categoryBits, filter.maskBits, world->shapeCategory[s],
+                         world->shapeMask[s]))
         {
             m3RayHit hit = m3RayTestOneShape(world, s, origin, translation);
             if (hit.hit)
@@ -130,6 +149,7 @@ typedef struct m3ShapeCastContext
     m3Vec3 translation;
     m3RayHit best;
     int32_t bestShape;
+    m3QueryFilter filter; // 8-1
 } m3ShapeCastContext;
 
 static void ShapeCastTestShape(m3ShapeCastContext* ctx, int32_t shape)
@@ -139,6 +159,11 @@ static void ShapeCastTestShape(m3ShapeCastContext* ctx, int32_t shape)
     if (body == ctx->ignoreBody)
     {
         return; // the caster's own body never blocks its cast
+    }
+    if (!m3FilterPass(ctx->filter.categoryBits, ctx->filter.maskBits,
+                      ctx->world->shapeCategory[shape], ctx->world->shapeMask[shape]))
+    {
+        return; // filtered out (8-1)
     }
     if (world->shapeType[shape] == (uint8_t)m3_voxelShape)
     {
@@ -369,6 +394,11 @@ static void ShapeCastTestPlane(m3ShapeCastContext* ctx, int32_t shape)
     {
         return;
     }
+    if (!m3FilterPass(ctx->filter.categoryBits, ctx->filter.maskBits, world->shapeCategory[shape],
+                      world->shapeMask[shape]))
+    {
+        return; // filtered out (8-1)
+    }
     m3Vec3 n = world->shapeGeom[shape].v;
     m3real offset =
         world->shapeGeom[shape].s -
@@ -444,13 +474,14 @@ static bool ShapeCastCallback(int32_t shape, void* userContext)
     return true;
 }
 
-m3RayHit m3CastConvexClosestEx(m3World* worldPtr, m3Pos3 base, const m3Vec3* points,
-                               int32_t pointCount, m3real radius, m3Vec3 translation,
-                               int32_t ignoreBody)
+m3RayHit m3CastConvexFiltered(m3World* worldPtr, m3Pos3 base, const m3Vec3* points,
+                              int32_t pointCount, m3real radius, m3Vec3 translation,
+                              int32_t ignoreBody, m3QueryFilter filter)
 {
     m3ShapeCastContext ctx;
     memset(&ctx, 0, sizeof(ctx));
     ctx.ignoreBody = ignoreBody;
+    ctx.filter = filter;
     ctx.best.fraction = 1.0f;
     m3World* world = worldPtr;
     // A skinless cast (radius zero) is legal for real point clouds:
@@ -512,8 +543,8 @@ m3RayHit m3CastConvexClosestEx(m3World* worldPtr, m3Pos3 base, const m3Vec3* poi
     return ctx.best;
 }
 
-m3RayHit m3World_CastBoxClosest(m3WorldId worldId, m3Pos3 center, m3Vec3 halfExtents,
-                                m3Quat rotation, m3Vec3 translation)
+m3RayHit m3World_CastBoxClosestEx(m3WorldId worldId, m3Pos3 center, m3Vec3 halfExtents,
+                                  m3Quat rotation, m3Vec3 translation, m3QueryFilter filter)
 {
     m3RayHit miss;
     memset(&miss, 0, sizeof(miss));
@@ -540,11 +571,18 @@ m3RayHit m3World_CastBoxClosest(m3WorldId worldId, m3Pos3 center, m3Vec3 halfExt
     {
         return miss;
     }
-    return m3CastConvexClosestEx(world, center, corners, 8, 0.0f, translation, -1);
+    return m3CastConvexFiltered(world, center, corners, 8, 0.0f, translation, -1, filter);
 }
 
-m3RayHit m3World_CastHullClosest(m3WorldId worldId, m3Pos3 base, const m3Vec3* points,
-                                 int32_t count, m3Vec3 translation)
+m3RayHit m3World_CastBoxClosest(m3WorldId worldId, m3Pos3 center, m3Vec3 halfExtents,
+                                m3Quat rotation, m3Vec3 translation)
+{
+    return m3World_CastBoxClosestEx(worldId, center, halfExtents, rotation, translation,
+                                    m3DefaultQueryFilter());
+}
+
+m3RayHit m3World_CastHullClosestEx(m3WorldId worldId, m3Pos3 base, const m3Vec3* points,
+                                   int32_t count, m3Vec3 translation, m3QueryFilter filter)
 {
     m3RayHit miss;
     memset(&miss, 0, sizeof(miss));
@@ -565,11 +603,26 @@ m3RayHit m3World_CastHullClosest(m3WorldId worldId, m3Pos3 base, const m3Vec3* p
     {
         return miss;
     }
-    return m3CastConvexClosestEx(world, base, points, count, 0.0f, translation, -1);
+    return m3CastConvexFiltered(world, base, points, count, 0.0f, translation, -1, filter);
 }
 
-m3RayHit m3World_CastSphereClosest(m3WorldId worldId, m3Pos3 center, m3real radius,
-                                   m3Vec3 translation)
+m3RayHit m3World_CastHullClosest(m3WorldId worldId, m3Pos3 base, const m3Vec3* points,
+                                 int32_t count, m3Vec3 translation)
+{
+    return m3World_CastHullClosestEx(worldId, base, points, count, translation,
+                                     m3DefaultQueryFilter());
+}
+
+m3RayHit m3CastConvexClosestEx(m3World* worldPtr, m3Pos3 base, const m3Vec3* points,
+                               int32_t pointCount, m3real radius, m3Vec3 translation,
+                               int32_t ignoreBody)
+{
+    return m3CastConvexFiltered(worldPtr, base, points, pointCount, radius, translation, ignoreBody,
+                                m3DefaultQueryFilter());
+}
+
+m3RayHit m3World_CastSphereClosestEx(m3WorldId worldId, m3Pos3 center, m3real radius,
+                                     m3Vec3 translation, m3QueryFilter filter)
 {
     m3Vec3 point = {0.0f, 0.0f, 0.0f};
     m3World* world = m3WorldFromId(worldId);
@@ -579,11 +632,19 @@ m3RayHit m3World_CastSphereClosest(m3WorldId worldId, m3Pos3 center, m3real radi
         memset(&miss, 0, sizeof(miss));
         return miss;
     }
-    return m3CastConvexClosestEx(world, center, &point, 1, radius, translation, -1);
+    return m3CastConvexFiltered(world, center, &point, 1, radius, translation, -1, filter);
 }
 
-m3RayHit m3World_CastCapsuleClosest(m3WorldId worldId, m3Pos3 center, m3Vec3 point1, m3Vec3 point2,
-                                    m3real radius, m3Vec3 translation)
+m3RayHit m3World_CastSphereClosest(m3WorldId worldId, m3Pos3 center, m3real radius,
+                                   m3Vec3 translation)
+{
+    return m3World_CastSphereClosestEx(worldId, center, radius, translation,
+                                       m3DefaultQueryFilter());
+}
+
+m3RayHit m3World_CastCapsuleClosestEx(m3WorldId worldId, m3Pos3 center, m3Vec3 point1,
+                                      m3Vec3 point2, m3real radius, m3Vec3 translation,
+                                      m3QueryFilter filter)
 {
     m3Vec3 points[2] = {point1, point2};
     m3World* world = m3WorldFromId(worldId);
@@ -593,7 +654,14 @@ m3RayHit m3World_CastCapsuleClosest(m3WorldId worldId, m3Pos3 center, m3Vec3 poi
         memset(&miss, 0, sizeof(miss));
         return miss;
     }
-    return m3CastConvexClosestEx(world, center, points, 2, radius, translation, -1);
+    return m3CastConvexFiltered(world, center, points, 2, radius, translation, -1, filter);
+}
+
+m3RayHit m3World_CastCapsuleClosest(m3WorldId worldId, m3Pos3 center, m3Vec3 point1, m3Vec3 point2,
+                                    m3real radius, m3Vec3 translation)
+{
+    return m3World_CastCapsuleClosestEx(worldId, center, point1, point2, radius, translation,
+                                        m3DefaultQueryFilter());
 }
 
 // ------------------------------------------------------------------
@@ -700,6 +768,7 @@ typedef struct m3OverlapContext
     double hi[3];
     int32_t indices[256];
     int32_t count;
+    m3QueryFilter filter; // 8-1
 } m3OverlapContext;
 
 static int SphereReachesShape(m3World* world, int32_t shape, m3Pos3 center, m3real radius)
@@ -808,6 +877,14 @@ static int SphereReachesShape(m3World* world, int32_t shape, m3Pos3 center, m3re
 
 static bool OverlapCallback(int32_t shape, void* userContext)
 {
+    {
+        m3OverlapContext* fctx = (m3OverlapContext*)userContext;
+        if (!m3FilterPass(fctx->filter.categoryBits, fctx->filter.maskBits,
+                          fctx->world->shapeCategory[shape], fctx->world->shapeMask[shape]))
+        {
+            return true; // filtered out (8-1)
+        }
+    }
     m3OverlapContext* ctx = (m3OverlapContext*)userContext;
     if (ctx->count >= 256)
     {
@@ -877,8 +954,8 @@ static int32_t OverlapGather(m3World* world, m3OverlapContext* ctx, m3ShapeId* s
     return written;
 }
 
-int32_t m3World_OverlapAabb(m3WorldId worldId, m3Pos3 lo, m3Pos3 hi, m3ShapeId* shapes,
-                            int32_t capacity)
+int32_t m3World_OverlapAabbEx(m3WorldId worldId, m3Pos3 lo, m3Pos3 hi, m3ShapeId* shapes,
+                              int32_t capacity, m3QueryFilter filter)
 {
     m3World* world = m3WorldFromId(worldId);
     if (world == NULL || shapes == NULL || capacity <= 0)
@@ -887,6 +964,9 @@ int32_t m3World_OverlapAabb(m3WorldId worldId, m3Pos3 lo, m3Pos3 hi, m3ShapeId* 
     }
     m3OverlapContext ctx;
     memset(&ctx, 0, sizeof(ctx));
+    ctx.filter = filter; // AFTER the memset (the 5-1 constructor
+                         // lesson caught this very line in review:
+                         // a wiped filter of zeros filters ALL)
     ctx.world = world;
     ctx.radius = -1.0f;
     ctx.lo[0] = lo.x;
@@ -898,8 +978,14 @@ int32_t m3World_OverlapAabb(m3WorldId worldId, m3Pos3 lo, m3Pos3 hi, m3ShapeId* 
     return OverlapGather(world, &ctx, shapes, capacity);
 }
 
-int32_t m3World_OverlapSphere(m3WorldId worldId, m3Pos3 center, m3real radius, m3ShapeId* shapes,
-                              int32_t capacity)
+int32_t m3World_OverlapAabb(m3WorldId worldId, m3Pos3 lo, m3Pos3 hi, m3ShapeId* shapes,
+                            int32_t capacity)
+{
+    return m3World_OverlapAabbEx(worldId, lo, hi, shapes, capacity, m3DefaultQueryFilter());
+}
+
+int32_t m3World_OverlapSphereEx(m3WorldId worldId, m3Pos3 center, m3real radius, m3ShapeId* shapes,
+                                int32_t capacity, m3QueryFilter filter)
 {
     m3World* world = m3WorldFromId(worldId);
     if (world == NULL || shapes == NULL || capacity <= 0 || !(radius > 0.0f))
@@ -908,6 +994,9 @@ int32_t m3World_OverlapSphere(m3WorldId worldId, m3Pos3 center, m3real radius, m
     }
     m3OverlapContext ctx;
     memset(&ctx, 0, sizeof(ctx));
+    ctx.filter = filter; // AFTER the memset (the 5-1 constructor
+                         // lesson caught this very line in review:
+                         // a wiped filter of zeros filters ALL)
     ctx.world = world;
     ctx.center = center;
     ctx.radius = radius;
@@ -918,4 +1007,11 @@ int32_t m3World_OverlapSphere(m3WorldId worldId, m3Pos3 center, m3real radius, m
     ctx.hi[1] = center.y + (double)radius;
     ctx.hi[2] = center.z + (double)radius;
     return OverlapGather(world, &ctx, shapes, capacity);
+}
+
+int32_t m3World_OverlapSphere(m3WorldId worldId, m3Pos3 center, m3real radius, m3ShapeId* shapes,
+                              int32_t capacity)
+{
+    return m3World_OverlapSphereEx(worldId, center, radius, shapes, capacity,
+                                   m3DefaultQueryFilter());
 }

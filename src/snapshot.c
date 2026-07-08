@@ -22,7 +22,8 @@
 #endif
 
 #define M3_SNAPSHOT_MAGIC   0x4D33534Eu // 'M3SN'
-#define M3_SNAPSHOT_VERSION 28u
+#define M3_SNAPSHOT_VERSION 29u
+// v29: collision filters (8-1).
 // v28: soft body anchors (7-3 coupling).
 // v27: the soft body pool (7-1 XPBD lattices).
 // v26: shape rolling resistance (6-3).
@@ -198,6 +199,9 @@ static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3Wal
     M3_BLOCK(world->shapeMeshIndex, shapeCap * (int32_t)sizeof(int32_t));
     M3_BLOCK(world->shapeSensor, shapeCap * (int32_t)sizeof(uint8_t));
     M3_BLOCK(world->shapeRollingResistance, shapeCap * (int32_t)sizeof(float));
+    M3_BLOCK(world->shapeCategory, shapeCap * (int32_t)sizeof(uint64_t));
+    M3_BLOCK(world->shapeMask, shapeCap * (int32_t)sizeof(uint64_t));
+    M3_BLOCK(world->shapeGroup, shapeCap * (int32_t)sizeof(int32_t));
     M3_BLOCK(world->meshData, world->meshCapacity * (int32_t)sizeof(m3MeshData));
     M3_BLOCK(world->voxelData, world->voxelCapacity * (int32_t)sizeof(m3VoxelChunkData));
     M3_BLOCK(world->voxelRefCounts, world->voxelCapacity * (int32_t)sizeof(int32_t));
@@ -564,6 +568,15 @@ uint64_t m3World_Hash(m3WorldId worldId)
             // only where it is set, so every pre-existing scene
             // (rolling resistance zero everywhere) keeps its hash.
             h = m3Hash64(h, &world->shapeRollingResistance[i], 4);
+        }
+        if (world->shapeCategory[i] != 1ull || world->shapeMask[i] != ~0ull ||
+            world->shapeGroup[i] != 0)
+        {
+            // Same rule for filters (8-1): default-filtered shapes
+            // keep every pre-existing hash still.
+            h = m3Hash64(h, &world->shapeCategory[i], 8);
+            h = m3Hash64(h, &world->shapeMask[i], 8);
+            h = m3Hash64(h, &world->shapeGroup[i], 4);
         }
         h = m3Hash64(h, &world->shapeHullIndex[i], 4);
         h = m3Hash64(h, &world->shapeMeshIndex[i], 4);

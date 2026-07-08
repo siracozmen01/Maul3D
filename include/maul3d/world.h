@@ -25,6 +25,19 @@ extern "C"
                                   void* taskContext, void* userContext);
     typedef void m3FinishTaskFn(void* userTask, void* userContext);
 
+    /// Query-side filter (8-1): a query behaves like a shape with
+    /// these bits. A shape is visible to the query when the
+    /// query's category intersects the shape's mask AND the
+    /// shape's category intersects the query's mask. The default
+    /// sees everything.
+    typedef struct m3QueryFilter
+    {
+        uint64_t categoryBits;
+        uint64_t maskBits;
+    } m3QueryFilter;
+
+    M3_API m3QueryFilter m3DefaultQueryFilter(void);
+
     /// World definition. Build with m3DefaultWorldDef so the cookie is
     /// valid; a zeroed or hand-rolled def is rejected loudly.
     typedef struct m3WorldDef
@@ -150,6 +163,11 @@ extern "C"
     /// t in [0, 1]. Rays MISS shapes they start inside or exactly on
     /// (front faces only); ask m3World_PointInside for containment.
     M3_API m3RayHit m3World_CastRayClosest(m3WorldId worldId, m3Pos3 origin, m3Vec3 translation);
+    /// Filtered variants (8-1): the query carries an m3QueryFilter
+    /// (defined in shape.h) and behaves like a shape with those
+    /// bits; the unfiltered forms see everything.
+    M3_API m3RayHit m3World_CastRayClosestEx(m3WorldId worldId, m3Pos3 origin, m3Vec3 translation,
+                                             m3QueryFilter filter);
 
     /// Every ray hit along the translation, one entry point per
     /// shape, sorted by fraction (ties to the lower shape index).
@@ -157,6 +175,8 @@ extern "C"
     /// hits are dropped from the FAR end, deterministically).
     M3_API int32_t m3World_CastRayAll(m3WorldId worldId, m3Pos3 origin, m3Vec3 translation,
                                       m3RayHit* hits, int32_t capacity);
+    M3_API int32_t m3World_CastRayAllEx(m3WorldId worldId, m3Pos3 origin, m3Vec3 translation,
+                                        m3RayHit* hits, int32_t capacity, m3QueryFilter filter);
 
     /// Closest-hit shape casts: sweep a sphere or a capsule along a
     /// translation. fraction is the earliest touch in [0, 1]; a cast
@@ -171,12 +191,23 @@ extern "C"
     /// is a ray: use the ray casts.
     M3_API m3RayHit m3World_CastBoxClosest(m3WorldId worldId, m3Pos3 center, m3Vec3 halfExtents,
                                            m3Quat rotation, m3Vec3 translation);
+    M3_API m3RayHit m3World_CastBoxClosestEx(m3WorldId worldId, m3Pos3 center, m3Vec3 halfExtents,
+                                             m3Quat rotation, m3Vec3 translation,
+                                             m3QueryFilter filter);
     M3_API m3RayHit m3World_CastHullClosest(m3WorldId worldId, m3Pos3 base, const m3Vec3* points,
                                             int32_t count, m3Vec3 translation);
+    M3_API m3RayHit m3World_CastHullClosestEx(m3WorldId worldId, m3Pos3 base, const m3Vec3* points,
+                                              int32_t count, m3Vec3 translation,
+                                              m3QueryFilter filter);
     M3_API m3RayHit m3World_CastSphereClosest(m3WorldId worldId, m3Pos3 center, m3real radius,
                                               m3Vec3 translation);
+    M3_API m3RayHit m3World_CastSphereClosestEx(m3WorldId worldId, m3Pos3 center, m3real radius,
+                                                m3Vec3 translation, m3QueryFilter filter);
     M3_API m3RayHit m3World_CastCapsuleClosest(m3WorldId worldId, m3Pos3 center, m3Vec3 point1,
                                                m3Vec3 point2, m3real radius, m3Vec3 translation);
+    M3_API m3RayHit m3World_CastCapsuleClosestEx(m3WorldId worldId, m3Pos3 center, m3Vec3 point1,
+                                                 m3Vec3 point2, m3real radius, m3Vec3 translation,
+                                                 m3QueryFilter filter);
 
     /// The first shape (lowest index) whose volume contains the
     /// point, or the null id. Meshes are open surfaces and never
@@ -187,11 +218,16 @@ extern "C"
     /// index order. Returns the count written.
     M3_API int32_t m3World_OverlapAabb(m3WorldId worldId, m3Pos3 lo, m3Pos3 hi, m3ShapeId* shapes,
                                        int32_t capacity);
+    M3_API int32_t m3World_OverlapAabbEx(m3WorldId worldId, m3Pos3 lo, m3Pos3 hi, m3ShapeId* shapes,
+                                         int32_t capacity, m3QueryFilter filter);
 
     /// Shapes within reach of the sphere (exact per family), in
     /// ascending shape index order. Returns the count written.
     M3_API int32_t m3World_OverlapSphere(m3WorldId worldId, m3Pos3 center, m3real radius,
                                          m3ShapeId* shapes, int32_t capacity);
+    M3_API int32_t m3World_OverlapSphereEx(m3WorldId worldId, m3Pos3 center, m3real radius,
+                                           m3ShapeId* shapes, int32_t capacity,
+                                           m3QueryFilter filter);
 
     /// FNV-1a 64 over the curated deterministic state (transforms,
     /// velocities, mass, types, step count, gravity) in canonical slot

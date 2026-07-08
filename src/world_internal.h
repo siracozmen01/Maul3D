@@ -387,6 +387,9 @@ typedef struct m3World
     float* shapeRestitution;
     float* shapeRollingResistance; // hashed only when nonzero (the
                                    // additive-state golden rule)
+    uint64_t* shapeCategory;       // filters (8-1): hashed only when a
+    uint64_t* shapeMask;           // value differs from its default
+    int32_t* shapeGroup;
     uint64_t* shapeUserData;
     int32_t* shapeNext;       // next shape on the same body, -1 end
     int32_t* shapeHullIndex;  // interned hull slot, -1 for non-hulls
@@ -583,6 +586,12 @@ m3World* m3WorldFromIndex0(uint16_t index0);
 
 // Slot lookup with generation check: -1 for a stale or foreign id.
 int32_t m3BodySlot(const m3World* world, m3BodyId bodyId);
+
+// The filter rule (8-1), one function for pairs and queries alike.
+static inline int m3FilterPass(uint64_t catA, uint64_t maskA, uint64_t catB, uint64_t maskB)
+{
+    return (catA & maskB) != 0 && (catB & maskA) != 0;
+}
 
 // Internal mutation functions: the ONLY paths that change state. The
 // public API validates, journals, then calls these; replay calls them
@@ -855,6 +864,8 @@ void m3SoftBodyPass(m3World* world, float dt, int32_t substeps);
 void m3SoftBodyAnchorInternal(m3World* world, int32_t slot, int32_t particle, int32_t body);
 m3RayHit m3RayClosestInternalEx(m3World* world, m3Pos3 origin, m3Vec3 translation,
                                 int32_t ignoreBody);
+m3RayHit m3RayClosestFiltered(m3World* world, m3Pos3 origin, m3Vec3 translation, int32_t ignoreBody,
+                              m3QueryFilter filter);
 
 void m3JournalRecord(m3World* world, int32_t op, const void* payload, int32_t bytes);
 

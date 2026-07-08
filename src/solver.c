@@ -2108,6 +2108,25 @@ static bool ContinuousQueryCallback(int32_t shape, void* userContext)
     {
         return true; // only bullets sweep against dynamics and kinematics
     }
+    {
+        // Filters (8-1): the continuous phase obeys the same rule
+        // as the discrete pair scan.
+        int32_t gi = world->shapeGroup[shape];
+        int32_t gj = world->shapeGroup[ctx->fastShape];
+        if (gi != 0 && gi == gj)
+        {
+            if (gi < 0)
+            {
+                return true;
+            }
+        }
+        else if (!m3FilterPass(world->shapeCategory[shape], world->shapeMask[shape],
+                               world->shapeCategory[ctx->fastShape],
+                               world->shapeMask[ctx->fastShape]))
+        {
+            return true;
+        }
+    }
 
     m3TOIInput input;
     m3Vec3 scratchA[2];

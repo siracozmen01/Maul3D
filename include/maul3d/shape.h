@@ -41,6 +41,14 @@ extern "C"
         float density; // kg/m^3
         float friction;
         float restitution;
+        /// Collision filtering (8-1). A pair collides when each
+        /// side's category intersects the other's mask, unless a
+        /// shared nonzero groupIndex overrides: positive forces
+        /// collision, negative forbids it (the reference rule).
+        /// Defaults: category 1, mask all bits, group 0.
+        uint64_t categoryBits;
+        uint64_t maskBits;
+        int32_t groupIndex;
         /// Rolling resistance (6-3): a dimensionless material knob
         /// braking relative rotation at contacts, mixed by maximum
         /// across the pair and scaled by the pair's extent (the

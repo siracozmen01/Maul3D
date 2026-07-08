@@ -20,6 +20,14 @@ int32_t m3ShapeSlot(const m3World* world, m3ShapeId shapeId)
     return index;
 }
 
+m3QueryFilter m3DefaultQueryFilter(void)
+{
+    m3QueryFilter f;
+    f.categoryBits = ~0ull;
+    f.maskBits = ~0ull;
+    return f;
+}
+
 m3ShapeDef m3DefaultShapeDef(void)
 {
     m3ShapeDef def;
@@ -27,6 +35,9 @@ m3ShapeDef m3DefaultShapeDef(void)
     def.density = 1.0f;
     def.friction = 0.6f;
     def.restitution = 0.0f;
+    def.categoryBits = 1ull;
+    def.maskBits = ~0ull;
+    def.groupIndex = 0;
     def.internalValue = M3_SHAPE_COOKIE;
     return def;
 }
@@ -309,6 +320,9 @@ int32_t m3CreateShapeInternal(m3World* world, int32_t bodyIndex, uint8_t type,
     world->shapeFriction[index] = def->friction;
     world->shapeRestitution[index] = def->restitution;
     world->shapeRollingResistance[index] = def->rollingResistance;
+    world->shapeCategory[index] = def->categoryBits;
+    world->shapeMask[index] = def->maskBits;
+    world->shapeGroup[index] = def->groupIndex;
     world->shapeUserData[index] = def->userData;
     world->shapeSensor[index] = def->isSensor ? 1 : 0;
     // Push onto the body's list head (canonical: creation order is
@@ -430,6 +444,9 @@ void m3DestroyShapeInternal(m3World* world, int32_t index)
     world->shapeFriction[index] = 0.0f;
     world->shapeRestitution[index] = 0.0f;
     world->shapeRollingResistance[index] = 0.0f;
+    world->shapeCategory[index] = 0;
+    world->shapeMask[index] = 0;
+    world->shapeGroup[index] = 0;
     world->shapeUserData[index] = 0;
     world->shapeSensor[index] = 0;
     world->shapeNext[index] = -1;

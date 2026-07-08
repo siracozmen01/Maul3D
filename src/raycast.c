@@ -303,7 +303,8 @@ typedef struct m3RayCastContext
     m3Vec3 translation;
     m3RayHit best;
     int32_t bestShape;
-    int32_t ignoreBody; // -1 none: the suspension casts' self filter
+    int32_t ignoreBody;   // -1 none: the suspension casts' self filter
+    m3QueryFilter filter; // 8-1: the query behaves like a shape
 } m3RayCastContext;
 
 static void RayTestShape(m3RayCastContext* ctx, int32_t shape)
@@ -314,6 +315,11 @@ static void RayTestShape(m3RayCastContext* ctx, int32_t shape)
     {
         return; // the caller's own body never blocks its ray (4-4's
                 // cast hook, extended to rays for the vehicle arc)
+    }
+    if (!m3FilterPass(ctx->filter.categoryBits, ctx->filter.maskBits, world->shapeCategory[shape],
+                      world->shapeMask[shape]))
+    {
+        return; // filtered out (8-1)
     }
     const m3Transform* xf = &world->transforms[body];
 
@@ -391,9 +397,10 @@ m3RayHit m3RayTestOneShape(m3World* world, int32_t shape, m3Pos3 origin, m3Vec3 
 {
     m3RayCastContext ctx;
     memset(&ctx, 0, sizeof(ctx));
-    ctx.ignoreBody = -1; // zero after memset would silently filter
-                         // body slot ZERO (the 5-1 lesson: a new
-                         // context field visits every constructor)
+    ctx.ignoreBody = -1;                 // zero after memset would silently filter
+                                         // body slot ZERO (the 5-1 lesson: a new
+                                         // context field visits every constructor)
+    ctx.filter = m3DefaultQueryFilter(); // the same lesson, 8-1
     ctx.best.fraction = 1.0f;
     ctx.world = world;
     ctx.origin = origin;
@@ -409,12 +416,13 @@ static bool RayQueryCallback(int32_t shape, void* userContext)
     return true;
 }
 
-m3RayHit m3RayClosestInternalEx(m3World* world, m3Pos3 origin, m3Vec3 translation,
-                                int32_t ignoreBody)
+m3RayHit m3RayClosestFiltered(m3World* world, m3Pos3 origin, m3Vec3 translation, int32_t ignoreBody,
+                              m3QueryFilter filter)
 {
     m3RayCastContext ctx;
     memset(&ctx, 0, sizeof(ctx));
     ctx.ignoreBody = ignoreBody;
+    ctx.filter = filter;
     ctx.best.fraction = 1.0f;
     if (world == NULL || !(m3Dot3(translation, translation) > 0.0f) ||
         !(translation.x >= -M3_CAST_LIMIT && translation.x <= M3_CAST_LIMIT) ||
@@ -455,12 +463,19 @@ m3RayHit m3RayClosestInternalEx(m3World* world, m3Pos3 origin, m3Vec3 translatio
     return ctx.best;
 }
 
-m3RayHit m3RayClosestInternal(m3World* world, m3Pos3 origin, m3Vec3 translation)
+m3RayHit m3RayClosestInternalEx(m3World* world, m3Pos3 origin, m3Vec3 translation,
+                                int32_t ignoreBody)
 {
-    return m3RayClosestInternalEx(world, origin, translation, -1);
+    return m3RayClosestFiltered(world, origin, translation, ignoreBody, m3DefaultQueryFilter());
 }
 
-m3RayHit m3World_CastRayClosest(m3WorldId worldId, m3Pos3 origin, m3Vec3 translation)
+m3RayHit m3RayClosestInternal(m3World* world, m3Pos3 origin, m3Vec3 translation)
+{
+    return m3RayClosestFiltered(world, origin, translation, -1, m3DefaultQueryFilter());
+}
+
+m3RayHit m3World_CastRayClosestEx(m3WorldId worldId, m3Pos3 origin, m3Vec3 translation,
+                                  m3QueryFilter filter)
 {
     m3World* world = m3WorldFromId(worldId);
     if (world == NULL)
@@ -469,5 +484,10 @@ m3RayHit m3World_CastRayClosest(m3WorldId worldId, m3Pos3 origin, m3Vec3 transla
         memset(&miss, 0, sizeof(miss));
         return miss;
     }
-    return m3RayClosestInternal(world, origin, translation);
+    return m3RayClosestFiltered(world, origin, translation, -1, filter);
+}
+
+m3RayHit m3World_CastRayClosest(m3WorldId worldId, m3Pos3 origin, m3Vec3 translation)
+{
+    return m3World_CastRayClosestEx(worldId, origin, translation, m3DefaultQueryFilter());
 }

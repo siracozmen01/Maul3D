@@ -252,6 +252,11 @@ target_link_libraries(test_softbody PRIVATE maul3d)
 maul3d_apply_flags(test_softbody)
 add_test(NAME softbody COMMAND test_softbody)
 
+add_executable(test_filter test/test_filter.c)
+target_link_libraries(test_filter PRIVATE maul3d)
+maul3d_apply_flags(test_filter)
+add_test(NAME filter COMMAND test_filter)
+
 add_executable(test_fuzz test/test_fuzz.c)
 target_link_libraries(test_fuzz PRIVATE maul3d)
 maul3d_apply_flags(test_fuzz)

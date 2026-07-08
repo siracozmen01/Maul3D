@@ -161,6 +161,22 @@ static int PairAllowed(const m3World* world, int32_t i, int32_t j)
     {
         return 0;
     }
+    // Filters (8-1): a shared nonzero group overrides the bits,
+    // positive forcing and negative forbidding; otherwise each
+    // category must land in the other's mask.
+    int32_t gi = world->shapeGroup[i];
+    if (gi != 0 && gi == world->shapeGroup[j])
+    {
+        if (gi < 0)
+        {
+            return 0;
+        }
+    }
+    else if (!m3FilterPass(world->shapeCategory[i], world->shapeMask[i], world->shapeCategory[j],
+                           world->shapeMask[j]))
+    {
+        return 0;
+    }
     // Jointed bodies skip contact unless the joint says otherwise
     // (the chain-fight guard, 2c-2). Walk the shorter list.
     for (int32_t jt = world->bodyJointHead[bodyI]; jt != -1;
