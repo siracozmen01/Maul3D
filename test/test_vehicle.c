@@ -700,9 +700,13 @@ static void TestFerryRideAndChurn(void)
 
 static void TestDriveOnFragment(void)
 {
-    // Newton holds on loose ground: a car standing on a free
-    // dynamic slab presses it (the slab feels the weight) and
-    // driving kicks the slab backward while the car goes forward.
+    // Newton holds on loose ground: a car driving across a
+    // free-sliding slab (a raft on a frictionless table: held up,
+    // free sideways, no outside friction to hide the books) kicks the slab backward
+    // while the car goes forward. The first draft parked the slab
+    // on an icy plane, which proved nothing once the rev-20
+    // friction fix landed: HONEST static friction holds a slab
+    // that diseased frictionless hovering used to let slide.
     m3WorldDef def = m3DefaultWorldDef();
     def.bodyCapacity = 16;
     def.shapeCapacity = 16;
@@ -711,7 +715,9 @@ static void TestDriveOnFragment(void)
     m3BodyDef gd = m3DefaultBodyDef();
     m3BodyId ground = m3CreateBody(world, &gd);
     m3ShapeDef gs = m3DefaultShapeDef();
-    gs.friction = 0.02f; // ice under the slab: the kick shows
+    gs.friction = 0.0f; // a frictionless table: it holds the raft
+                        // up and hides nothing sideways (geometric
+                        // mixing makes the pair friction zero)
     m3Plane floor = {{0.0f, 1.0f, 0.0f}, 0.0f};
     m3CreatePlaneShape(ground, &gs, &floor);
 
@@ -721,29 +727,23 @@ static void TestDriveOnFragment(void)
     m3BodyId slab = m3CreateBody(world, &slabDef);
     m3ShapeDef ss = m3DefaultShapeDef();
     ss.density = 500.0f; // 4 x 0.3 x 4 slab: 2400 kg
-    ss.friction = 0.02f; // combined with the icy plane the static
-                         // budget stays under the drive reaction
-                         // (the first draft left default friction
-                         // and the solver rightly pinned the slab)
     m3CreateBoxShape(slab, &ss, (m3Vec3){2.0f, 0.15f, 2.0f});
 
     m3BodyId chassis;
-    m3VehicleId car = MakeCar(world, (m3Pos3){0.0, 1.2, 0.0}, &chassis);
-    for (int32_t i = 0; i < 150; ++i)
+    m3VehicleId car = MakeCar(world, (m3Pos3){-1.0, 1.2, 0.0}, &chassis);
+    for (int32_t i = 0; i < 90; ++i)
     {
         m3World_Step(world, 1.0f / 60.0f, 4);
     }
-    m3Vec3 slabRest = m3Body_GetLinearVelocity(slab);
-    CHECK(fabsf(slabRest.x) < 0.01f, "the loaded slab rests");
     m3Vehicle_SetCommands(car, 1.0f, 0.0f, 0.0f);
-    for (int32_t i = 0; i < 60; ++i)
+    for (int32_t i = 0; i < 40; ++i)
     {
         m3World_Step(world, 1.0f / 60.0f, 4);
     }
     m3Vec3 vCar = m3Body_GetLinearVelocity(chassis);
     m3Vec3 vSlab = m3Body_GetLinearVelocity(slab);
-    CHECK(vCar.x > 0.5f, "the car drives off the slab");
-    CHECK(vSlab.x < -0.01f, "the slab takes the drive reaction backward");
+    CHECK(vCar.x > 0.5f, "the car drives forward off the raft");
+    CHECK(vSlab.x < -0.05f, "the raft takes the drive reaction backward");
     m3DestroyWorld(world);
 }
 

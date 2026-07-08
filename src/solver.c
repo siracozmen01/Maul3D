@@ -57,6 +57,15 @@ typedef struct m3ConstraintPoint
     m3real normalImpulse;
     m3real tangentImpulse1;
     m3real tangentImpulse2;
+    m3real totalNormalImpulse; // summed across every solve pass of
+                               // the step (the reference budget):
+                               // the relax pass legally refunds the
+                               // ACCUMULATOR at speculative rest,
+                               // and a friction cap read from the
+                               // refunded value is zero exactly
+                               // where bodies hover on the slop gap
+                               // (the 6-3 conviction: frictionless
+                               // eternal sliders under every pile)
 } m3ConstraintPoint;
 
 typedef struct m3ContactConstraint
@@ -195,6 +204,7 @@ static int32_t PrepareContacts(m3World* world, m3ContactConstraint* constraints,
             cp->normalImpulse = manifold->points[k].normalImpulse;
             cp->tangentImpulse1 = manifold->points[k].tangentImpulse1;
             cp->tangentImpulse2 = manifold->points[k].tangentImpulse2;
+            cp->totalNormalImpulse = 0.0f;
         }
     }
     return count;
@@ -248,7 +258,17 @@ static void SolveOneContact(m3World* world, m3ContactConstraint* c, const m3Vec3
             m3real newImpulse = m3MaxF(cp->normalImpulse + impulse, 0.0f);
             impulse = newImpulse - cp->normalImpulse;
             cp->normalImpulse = newImpulse;
+            cp->totalNormalImpulse += newImpulse; // the reference sum
             ApplyImpulse(world, c, m3MulSV3(impulse, c->normal), cp->rA, cp->rB);
+        }
+
+        // No friction while applying bias: the reference schedule.
+        // Bias motion is virtual (the relax pass exists to remove
+        // it); friction solved against it reads push-out as real
+        // sliding.
+        if (useBias)
+        {
+            return;
         }
 
         for (int32_t k = 0; k < c->pointCount; ++k)
@@ -260,7 +280,7 @@ static void SolveOneContact(m3World* world, m3ContactConstraint* c, const m3Vec3
             m3real vt2 = m3Dot3(vrel, c->t2);
             m3real f1 = cp->tangentImpulse1 - cp->tangentMass1 * vt1;
             m3real f2 = cp->tangentImpulse2 - cp->tangentMass2 * vt2;
-            m3real maxFriction = c->friction * cp->normalImpulse;
+            m3real maxFriction = c->friction * cp->totalNormalImpulse;
             m3real mag2 = f1 * f1 + f2 * f2;
             if (mag2 > maxFriction * maxFriction)
             {
@@ -1742,7 +1762,7 @@ static void Restitution(m3World* world, m3ContactConstraint* constraints, int32_
         for (int32_t k = 0; k < c->pointCount; ++k)
         {
             m3ConstraintPoint* cp = &c->points[k];
-            if (cp->relativeVelocity > -M3_RESTITUTION_THRESHOLD || cp->normalImpulse == 0.0f)
+            if (cp->relativeVelocity > -M3_RESTITUTION_THRESHOLD || cp->totalNormalImpulse == 0.0f)
             {
                 continue;
             }
@@ -2105,7 +2125,17 @@ static void ContinuousVersusPlane(const m3World* world, m3ContinuousContext* ctx
         }
         if (sep <= target + tolerance)
         {
-            if (t < ctx->fraction)
+            // The reference rule the other three arms already obey:
+            // a body ALREADY within the target distance at t = 0
+            // belongs to the discrete speculative contact, not to
+            // the continuous pull-back. This arm's missing guard
+            // was the 6-3 lock: the pull-back at fraction zero
+            // erased each step's integration while velocity stayed,
+            // freezing bodies at the slop gap where the refunded
+            // accumulator kept their friction at zero: eternal
+            // frictionless skaters under every pile, sleep never
+            // engaging, the aftermath phase priced like the storm.
+            if (t > 0.0f && t < ctx->fraction)
             {
                 ctx->fraction = t;
             }

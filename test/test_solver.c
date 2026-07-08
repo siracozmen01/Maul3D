@@ -430,10 +430,11 @@ static void TestDeepCapsuleRecovers(void)
     // centers are OUTSIDE the side planes, so only the segment SAT
     // sees the right axis (a centroid heuristic would shove it
     // sideways). The honest deep-recovery promise: the capsule is
-    // EXPELLED and settles somewhere sane. It need not end balanced
-    // on top: the violent pop-out picks up a small sequential-solve
-    // torque (the reference solvers share this trait) and the rod
-    // may legitimately slide off the box and land on the ground.
+    // EXPELLED and settles somewhere sane. With the rev-20 friction
+    // schedule the pop-out is CLEANER than it used to be (friction
+    // no longer fights the virtual bias motion), so the rod may now
+    // legitimately end BALANCED ON TOP of the box instead of
+    // sliding off: the band accepts both endings.
     m3WorldId world = MakeWorld();
     AddGroundPlane(world, 0.6f);
 
@@ -452,7 +453,7 @@ static void TestDeepCapsuleRecovers(void)
     StepN(world, 480);
 
     m3Pos3 p = m3Body_GetPosition(rod);
-    CHECK(p.x > -5.0 && p.x < 5.0 && p.z > -5.0 && p.z < 5.0 && p.y > 0.1 && p.y < 1.35,
+    CHECK(p.x > -5.0 && p.x < 5.0 && p.z > -5.0 && p.z < 5.0 && p.y > 0.1 && p.y < 1.45,
           "the skewered capsule is expelled and settles nearby");
     int insideCore =
         p.x > -0.45 && p.x < 0.45 && p.y > 0.05 && p.y < 0.95 && p.z > -0.45 && p.z < 0.45;

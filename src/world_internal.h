@@ -30,7 +30,23 @@
 // new-capability-only, harmless in effect but a discipline miss,
 // recorded here so the ledger stays honest).
 #define M3_SOLVER_REV                                                                              \
-    19 // rev 19: the rotation-lock bias sign (a
+    20 // rev 20: the reference contact friction
+       // budget and schedule (6-3). The friction
+       // cap now reads the STEP-LONG sum of
+       // normal impulses (the reference's
+       // totalNormalImpulse): the relax pass
+       // legally refunds the accumulator for
+       // bodies hovering at the speculative slop
+       // gap, and a cap read from the refunded
+       // value left them sliding and spinning
+       // FRICTIONLESS forever under every pile
+       // (sleep never engaged, the continuous
+       // phase drowned in phantom fast bodies).
+       // Friction also no longer solves during
+       // the bias pass (the reference rule: bias
+       // motion is virtual). Restitution gates
+       // on the step-long sum too.
+       // rev 19: the rotation-lock bias sign (a
        // latent amplifier in the prismatic
        // lock, exposed by the 4-2 weld; error
        // now rides the bias with the contact
