@@ -84,6 +84,13 @@ target_link_libraries(test_queries PRIVATE maul3d)
 maul3d_apply_flags(test_queries)
 add_test(NAME queries COMMAND test_queries)
 
+# The benchmark harness: built always (so it cannot rot), never a
+# ctest gate (wall time is not deterministic). Run manually in
+# Release for profiles; scenes print their hashes as a sanity anchor.
+add_executable(maul3d_bench bench/bench_main.c)
+target_link_libraries(maul3d_bench PRIVATE maul3d)
+maul3d_apply_flags(maul3d_bench)
+
 add_executable(test_hardening test/test_hardening.c)
 target_link_libraries(test_hardening PRIVATE maul3d)
 maul3d_apply_flags(test_hardening)
