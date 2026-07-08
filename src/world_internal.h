@@ -92,6 +92,7 @@ typedef enum m3Op
     m3_opCreateSoftBody = 22,        // def + expected id (7-1)
     m3_opDestroySoftBody = 23,       // id
     m3_opSoftBodyPin = 24,           // id + particle index
+    m3_opSoftBodyAnchor = 25,        // id + particle + body id (7-3)
 } m3Op;
 
 // Immutable interned hull data (lifetime 3): vertices, face planes,
@@ -507,6 +508,11 @@ typedef struct m3World
     uint16_t* softEdgeA; // cap * M3_SOFTBODY_MAX_EDGES
     uint16_t* softEdgeB;
     m3real* softEdgeRest;
+    int32_t* softAnchorCount;    // per slot
+    int32_t* softAnchorParticle; // cap * M3_SOFTBODY_MAX_ANCHORS
+    int32_t* softAnchorBody;
+    uint16_t* softAnchorGen;
+    m3Vec3* softAnchorLocal;
 
     // Generic 6-DOF state (4-3): packed modes (2 bits per axis,
     // linear 0..5, angular 6..11, motor axis 12..15) and per-axis
@@ -846,6 +852,7 @@ int32_t m3CreateSoftBodyInternal(m3World* world, const m3SoftBodyDef* def);
 void m3DestroySoftBodyInternal(m3World* world, int32_t slot);
 void m3SoftBodyPinInternal(m3World* world, int32_t slot, int32_t particle);
 void m3SoftBodyPass(m3World* world, float dt, int32_t substeps);
+void m3SoftBodyAnchorInternal(m3World* world, int32_t slot, int32_t particle, int32_t body);
 m3RayHit m3RayClosestInternalEx(m3World* world, m3Pos3 origin, m3Vec3 translation,
                                 int32_t ignoreBody);
 

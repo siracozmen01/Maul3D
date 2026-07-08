@@ -7,6 +7,7 @@
 // and replays bit-exact, and a mid-sag rollback re-sags onto
 // identical bits. Hostile defs refuse loudly.
 
+#include "maul3d/joint.h"
 #include "maul3d/shape.h"
 #include "maul3d/softbody.h"
 
@@ -379,6 +380,176 @@ static void TestSurfaceTwins(void)
     CHECK(hashes[0] == hashes[1], "surface twins are bit-identical");
 }
 
+static void TestJellySeesaw(void)
+{
+    // A jelly lands on one end of a hinged plank: the plank tips
+    // under the soft weight. Contact coupling carries real
+    // momentum, not decoration.
+    m3WorldId world = PlaneWorld();
+    m3BodyDef postDef = m3DefaultBodyDef();
+    postDef.position = (m3Pos3){0.0, 1.0, 0.0};
+    m3BodyId post = m3CreateBody(world, &postDef);
+    m3BodyDef plankDef = m3DefaultBodyDef();
+    plankDef.type = m3_dynamicBody;
+    plankDef.position = (m3Pos3){0.0, 1.0, 0.0};
+    m3BodyId plank = m3CreateBody(world, &plankDef);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    sd.friction = 0.6f;
+    m3CreateBoxShape(plank, &sd, (m3Vec3){1.5f, 0.05f, 0.4f});
+    m3JointDef jd = m3DefaultJointDef();
+    jd.type = m3_revoluteJoint;
+    jd.bodyA = post;
+    jd.bodyB = plank;
+    jd.localAxisA = (m3Vec3){0.0f, 0.0f, 1.0f};
+    jd.localAxisB = (m3Vec3){0.0f, 0.0f, 1.0f};
+    m3CreateJoint(&jd);
+
+    m3SoftBodyDef sb = m3DefaultSoftBodyDef();
+    sb.position = (m3Pos3){0.75, 1.6, -0.3};
+    sb.countX = 3;
+    sb.countY = 3;
+    sb.countZ = 3;
+    sb.spacing = 0.2f;
+    sb.compliance = 1.0e-4f;
+    sb.radius = 0.08f;
+    sb.particleMass = 0.2f; // a 5.4 kg jelly on one wing
+    m3SoftBodyId jelly = m3CreateSoftBody(world, &sb);
+    CHECK(m3SoftBody_IsValid(jelly), "the jelly creates");
+
+    for (int32_t i = 0; i < 240; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+    }
+    m3Vec3 w = m3Body_GetAngularVelocity(plank);
+    m3Quat q = m3Body_GetRotation(plank);
+    (void)w;
+    CHECK(q.z < -0.02f, "the plank tips under the jelly");
+    m3Pos3 jp = m3SoftBody_GetParticlePosition(jelly, 0);
+    CHECK(isfinite(jp.x) && isfinite(jp.y), "the jelly stays finite on the ride");
+    m3DestroyWorld(world);
+}
+
+static void TestBallThroughCloth(void)
+{
+    // A hanging cloth anchored to a beam takes a flying ball: the
+    // ball loses speed to the fabric, the fabric bulges, and the
+    // anchors hold their corners.
+    m3WorldId world = PlaneWorld();
+    m3BodyDef beamDef = m3DefaultBodyDef();
+    beamDef.position = (m3Pos3){0.0, 3.2, 0.0};
+    m3BodyId beam = m3CreateBody(world, &beamDef);
+    m3ShapeDef bs = m3DefaultShapeDef();
+    m3CreateBoxShape(beam, &bs, (m3Vec3){1.2f, 0.05f, 0.05f});
+
+    m3SoftBodyDef sb = m3DefaultSoftBodyDef();
+    sb.position = (m3Pos3){-0.9, 1.2, 0.0};
+    sb.countX = 10;
+    sb.countY = 10;
+    sb.countZ = 1;
+    sb.spacing = 0.2f;
+    sb.compliance = 1.0e-5f;
+    sb.radius = 0.06f;
+    sb.particleMass = 0.03f;
+    m3SoftBodyId cloth = m3CreateSoftBody(world, &sb);
+    // Anchor the top ROW's two corners to the beam.
+    m3SoftBody_AnchorParticle(cloth, 90, beam); // (x0, y9)
+    m3SoftBody_AnchorParticle(cloth, 99, beam); // (x9, y9)
+    for (int32_t i = 0; i < 120; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4); // let it hang
+    }
+
+    m3BodyDef ballDef = m3DefaultBodyDef();
+    ballDef.type = m3_dynamicBody;
+    ballDef.position = (m3Pos3){0.0, 2.0, -3.0};
+    ballDef.linearVelocity = (m3Vec3){0.0f, 0.0f, 8.0f};
+    ballDef.gravityScale = 0.0f; // a clean speed ledger
+    m3BodyId ball = m3CreateBody(world, &ballDef);
+    m3ShapeDef bls = m3DefaultShapeDef();
+    bls.density = 50.0f; // 3.3 kg: heavier than the whole fabric,
+                         // or the reaction walls a featherweight
+    m3Sphere slug = {{0.0f, 0.0f, 0.0f}, 0.25f};
+    m3CreateSphereShape(ball, &bls, &slug);
+
+    for (int32_t i = 0; i < 90; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+    }
+    m3Vec3 v = m3Body_GetLinearVelocity(ball);
+    m3Pos3 bp = m3Body_GetPosition(ball);
+    CHECK(bp.z > 0.3, "the ball passes through the fabric plane");
+    CHECK(v.z < 7.9f, "the fabric takes speed off the ball");
+    // The ball drags the tangled curtain with it (three kilos of
+    // fabric on a three-kilo ball): forward motion survives, most
+    // of the speed does not.
+    CHECK(v.z > 0.5f, "the fabric does not wall the ball");
+    // The anchor preserves the particle's CAPTURE position in the
+    // beam frame (top row spawned at y = 3.0), it does not teleport
+    // to the beam's center.
+    m3Pos3 c0 = m3SoftBody_GetParticlePosition(cloth, 90);
+    CHECK(fabs(c0.y - 3.0) < 0.15, "the anchored corner holds its captured height");
+    m3DestroyWorld(world);
+}
+
+static void TestClothFollowsBeam(void)
+{
+    // The beam is kinematic and sails sideways: the anchored cloth
+    // top tracks it; twins and a mid-ride rollback agree.
+    static uint8_t snap[786432];
+    uint64_t hashes[2];
+    for (int32_t run = 0; run < 2; ++run)
+    {
+        m3WorldId world = PlaneWorld();
+        m3BodyDef beamDef = m3DefaultBodyDef();
+        beamDef.type = m3_kinematicBody;
+        beamDef.position = (m3Pos3){0.0, 3.0, 0.0};
+        m3BodyId beam = m3CreateBody(world, &beamDef);
+        m3ShapeDef bs = m3DefaultShapeDef();
+        m3CreateBoxShape(beam, &bs, (m3Vec3){1.0f, 0.05f, 0.05f});
+
+        m3SoftBodyDef sb = m3DefaultSoftBodyDef();
+        sb.position = (m3Pos3){-0.7, 1.6, 0.0};
+        sb.countX = 8;
+        sb.countY = 8;
+        sb.countZ = 1;
+        sb.spacing = 0.2f;
+        sb.compliance = 1.0e-5f;
+        sb.radius = 0.05f;
+        sb.particleMass = 0.03f;
+        m3SoftBodyId cloth = m3CreateSoftBody(world, &sb);
+        m3SoftBody_AnchorParticle(cloth, 56, beam);
+        m3SoftBody_AnchorParticle(cloth, 63, beam);
+
+        m3Body_SetLinearVelocity(beam, (m3Vec3){0.8f, 0.0f, 0.0f});
+        int32_t snapBytes = 0;
+        for (int32_t i = 0; i < 150; ++i)
+        {
+            m3World_Step(world, 1.0f / 60.0f, 4);
+            if (i == 75 && run == 0)
+            {
+                snapBytes = m3World_Snapshot(world, snap, (int32_t)sizeof(snap));
+                CHECK(snapBytes > 0, "the mid-ride snapshot fits");
+            }
+        }
+        m3Pos3 corner = m3SoftBody_GetParticlePosition(cloth, 56);
+        m3Pos3 beamP = m3Body_GetPosition(beam);
+        CHECK(beamP.x > 1.9, "the beam sails");
+        CHECK(fabs(corner.x - (beamP.x - 0.7)) < 0.1, "the anchored corner tracks the beam");
+        hashes[run] = m3World_Hash(world);
+        if (run == 0)
+        {
+            CHECK(m3World_Restore(world, snap, snapBytes), "the mid-ride restore lands");
+            for (int32_t i = 76; i < 150; ++i)
+            {
+                m3World_Step(world, 1.0f / 60.0f, 4);
+            }
+            CHECK(m3World_Hash(world) == hashes[0], "the re-ride is bit-identical");
+        }
+        m3DestroyWorld(world);
+    }
+    CHECK(hashes[0] == hashes[1], "coupling twins are bit-identical");
+}
+
 int main(void)
 {
     TestHangingRope();
@@ -388,6 +559,9 @@ int main(void)
     TestClothDrape();
     TestRopeInBowlAndCarve();
     TestSurfaceTwins();
+    TestJellySeesaw();
+    TestBallThroughCloth();
+    TestClothFollowsBeam();
     if (s_failures == 0)
     {
         printf("test_softbody: all green\n");

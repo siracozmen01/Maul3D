@@ -22,6 +22,7 @@ extern "C"
 
 #define M3_SOFTBODY_MAX_PARTICLES 512
 #define M3_SOFTBODY_MAX_EDGES     5120
+#define M3_SOFTBODY_MAX_ANCHORS   32
 
     typedef struct m3SoftBodyId
     {
@@ -60,6 +61,17 @@ extern "C"
     /// pins are quiet no-ops. Particle index is
     /// x + countX * (y + countY * z).
     M3_API void m3SoftBody_PinParticle(m3SoftBodyId softId, int32_t particle);
+
+    /// Anchors one particle to a body at the particle's CURRENT
+    /// position, expressed in the body's frame: the particle rides
+    /// the body from then on, and the lattice's pull on it lands on
+    /// the body as an impulse at the anchor (two-way, 7-3). Cloth
+    /// hangs from beams and jelly rides trucks through this.
+    /// Anchoring to a static body is a moving pin; the anchor
+    /// RELEASES silently if its body dies. Journaled; stale ids,
+    /// out-of-range particles, and a full anchor table (32 per
+    /// soft body) are quiet no-ops.
+    M3_API void m3SoftBody_AnchorParticle(m3SoftBodyId softId, int32_t particle, m3BodyId bodyId);
 
     M3_API int32_t m3SoftBody_GetParticleCount(m3SoftBodyId softId);
     M3_API m3Pos3 m3SoftBody_GetParticlePosition(m3SoftBodyId softId, int32_t particle);

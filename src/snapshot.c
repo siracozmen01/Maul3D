@@ -22,7 +22,8 @@
 #endif
 
 #define M3_SNAPSHOT_MAGIC   0x4D33534Eu // 'M3SN'
-#define M3_SNAPSHOT_VERSION 27u
+#define M3_SNAPSHOT_VERSION 28u
+// v28: soft body anchors (7-3 coupling).
 // v27: the soft body pool (7-1 XPBD lattices).
 // v26: shape rolling resistance (6-3).
 // v25: tire grip, drive commands, and wheel spin (5-2).
@@ -276,6 +277,15 @@ static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3Wal
              world->softBodyCapacity * M3_SOFTBODY_MAX_EDGES * (int32_t)sizeof(uint16_t));
     M3_BLOCK(world->softEdgeRest,
              world->softBodyCapacity * M3_SOFTBODY_MAX_EDGES * (int32_t)sizeof(m3real));
+    M3_BLOCK(world->softAnchorCount, world->softBodyCapacity * (int32_t)sizeof(int32_t));
+    M3_BLOCK(world->softAnchorParticle,
+             world->softBodyCapacity * M3_SOFTBODY_MAX_ANCHORS * (int32_t)sizeof(int32_t));
+    M3_BLOCK(world->softAnchorBody,
+             world->softBodyCapacity * M3_SOFTBODY_MAX_ANCHORS * (int32_t)sizeof(int32_t));
+    M3_BLOCK(world->softAnchorGen,
+             world->softBodyCapacity * M3_SOFTBODY_MAX_ANCHORS * (int32_t)sizeof(uint16_t));
+    M3_BLOCK(world->softAnchorLocal,
+             world->softBodyCapacity * M3_SOFTBODY_MAX_ANCHORS * (int32_t)sizeof(m3Vec3));
     M3_BLOCK(world->softPool.generations, world->softBodyCapacity * (int32_t)sizeof(uint16_t));
     M3_BLOCK(world->softPool.alive, world->softBodyCapacity * (int32_t)sizeof(uint8_t));
     M3_BLOCK(world->softPool.freeQueue, world->softBodyCapacity * (int32_t)sizeof(int32_t));
@@ -616,6 +626,15 @@ uint64_t m3World_Hash(m3WorldId worldId)
             h = m3Hash64(h, &world->softEdgeA[k], 2);
             h = m3Hash64(h, &world->softEdgeB[k], 2);
             h = m3Hash64(h, &world->softEdgeRest[k], 4);
+        }
+        int32_t ac = world->softAnchorCount[i];
+        for (int32_t a = 0; a < ac; ++a)
+        {
+            int32_t k = i * M3_SOFTBODY_MAX_ANCHORS + a;
+            h = m3Hash64(h, &world->softAnchorParticle[k], 4);
+            h = m3Hash64(h, &world->softAnchorBody[k], 4);
+            h = m3Hash64(h, &world->softAnchorGen[k], 2);
+            h = m3Hash64(h, &world->softAnchorLocal[k], (int32_t)sizeof(m3Vec3));
         }
     }
     for (int32_t i = 0; i < world->vehPool.maxIndex; ++i)
