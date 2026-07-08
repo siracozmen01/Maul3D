@@ -33,6 +33,9 @@ extern "C"
 #define M3_VERSION_MINOR 3
 #define M3_VERSION_PATCH 0
 
+    /// The linked library's version as major * 10000 + minor * 100 +
+    /// patch (0.3.0 returns 300). Compare against the M3_VERSION
+    /// macros to catch a header/library mismatch at startup.
     M3_API int m3GetVersion(void);
 
     /// Loud failure, the constitution's way: APIs that can fail return a
@@ -109,6 +112,8 @@ extern "C"
 #define M3_ASSERT(cond) ((void)0)
 #endif
 
+    /// The debug assert sink (prints and aborts). Internal invariants
+    /// only; never called for user input, never present in release.
     M3_API void m3AssertFail(const char* condition, const char* file, int line);
 
 #ifdef __cplusplus

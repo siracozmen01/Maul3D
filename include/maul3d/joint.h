@@ -56,6 +56,9 @@ extern "C"
         int32_t internalValue;
     } m3JointDef;
 
+    /// The pinned joint defaults: spherical type, zero anchors, unit
+    /// z axes, everything disabled, collideConnected off, and the
+    /// def cookie every create demands.
     M3_API m3JointDef m3DefaultJointDef(void);
 
     /// Create a joint between two distinct bodies of the same world

@@ -41,6 +41,9 @@ extern "C"
         int32_t internalValue;
     } m3WorldDef;
 
+    /// The pinned world defaults: gravity (0, -10, 0), 1024 bodies,
+    /// 2048 shapes, 64 joints, 4 meshes, one worker, no task hooks,
+    /// and the def cookie every create demands.
     M3_API m3WorldDef m3DefaultWorldDef(void);
 
     /// Create a world. Returns the null id on an invalid def or an
@@ -76,6 +79,10 @@ extern "C"
         m3ShapeId shapeB;
     } m3ContactEvent;
 
+    /// Contact begin and end streams for the LAST step, in canonical
+    /// deterministic order. Valid until the next step, restore, or
+    /// world destruction (restore clears them: events are
+    /// observations, not state). Pass a non-null count.
     M3_API const m3ContactEvent* m3World_ContactBeginEvents(m3WorldId worldId, int32_t* count);
     M3_API const m3ContactEvent* m3World_ContactEndEvents(m3WorldId worldId, int32_t* count);
 
@@ -98,6 +105,9 @@ extern "C"
         bool hit;
     } m3RayHit;
 
+    /// The closest front-face hit along origin + t * translation for
+    /// t in [0, 1]. Rays MISS shapes they start inside or exactly on
+    /// (front faces only); ask m3World_PointInside for containment.
     M3_API m3RayHit m3World_CastRayClosest(m3WorldId worldId, m3Pos3 origin, m3Vec3 translation);
 
     /// Every ray hit along the translation, one entry point per

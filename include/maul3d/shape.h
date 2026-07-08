@@ -82,6 +82,9 @@ extern "C"
         m3real radius;
     } m3Capsule;
 
+    /// A capsule: the segment point1..point2 inflated by radius. A
+    /// zero-length segment is refused (that shape is a sphere; use
+    /// m3CreateSphereShape).
     M3_API m3ShapeId m3CreateCapsuleShape(m3BodyId bodyId, const m3ShapeDef* def,
                                           const m3Capsule* capsule);
 
@@ -112,6 +115,8 @@ extern "C"
                                               const float* heights, int32_t nx, int32_t nz,
                                               m3real cellSize);
 
+    /// True while the id names a live shape in a live world; false
+    /// for the null id, stale generations, and destroyed worlds.
     M3_API bool m3Shape_IsValid(m3ShapeId shapeId);
 
     static const m3ShapeId m3_nullShapeId = {0, 0, 0};
