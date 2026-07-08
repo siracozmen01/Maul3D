@@ -100,8 +100,30 @@ int32_t m3CreateJointInternal(m3World* world, const m3JointDef* def, int32_t bod
     world->jointPerpImpulse[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
     world->jointLimitImpulse[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
     world->jointAngularImpulse[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
-    world->jointFrameQA[index] = QuatFromAxisZ(m3Normalize3(def->localAxisA));
-    world->jointFrameQB[index] = QuatFromAxisZ(m3Normalize3(def->localAxisB));
+    if (def->type == (int32_t)m3_fixedJoint)
+    {
+        // The weld pose (4-2): store frames so that at the create
+        // pose the two world frames coincide; the solver's rotation
+        // lock then drives their live relative rotation back to
+        // identity. frameA = identity, frameB = conj(qB0) * qA0.
+        const m3Transform* xfA = &world->transforms[bodyA];
+        const m3Transform* xfB = &world->transforms[bodyB];
+        m3Quat conjB = {-xfB->q.x, -xfB->q.y, -xfB->q.z, xfB->q.w};
+        world->jointFrameQA[index] = (m3Quat){0.0f, 0.0f, 0.0f, 1.0f};
+        world->jointFrameQB[index] = m3NormalizeQuat(m3MulQuat(conjB, xfA->q));
+    }
+    else if (def->type == (int32_t)m3_distanceJoint)
+    {
+        // Frames are unused by the axial row: identity keeps the
+        // stored state canonical and the hash honest.
+        world->jointFrameQA[index] = (m3Quat){0.0f, 0.0f, 0.0f, 1.0f};
+        world->jointFrameQB[index] = (m3Quat){0.0f, 0.0f, 0.0f, 1.0f};
+    }
+    else
+    {
+        world->jointFrameQA[index] = QuatFromAxisZ(m3Normalize3(def->localAxisA));
+        world->jointFrameQB[index] = QuatFromAxisZ(m3Normalize3(def->localAxisB));
+    }
     world->jointFlags[index] = (uint8_t)((def->enableLimit ? 1 : 0) | (def->enableMotor ? 2 : 0) |
                                          (def->enableCone ? 4 : 0));
     world->jointMotor[index] = (m3Vec3){def->motorSpeed, def->maxMotorEffort, 0.0f};
@@ -185,15 +207,26 @@ m3JointId m3CreateJoint(const m3JointDef* def)
 {
     if (def == NULL || def->internalValue != M3_JOINT_COOKIE ||
         (def->type != (int32_t)m3_sphericalJoint && def->type != (int32_t)m3_revoluteJoint &&
-         def->type != (int32_t)m3_prismaticJoint))
+         def->type != (int32_t)m3_prismaticJoint && def->type != (int32_t)m3_fixedJoint &&
+         def->type != (int32_t)m3_distanceJoint))
     {
         return m3_nullJointId;
     }
-    if (def->type != (int32_t)m3_sphericalJoint &&
+    if ((def->type == (int32_t)m3_revoluteJoint || def->type == (int32_t)m3_prismaticJoint) &&
         (!(m3Dot3(def->localAxisA, def->localAxisA) > 0.0f) ||
          !(m3Dot3(def->localAxisB, def->localAxisB) > 0.0f)))
     {
-        return m3_nullJointId; // a hinge needs real axes
+        return m3_nullJointId; // a hinge or slider needs real axes
+    }
+    if (def->type == (int32_t)m3_distanceJoint &&
+        (!def->enableLimit || def->lowerLimit < 0.0f ||
+         (def->enableMotor && (!(def->motorSpeed > 0.0f) || def->maxMotorEffort < 0.0f ||
+                               (def->coneAngle > 0.0f && (def->coneAngle < def->lowerLimit ||
+                                                          def->coneAngle > def->upperLimit))))))
+    {
+        // The distance contract: an explicit range (rod = equal
+        // bounds), and a spring only with a real hertz.
+        return m3_nullJointId;
     }
     // Hostile-input wall (2d-1): finite fields only, ordered limits
     // only, and a cone that is a cone.

@@ -323,6 +323,8 @@ typedef struct m3JointConstraint
     m3real lowerLimit;
     m3real upperLimit;
     m3Vec3 angularImpulse; // prismatic rotation lock (3 DOF)
+    m3Softness springSoft; // distance spring (4-2)
+    m3real restLength;     // distance rest (the upper limit)
     // Spherical cone and twist (prepared, the reference layout):
     m3Vec3 swingAxis;
     m3Vec3 twistJacobian; // the flagged row, FD-verified in the tests
@@ -488,6 +490,44 @@ static int32_t PrepareJoints(m3World* world, m3JointConstraint* joints, m3real h
             c->upperLimit = world->jointLimits[j].y;
             c->angularImpulse = world->jointAngularImpulse[j];
         }
+        else if (c->type == (uint8_t)m3_fixedJoint)
+        {
+            // The weld (4-2): the create-time relative pose lives in
+            // the stored frames; the rotation lock drives the live
+            // relative rotation back to identity between them, and
+            // the shared point block below handles translation.
+            c->frameQA = m3MulQuat(xfA->q, world->jointFrameQA[j]);
+            c->frameQB = m3MulQuat(xfB->q, world->jointFrameQB[j]);
+            c->angularImpulse = world->jointAngularImpulse[j];
+        }
+        else if (c->type == (uint8_t)m3_distanceJoint)
+        {
+            // One axial row (4-2): axis from the live anchor gap; a
+            // degenerate gap picks a fixed axis deterministically.
+            m3Vec3 s = m3Add3(c->deltaCenter, m3Sub3(c->rB, c->rA));
+            m3real len2 = m3Dot3(s, s);
+            m3Vec3 axis = {0.0f, 1.0f, 0.0f};
+            if (len2 > 1.0e-12f)
+            {
+                axis = m3MulSV3(1.0f / sqrtf(len2), s);
+            }
+            c->rotationAxis = axis;
+            m3Vec3 crossA = m3Cross3(c->rA, axis);
+            m3Vec3 crossB = m3Cross3(c->rB, axis);
+            m3real k = c->invMassA + c->invMassB + m3Dot3(crossA, m3MulMV3(c->invIA, crossA)) +
+                       m3Dot3(crossB, m3MulMV3(c->invIB, crossB));
+            c->axialMass = k > 0.0f ? 1.0f / k : 0.0f;
+            c->motorImpulse = world->jointPerpImpulse[j].z; // the spring
+            c->lowerImpulse = world->jointLimitImpulse[j].x;
+            c->upperImpulse = world->jointLimitImpulse[j].y;
+            c->lowerLimit = world->jointLimits[j].x;
+            c->upperLimit = world->jointLimits[j].y;
+            m3real rest = world->jointLimits[j].z; // coneAngle reuse:
+                                                   // the documented
+                                                   // rest length
+            c->restLength = rest > 0.0f ? rest : world->jointLimits[j].y;
+            c->springSoft = MakeSoft(world->jointMotor[j].x, world->jointMotor[j].y, h);
+        }
     }
     return count;
 }
@@ -528,6 +568,15 @@ static void WarmStartJoints(m3World* world, m3JointConstraint* joints, int32_t c
             linearExtra = m3Add3(linearExtra, m3MulSV3(c->perpImpulseX, c->perpAxisX));
             linearExtra = m3Add3(linearExtra, m3MulSV3(c->perpImpulseY, c->perpAxisY));
             angularImpulse = c->angularImpulse;
+        }
+        else if (c->type == (uint8_t)m3_fixedJoint)
+        {
+            angularImpulse = c->angularImpulse; // the weld's lock
+        }
+        else if (c->type == (uint8_t)m3_distanceJoint)
+        {
+            m3real axial = c->motorImpulse + c->lowerImpulse - c->upperImpulse;
+            linearExtra = m3MulSV3(axial, c->rotationAxis);
         }
         m3Vec3 totalLinear = m3Add3(c->impulse, linearExtra);
         world->linearVelocities[c->bodyA] =
@@ -900,7 +949,12 @@ static void SolveJoints(m3World* world, m3JointConstraint* joints, int32_t count
                     m3Quat conjA = {-quatA.x, -quatA.y, -quatA.z, quatA.w};
                     m3Quat relQ = m3MulQuat(conjA, quatB);
                     m3Vec3 rotVec = QuatToRotationVec(relQ);
-                    m3Vec3 cErr = m3Neg3(m3RotateVec3(quatA, rotVec));
+                    // Rev 19: the rotation error rides the bias with
+                    // the contact row's sign convention; the negated
+                    // form was a latent amplifier that prismatic
+                    // scenes (error ~ 0) never exposed until the
+                    // weld arrived carrying real tumble energy.
+                    m3Vec3 cErr = m3RotateVec3(quatA, rotVec);
                     bias = m3MulSV3(c->softness.biasRate, cErr);
                     massScale = c->softness.massScale;
                     impulseScale = c->softness.impulseScale;
@@ -975,6 +1029,147 @@ static void SolveJoints(m3World* world, m3JointConstraint* joints, int32_t count
 
             // The prismatic has no free point constraint: write back
             // and continue to the next joint.
+            world->linearVelocities[c->bodyA] = vA;
+            world->angularVelocities[c->bodyA] = wA;
+            world->linearVelocities[c->bodyB] = vB;
+            world->angularVelocities[c->bodyB] = wB;
+            continue;
+        }
+        else if (c->type == (uint8_t)m3_fixedJoint)
+        {
+            // The weld (4-2): the prismatic rotation lock verbatim,
+            // driving the live relative rotation to the create-time
+            // pose; the shared point block below welds translation.
+            m3Vec3 bias = {0.0f, 0.0f, 0.0f};
+            m3real massScale = 1.0f;
+            m3real impulseScale = 0.0f;
+            if (useBias)
+            {
+                m3Quat quatA = m3MulQuat(deltaRot[c->bodyA], c->frameQA);
+                m3Quat quatB = m3MulQuat(deltaRot[c->bodyB], c->frameQB);
+                m3Quat conjA = {-quatA.x, -quatA.y, -quatA.z, quatA.w};
+                m3Quat relQ = m3MulQuat(conjA, quatB);
+                m3Vec3 rotVec = QuatToRotationVec(relQ);
+                m3Vec3 cErr = m3RotateVec3(quatA, rotVec); // rev 19: see
+                                                           // the prismatic
+                                                           // lock note
+                bias = m3MulSV3(c->softness.biasRate, cErr);
+                massScale = c->softness.massScale;
+                impulseScale = c->softness.impulseScale;
+            }
+            m3Mat3 k;
+            m3Vec3 basis[3] = {{1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f}};
+            m3Vec3* cols[3] = {&k.cx, &k.cy, &k.cz};
+            for (int32_t a = 0; a < 3; ++a)
+            {
+                *cols[a] = m3Add3(m3MulMV3(c->invIA, basis[a]), m3MulMV3(c->invIB, basis[a]));
+            }
+            m3Vec3 cdotRot = m3Sub3(wB, wA);
+            m3Vec3 sol = Solve3(&k, m3Add3(cdotRot, bias));
+            m3Vec3 delta =
+                m3Sub3(m3MulSV3(-massScale, sol), m3MulSV3(impulseScale, c->angularImpulse));
+            c->angularImpulse = m3Add3(c->angularImpulse, delta);
+            wA = m3Sub3(wA, m3MulMV3(c->invIA, delta));
+            wB = m3Add3(wB, m3MulMV3(c->invIB, delta));
+        }
+        else if (c->type == (uint8_t)m3_distanceJoint)
+        {
+            // The distance rows (4-2): live gap and axis, fresh
+            // axial mass per iteration (the prismatic lesson), then
+            // the optional spring and the two clamped bound rows in
+            // the revolute limit recipe, signs mirrored.
+            m3Vec3 sVec =
+                m3Add3(m3Add3(m3Sub3(deltaPos[c->bodyB], deltaPos[c->bodyA]), m3Sub3(rB, rA)),
+                       c->deltaCenter);
+            m3real len2 = m3Dot3(sVec, sVec);
+            m3Vec3 axis = c->rotationAxis;
+            m3real length = 0.0f;
+            if (len2 > 1.0e-12f)
+            {
+                length = sqrtf(len2);
+                axis = m3MulSV3(1.0f / length, sVec);
+            }
+            m3Vec3 crossA = m3Cross3(rA, axis);
+            m3Vec3 crossB = m3Cross3(rB, axis);
+            m3real kAx = c->invMassA + c->invMassB + m3Dot3(crossA, m3MulMV3(c->invIA, crossA)) +
+                         m3Dot3(crossB, m3MulMV3(c->invIB, crossB));
+            m3real axialMass = kAx > 0.0f ? 1.0f / kAx : 0.0f;
+
+            if ((c->flags & 2) != 0 && useBias)
+            {
+                // The spring: a soft unclamped pull toward the rest
+                // length (hertz and damping from the def's motor
+                // fields, the documented reuse). Bias pass ONLY: in
+                // the relax pass a positional spring degenerates
+                // into a dead full-strength damper and no zeta can
+                // ring through it.
+                m3real cdot = m3Dot3(
+                    axis, m3Sub3(m3Add3(vB, m3Cross3(wB, rB)), m3Add3(vA, m3Cross3(wA, rA))));
+                m3real bias = c->springSoft.biasRate * (length - c->restLength);
+                m3real delta = -c->springSoft.massScale * axialMass * (cdot + bias) -
+                               c->springSoft.impulseScale * c->motorImpulse;
+                c->motorImpulse += delta;
+                vA = m3Sub3(vA, m3MulSV3(c->invMassA * delta, axis));
+                wA = m3Sub3(wA, m3MulMV3(c->invIA, m3MulSV3(delta, crossA)));
+                vB = m3Add3(vB, m3MulSV3(c->invMassB * delta, axis));
+                wB = m3Add3(wB, m3MulMV3(c->invIB, m3MulSV3(delta, crossB)));
+            }
+
+            // Lower bound: length >= lower (pushes apart).
+            {
+                m3real cc = length - c->lowerLimit;
+                m3real bias = 0.0f;
+                m3real massScale = 1.0f;
+                m3real impulseScale = 0.0f;
+                if (cc > 0.0f)
+                {
+                    bias = cc * invHSub;
+                }
+                else if (useBias)
+                {
+                    bias = c->softness.biasRate * cc;
+                    massScale = c->softness.massScale;
+                    impulseScale = c->softness.impulseScale;
+                }
+                m3real cdot = m3Dot3(
+                    axis, m3Sub3(m3Add3(vB, m3Cross3(wB, rB)), m3Add3(vA, m3Cross3(wA, rA))));
+                m3real old = c->lowerImpulse;
+                m3real delta = -massScale * axialMass * (cdot + bias) - impulseScale * old;
+                c->lowerImpulse = m3MaxF(old + delta, 0.0f);
+                m3real applied = c->lowerImpulse - old;
+                vA = m3Sub3(vA, m3MulSV3(c->invMassA * applied, axis));
+                wA = m3Sub3(wA, m3MulMV3(c->invIA, m3MulSV3(applied, crossA)));
+                vB = m3Add3(vB, m3MulSV3(c->invMassB * applied, axis));
+                wB = m3Add3(wB, m3MulMV3(c->invIB, m3MulSV3(applied, crossB)));
+            }
+            // Upper bound: length <= upper (pulls together, signs
+            // mirrored, the reference form).
+            {
+                m3real cc = c->upperLimit - length;
+                m3real bias = 0.0f;
+                m3real massScale = 1.0f;
+                m3real impulseScale = 0.0f;
+                if (cc > 0.0f)
+                {
+                    bias = cc * invHSub;
+                }
+                else if (useBias)
+                {
+                    bias = c->softness.biasRate * cc;
+                    massScale = c->softness.massScale;
+                    impulseScale = c->softness.impulseScale;
+                }
+                m3real cdot = -m3Dot3(
+                    axis, m3Sub3(m3Add3(vB, m3Cross3(wB, rB)), m3Add3(vA, m3Cross3(wA, rA))));
+                m3real old = c->upperImpulse;
+                m3real delta = -massScale * axialMass * (cdot + bias) - impulseScale * old;
+                c->upperImpulse = m3MaxF(old + delta, 0.0f);
+                m3real applied = c->upperImpulse - old;
+                vA = m3Add3(vA, m3MulSV3(c->invMassA * applied, axis));
+                wA = m3Add3(wA, m3MulMV3(c->invIA, m3MulSV3(applied, crossA)));
+                vB = m3Sub3(vB, m3MulSV3(c->invMassB * applied, axis));
+                wB = m3Sub3(wB, m3MulMV3(c->invIB, m3MulSV3(applied, crossB)));
+            }
             world->linearVelocities[c->bodyA] = vA;
             world->angularVelocities[c->bodyA] = wA;
             world->linearVelocities[c->bodyB] = vB;

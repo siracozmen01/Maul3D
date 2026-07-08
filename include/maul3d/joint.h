@@ -20,6 +20,8 @@ extern "C"
         m3_sphericalJoint = 0, // ball: pins two body-frame points together
         m3_revoluteJoint = 1,  // hinge: one rotation axis, limits, motor
         m3_prismaticJoint = 2, // slider: one translation axis, limits, motor
+        m3_fixedJoint = 3,     // weld: full 6-DOF lock at the create pose
+        m3_distanceJoint = 4,  // rope/rod: anchor distance in [lower, upper]
     } m3JointType;
 
     /// Build with m3DefaultJointDef; hand-rolled defs are rejected
@@ -50,6 +52,16 @@ extern "C"
         /// lowerLimit and upperLimit as twist angles.
         bool enableCone;
         m3real coneAngle; // radians from the A frame's z-axis
+        /// Distance joints (4-2) REQUIRE enableLimit with
+        /// 0 <= lowerLimit <= upperLimit meters (a rod is lower ==
+        /// upper; a rope is a range). Their optional spring reuses
+        /// the motor fields, documented reuse: enableMotor turns it
+        /// on, motorSpeed is the spring hertz (> 0), maxMotorEffort
+        /// is the damping ratio (>= 0); coneAngle (a further
+        /// documented reuse) is the spring's rest length when
+        /// positive and must sit inside [lower, upper]; when zero,
+        /// the rest length is the upper limit. Fixed joints ignore axes
+        /// and limits entirely: they weld the create-time pose.
         /// Jointed bodies do not collide with each other unless this
         /// is set (the classic chain-fight guard).
         bool collideConnected;

@@ -27,7 +27,12 @@
 // cone and twist limits shipped without their bump; same format,
 // new-capability-only, harmless in effect but a discipline miss,
 // recorded here so the ledger stays honest).
-#define M3_SOLVER_REV 18 // rev 18: spherical limits (late) + sensors
+#define M3_SOLVER_REV                                                                              \
+    19 // rev 19: the rotation-lock bias sign (a
+       // latent amplifier in the prismatic
+       // lock, exposed by the 4-2 weld; error
+       // now rides the bias with the contact
+       // row's sign convention)
 
 // Def cookies: a def that did not come from its m3Default*Def factory
 // is rejected loudly (the Maul2D pattern).

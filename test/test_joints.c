@@ -817,8 +817,237 @@ static void TestFrameBuilderBranches(void)
     CHECK(hashes[0] == hashes[1], "all frame branches are bit-deterministic");
 }
 
+// 4-2: the weld and the rope.
+static void TestWeldActsAsOneBody(void)
+{
+    // Two crates welded at an offset must move as one rigid body:
+    // after a tumble and a kick, the relative pose drift stays in
+    // the solver's soft band. Twins for determinism.
+    uint64_t hashes[2];
+    for (int32_t run = 0; run < 2; ++run)
+    {
+        m3WorldDef def = m3DefaultWorldDef();
+        def.bodyCapacity = 8;
+        def.shapeCapacity = 8;
+        def.jointCapacity = 4;
+        m3WorldId world = m3CreateWorld(&def);
+        m3BodyDef gd = m3DefaultBodyDef();
+        m3BodyId ground = m3CreateBody(world, &gd);
+        m3ShapeDef sd = m3DefaultShapeDef();
+        m3Plane floor = {{0.0f, 1.0f, 0.0f}, 0.0f};
+        m3CreatePlaneShape(ground, &sd, &floor);
+
+        m3BodyDef bd = m3DefaultBodyDef();
+        bd.type = m3_dynamicBody;
+        bd.position = (m3Pos3){0.0, 3.0, 0.0};
+        m3BodyId a = m3CreateBody(world, &bd);
+        m3CreateBoxShape(a, &sd, (m3Vec3){0.4f, 0.4f, 0.4f});
+        bd.position = (m3Pos3){0.9, 3.0, 0.0};
+        m3BodyId b = m3CreateBody(world, &bd);
+        m3CreateBoxShape(b, &sd, (m3Vec3){0.4f, 0.4f, 0.4f});
+
+        m3JointDef jd = m3DefaultJointDef();
+        jd.type = m3_fixedJoint;
+        jd.bodyA = a;
+        jd.bodyB = b;
+        jd.localAnchorA = (m3Vec3){0.45f, 0.0f, 0.0f};
+        jd.localAnchorB = (m3Vec3){-0.45f, 0.0f, 0.0f};
+        CHECK(m3Joint_IsValid(m3CreateJoint(&jd)), "the weld creates (axes ignored)");
+
+        m3Body_SetAngularVelocity(a, (m3Vec3){3.0f, 5.0f, 2.0f});
+        m3Body_SetLinearVelocity(a, (m3Vec3){2.0f, 3.0f, 1.0f});
+        for (int32_t i = 0; i < 300; ++i)
+        {
+            m3World_Step(world, 1.0f / 60.0f, 4);
+        }
+        m3Pos3 pa = m3Body_GetPosition(a);
+        m3Pos3 pb = m3Body_GetPosition(b);
+        double dx = pb.x - pa.x;
+        double dy = pb.y - pa.y;
+        double dz = pb.z - pa.z;
+        double gap = sqrt(dx * dx + dy * dy + dz * dz);
+        CHECK(gap > 0.85 && gap < 0.95, "the welded gap holds through the tumble");
+        m3Quat qa = m3Body_GetRotation(a);
+        m3Quat qb = m3Body_GetRotation(b);
+        float dot = qa.x * qb.x + qa.y * qb.y + qa.z * qb.z + qa.w * qb.w;
+        float align = dot < 0.0f ? -dot : dot;
+        CHECK(align > 0.999f, "the welded rotations stay aligned");
+        hashes[run] = m3World_Hash(world);
+        m3DestroyWorld(world);
+    }
+    CHECK(hashes[0] == hashes[1], "the weld is bit-deterministic");
+}
+
+static void TestRopeAndRod(void)
+{
+    // A rope (range 0..2) lets the ball free-fall until taut, then
+    // holds; a rod (2..2) holds both ways. Both lengths analytic.
+    m3WorldDef def = m3DefaultWorldDef();
+    def.bodyCapacity = 8;
+    def.shapeCapacity = 8;
+    def.jointCapacity = 4;
+    m3WorldId world = m3CreateWorld(&def);
+    m3BodyDef ad = m3DefaultBodyDef();
+    ad.position = (m3Pos3){0.0, 10.0, 0.0};
+    m3BodyId anchor = m3CreateBody(world, &ad);
+
+    m3BodyDef bd = m3DefaultBodyDef();
+    bd.type = m3_dynamicBody;
+    bd.position = (m3Pos3){0.0, 9.5, 0.0}; // slack: 0.5 below, rope is 2
+    m3BodyId ball = m3CreateBody(world, &bd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    m3Sphere sphere = {{0.0f, 0.0f, 0.0f}, 0.2f};
+    m3CreateSphereShape(ball, &sd, &sphere);
+
+    m3JointDef jd = m3DefaultJointDef();
+    jd.type = m3_distanceJoint;
+    jd.bodyA = anchor;
+    jd.bodyB = ball;
+    jd.enableLimit = true;
+    jd.lowerLimit = 0.0f;
+    jd.upperLimit = 2.0f;
+    CHECK(m3Joint_IsValid(m3CreateJoint(&jd)), "the rope creates");
+
+    // Ten steps of slack: free fall matches gravity analytically
+    // (the rope must not touch a slack body).
+    for (int32_t i = 0; i < 10; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+    }
+    m3Vec3 v = m3Body_GetLinearVelocity(ball);
+    CHECK(v.y < -1.55f && v.y > -1.72f, "a slack rope leaves free fall alone");
+    for (int32_t i = 0; i < 290; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+    }
+    m3Pos3 p = m3Body_GetPosition(ball);
+    double hang = 10.0 - p.y;
+    CHECK(hang > 1.95 && hang < 2.05, "the taut rope hangs at its length");
+
+    // The rod: constrained BOTH ways; launch the ball upward and the
+    // rod reels it back: distance never leaves the band for long,
+    // and at rest it is exact.
+    m3BodyDef bd2 = m3DefaultBodyDef();
+    bd2.type = m3_dynamicBody;
+    bd2.position = (m3Pos3){4.0, 8.0, 0.0};
+    m3BodyId bob = m3CreateBody(world, &bd2);
+    m3CreateSphereShape(bob, &sd, &sphere);
+    m3BodyDef ad2 = m3DefaultBodyDef();
+    ad2.position = (m3Pos3){4.0, 10.0, 0.0};
+    m3BodyId anchor2 = m3CreateBody(world, &ad2);
+    m3JointDef rod = m3DefaultJointDef();
+    rod.type = m3_distanceJoint;
+    rod.bodyA = anchor2;
+    rod.bodyB = bob;
+    rod.enableLimit = true;
+    rod.lowerLimit = 2.0f;
+    rod.upperLimit = 2.0f;
+    CHECK(m3Joint_IsValid(m3CreateJoint(&rod)), "the rod creates");
+    m3Body_SetLinearVelocity(bob, (m3Vec3){0.0f, 6.0f, 0.0f}); // push UP
+    for (int32_t i = 0; i < 300; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+    }
+    p = m3Body_GetPosition(bob);
+    double dx = p.x - 4.0;
+    double dy = p.y - 10.0;
+    double rodLen = sqrt(dx * dx + dy * dy + p.z * p.z);
+    CHECK(rodLen > 1.95 && rodLen < 2.05, "the rod holds its length both ways");
+    m3DestroyWorld(world);
+}
+
+static void TestDistanceSpring(void)
+{
+    // The soft spring (motor-field reuse): no gravity, a ball
+    // displaced off the rest length oscillates through it and the
+    // damping settles it back to rest.
+    m3WorldDef def = m3DefaultWorldDef();
+    def.gravity = (m3Vec3){0.0f, 0.0f, 0.0f};
+    def.bodyCapacity = 8;
+    def.shapeCapacity = 8;
+    def.jointCapacity = 4;
+    m3WorldId world = m3CreateWorld(&def);
+    m3BodyDef ad = m3DefaultBodyDef();
+    ad.position = (m3Pos3){0.0, 5.0, 0.0};
+    m3BodyId anchor = m3CreateBody(world, &ad);
+    m3BodyDef bd = m3DefaultBodyDef();
+    bd.type = m3_dynamicBody;
+    bd.position = (m3Pos3){3.5, 5.0, 0.0}; // rest is 2: stretched 1.5
+    m3BodyId ball = m3CreateBody(world, &bd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    m3Sphere sphere = {{0.0f, 0.0f, 0.0f}, 0.2f};
+    m3CreateSphereShape(ball, &sd, &sphere);
+
+    m3JointDef jd = m3DefaultJointDef();
+    jd.type = m3_distanceJoint;
+    jd.bodyA = anchor;
+    jd.bodyB = ball;
+    jd.enableLimit = true;
+    jd.lowerLimit = 0.0f;
+    jd.upperLimit = 5.0f;     // wide bounds: the spring owns the middle
+    jd.enableMotor = true;    // documented reuse: the spring
+    jd.motorSpeed = 1.5f;     // hertz
+    jd.maxMotorEffort = 0.2f; // damping ratio
+    jd.coneAngle = 2.0f;      // documented reuse: the rest length
+    CHECK(m3Joint_IsValid(m3CreateJoint(&jd)), "the spring creates");
+
+    int32_t crossings = 0;
+    double previous = 3.5 - 2.0;
+    for (int32_t i = 0; i < 600; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+        m3Pos3 p = m3Body_GetPosition(ball);
+        double excess = (p.x - 0.0) - 2.0; // distance minus rest
+        if ((excess > 0.0) != (previous > 0.0))
+        {
+            crossings += 1;
+        }
+        previous = excess;
+    }
+    CHECK(crossings >= 2, "the spring oscillates through its rest length");
+    m3Pos3 p = m3Body_GetPosition(ball);
+    CHECK(p.x > 1.7 && p.x < 2.3, "the damped spring settles near rest");
+    m3DestroyWorld(world);
+}
+
+static void TestNewJointContracts(void)
+{
+    m3WorldDef def = m3DefaultWorldDef();
+    def.bodyCapacity = 8;
+    def.shapeCapacity = 8;
+    def.jointCapacity = 4;
+    m3WorldId world = m3CreateWorld(&def);
+    m3BodyDef bd = m3DefaultBodyDef();
+    bd.type = m3_dynamicBody;
+    m3BodyId a = m3CreateBody(world, &bd);
+    bd.position = (m3Pos3){0.0, 2.0, 0.0};
+    m3BodyId b = m3CreateBody(world, &bd);
+
+    m3JointDef jd = m3DefaultJointDef();
+    jd.type = m3_distanceJoint;
+    jd.bodyA = a;
+    jd.bodyB = b;
+    jd.enableLimit = false; // the range is the contract
+    CHECK(!m3Joint_IsValid(m3CreateJoint(&jd)), "a distance joint without a range refuses");
+    jd.enableLimit = true;
+    jd.lowerLimit = -1.0f;
+    jd.upperLimit = 2.0f;
+    CHECK(!m3Joint_IsValid(m3CreateJoint(&jd)), "a negative lower distance refuses");
+    jd.lowerLimit = 0.5f;
+    jd.enableMotor = true;
+    jd.motorSpeed = 0.0f;
+    CHECK(!m3Joint_IsValid(m3CreateJoint(&jd)), "a spring with zero hertz refuses");
+    jd.enableMotor = false;
+    CHECK(m3Joint_IsValid(m3CreateJoint(&jd)), "the honest rope creates");
+    m3DestroyWorld(world);
+}
+
 int main(void)
 {
+    TestWeldActsAsOneBody();
+    TestRopeAndRod();
+    TestDistanceSpring();
+    TestNewJointContracts();
     TestFrameBuilderBranches();
     TestPendulum();
     TestChainSettlesAndSleeps();
