@@ -3094,6 +3094,37 @@ void m3StepInternal(m3World* world, float dt, int32_t substeps)
     Restitution(world, constraints, constraintCount);
     StoreImpulses(world, constraints, constraintCount);
     StoreJointImpulses(world, jointConstraints, jointCount);
+    world->lastInvH = invH;
+
+    // Joint breakage (8-6a): reactions over threshold destroy the
+    // joint and emit the break event, serially in ascending joint
+    // order, a pure function of state (like fragmentation: derived
+    // transitions never need their own journal op).
+    {
+        int32_t maxJoint = world->jointPool.maxIndex;
+        for (int32_t j = 0; j < maxJoint; ++j)
+        {
+            if (world->jointPool.alive[j] == 0)
+            {
+                continue;
+            }
+            m3real maxForce = world->jointBreak[j].x;
+            m3real maxTorque = world->jointBreak[j].y;
+            if (maxForce == 0.0f && maxTorque == 0.0f)
+            {
+                continue;
+            }
+            m3real force;
+            m3real torque;
+            m3JointReactionMagnitudes(world, j, invH, &force, &torque);
+            if ((maxForce > 0.0f && force > maxForce) || (maxTorque > 0.0f && torque > maxTorque))
+            {
+                m3JointId id = {j + 1, world->worldIndex0, world->jointPool.generations[j]};
+                m3AppendJointBreakEvent(world, id);
+                m3DestroyJointInternal(world, j);
+            }
+        }
+    }
 
     if (world->continuousEnabled != 0)
     {

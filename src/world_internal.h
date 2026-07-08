@@ -136,7 +136,11 @@ typedef enum m3Op
     m3_opEnableContinuous = 48,
     m3_opSetHitEventThreshold = 49, // world hit speed gate (8-5)
     m3_opEnableShapeHitEvents = 50, // shape + on/off
-    m3_opEnableShapePreSolve = 51,  // shape + on/off        // world toggle
+    m3_opEnableShapePreSolve = 51,  // shape + on/off
+    m3_opJointSetLimits = 52,       // joint + enable + lower + upper (8-6a)
+    m3_opJointSetMotor = 53,        // joint + enable + speed + effort
+    m3_opJointSetCollide = 54,      // joint + collide-connected flag
+    m3_opJointSetBreak = 55,        // joint + force + torque caps        // world toggle
 } m3Op;
 
 // Immutable interned hull data (lifetime 3): vertices, face planes,
@@ -616,6 +620,7 @@ typedef struct m3World
     m3Quat* jointFrameQA;        // joint frame in body A (axis = local z)
     m3Quat* jointFrameQB;
     uint8_t* jointFlags; // bit0 limit, bit1 motor
+    m3Vec3* jointBreak;  // 8-6a: x = max force, y = max torque, 0 = off
     m3Vec3* jointMotor;  // x = motorSpeed, y = maxMotorTorque, z unused
     m3Vec3* jointLimits; // x = lower angle, y = upper angle, z unused
     int32_t* bodyJointHead;
@@ -652,6 +657,8 @@ typedef struct m3World
 
     // Per-step scratch (lifetime 2: never snapshotted).
     m3Stack scratch;
+    m3real lastInvH; // last step's substep invH: readback scale,
+                     // transient (restore zeroes it, documented)
 
     // Journal cursor over a caller-owned buffer.
     uint8_t* journalBuffer;
@@ -695,6 +702,16 @@ void m3EnableShapeHitEventsInternal(m3World* world, int32_t slot, int32_t on);
 void m3EnableShapePreSolveInternal(m3World* world, int32_t slot, int32_t on);
 // 8-6 emits through this; capacity jointCapacity, cannot overflow.
 void m3AppendJointBreakEvent(m3World* world, m3JointId joint);
+
+void m3JointSetLimitsInternal(m3World* world, int32_t j, int32_t enable, float lower, float upper);
+void m3JointSetMotorInternal(m3World* world, int32_t j, int32_t enable, float speed, float effort);
+void m3JointSetCollideInternal(m3World* world, int32_t j, int32_t on);
+void m3JointSetBreakInternal(m3World* world, int32_t j, float maxForce, float maxTorque);
+// Reaction magnitudes from the stored warm rows, the break law's
+// input and the readback's source (per-type assembly, documented
+// on the public API).
+void m3JointReactionMagnitudes(const m3World* world, int32_t j, m3real invH, m3real* outForce,
+                               m3real* outTorque);
 
 void m3SetGravityInternal(m3World* world, m3Vec3 gravity);
 void m3SetShapeFrictionInternal(m3World* world, int32_t slot, float value);

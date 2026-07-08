@@ -277,6 +277,11 @@ target_link_libraries(test_events PRIVATE maul3d)
 maul3d_apply_flags(test_events)
 add_test(NAME events COMMAND test_events)
 
+add_executable(test_jointdrive test/test_jointdrive.c)
+target_link_libraries(test_jointdrive PRIVATE maul3d)
+maul3d_apply_flags(test_jointdrive)
+add_test(NAME jointdrive COMMAND test_jointdrive)
+
 add_executable(test_fuzz test/test_fuzz.c)
 target_link_libraries(test_fuzz PRIVATE maul3d)
 maul3d_apply_flags(test_fuzz)

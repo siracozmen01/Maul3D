@@ -111,6 +111,44 @@ extern "C"
     M3_API void m3DestroyJoint(m3JointId jointId);
     M3_API bool m3Joint_IsValid(m3JointId jointId);
 
+    /// Runtime joint control (8-6a). All journaled; both bodies wake
+    /// on any change. Limits and motor reuse the def semantics per
+    /// type (angles for revolute and spherical twist, meters for
+    /// prismatic and distance); toggling zeroes the row's stored
+    /// impulse so a stale warm start cannot kick.
+    M3_API void m3Joint_SetLimits(m3JointId jointId, bool enable, float lower, float upper);
+    M3_API void m3Joint_SetMotor(m3JointId jointId, bool enable, float speed, float maxEffort);
+
+    /// Let (or forbid) the two jointed bodies collide with each
+    /// other. Journaled; binds at the next step's pair scan.
+    M3_API void m3Joint_SetCollideConnected(m3JointId jointId, bool collide);
+    M3_API bool m3Joint_GetCollideConnected(m3JointId jointId);
+
+    /// Breakage (8-6a), a deliberate addition over the reference:
+    /// rollback games need breakage as a deterministic in-step
+    /// state transition, not a host poll racing the journal. When
+    /// either reaction magnitude exceeds its cap at the end of a
+    /// step, the joint destroys itself and emits the joint break
+    /// event (see world.h). Zero disables a cap; both zero (the
+    /// default) means unbreakable.
+    M3_API void m3Joint_SetBreakThresholds(m3JointId jointId, float maxForce, float maxTorque);
+
+    /// Reaction readback (8-6a): MAGNITUDES of the last step's
+    /// constraint reactions, assembled per type from the stored
+    /// solver rows (linear rows into force, angular rows into
+    /// torque; the generic joint reports a conservative sum). Reads
+    /// 0 before the first step after a restore (documented
+    /// transient). The reference's vector form waits for a consumer
+    /// with a direction to point at (argued in the plan).
+    M3_API m3real m3Joint_GetConstraintForce(m3JointId jointId);
+    M3_API m3real m3Joint_GetConstraintTorque(m3JointId jointId);
+
+    /// Geometry reads: the revolute twist angle about the hinge
+    /// (radians) and the prismatic translation along the slide axis
+    /// (meters). Wrong-type calls read 0.
+    M3_API m3real m3Joint_GetAngle(m3JointId jointId);
+    M3_API m3real m3Joint_GetTranslation(m3JointId jointId);
+
 #ifdef __cplusplus
 }
 #endif

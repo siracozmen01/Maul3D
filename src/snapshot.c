@@ -22,7 +22,8 @@
 #endif
 
 #define M3_SNAPSHOT_MAGIC   0x4D33534Eu // 'M3SN'
-#define M3_SNAPSHOT_VERSION 34u
+#define M3_SNAPSHOT_VERSION 35u
+// v35: joint break thresholds (8-6a).
 // v34: hit threshold + shape event flags (8-5).
 // v33: world tuning knobs (8-4).
 // v32: central friction manifold payload replaces per-point
@@ -335,6 +336,7 @@ static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3Wal
     M3_BLOCK(world->jointFrameQB, world->jointCapacity * (int32_t)sizeof(m3Quat));
     M3_BLOCK(world->jointFlags, world->jointCapacity * (int32_t)sizeof(uint8_t));
     M3_BLOCK(world->jointMotor, world->jointCapacity * (int32_t)sizeof(m3Vec3));
+    M3_BLOCK(world->jointBreak, world->jointCapacity * (int32_t)sizeof(m3Vec3));
     M3_BLOCK(world->jointLimits, world->jointCapacity * (int32_t)sizeof(m3Vec3));
     M3_BLOCK(world->jointGenericModes, world->jointCapacity * (int32_t)sizeof(uint16_t));
     M3_BLOCK(world->jointGenLinLower, world->jointCapacity * (int32_t)sizeof(m3Vec3));
@@ -499,6 +501,7 @@ bool m3World_Restore(m3WorldId worldId, const void* data, int32_t size)
     world->hitEventsDropped = 0;
     world->moveEventCount = 0;
     world->jointBreakEventCount = 0;
+    world->lastInvH = 0.0f; // readback reads 0 until the next step
     world->hullPool.maxIndex = header.hullMaxIndex;
     world->hullPool.freeHead = header.hullFreeHead;
     world->hullPool.freeCount = header.hullFreeCount;
@@ -794,6 +797,12 @@ uint64_t m3World_Hash(m3WorldId worldId)
         h = m3Hash64(h, &world->jointLocalA[i], (int32_t)sizeof(m3Vec3));
         h = m3Hash64(h, &world->jointLocalB[i], (int32_t)sizeof(m3Vec3));
         h = m3Hash64(h, &world->jointImpulse[i], (int32_t)sizeof(m3Vec3));
+        if (world->jointBreak[i].x != 0.0f || world->jointBreak[i].y != 0.0f)
+        {
+            // Break thresholds fold off-default (additive rule,
+            // eighth use).
+            h = m3Hash64(h, &world->jointBreak[i], (int32_t)sizeof(m3Vec3));
+        }
         h = m3Hash64(h, &world->jointPerpImpulse[i], (int32_t)sizeof(m3Vec3));
         h = m3Hash64(h, &world->jointLimitImpulse[i], (int32_t)sizeof(m3Vec3));
         h = m3Hash64(h, &world->jointAngularImpulse[i], (int32_t)sizeof(m3Vec3));
