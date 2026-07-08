@@ -68,7 +68,7 @@ static void TestPendulum(void)
         m3World_Step(world, 1.0f / 60.0f, 4);
         m3Pos3 p = m3Body_GetPosition(bob);
         m3Vec3 v = m3Body_GetLinearVelocity(bob);
-        double speed = m3Dot3(v, v);
+        double speed = (double)m3Dot3(v, v);
         vMax = speed > vMax ? speed : vMax;
         m3Quat q = m3Body_GetRotation(bob);
         m3Vec3 arm = m3RotateVec3(q, (m3Vec3){-1.0f, 0.0f, 0.0f});
