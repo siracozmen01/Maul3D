@@ -18,6 +18,7 @@ add_library(maul3d ${MAUL3D_LIB_KIND}
     src/allocator.c
     src/body.c
     src/broad_phase.c
+    src/character.c
     src/core.c
     src/distance.c
     src/draw.c
@@ -228,6 +229,11 @@ add_executable(test_sequences test/test_sequences.c)
 target_link_libraries(test_sequences PRIVATE maul3d)
 maul3d_apply_flags(test_sequences)
 add_test(NAME sequences COMMAND test_sequences)
+
+add_executable(test_character test/test_character.c)
+target_link_libraries(test_character PRIVATE maul3d)
+maul3d_apply_flags(test_character)
+add_test(NAME character COMMAND test_character)
 
 add_executable(test_fuzz test/test_fuzz.c)
 target_link_libraries(test_fuzz PRIVATE maul3d)

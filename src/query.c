@@ -118,6 +118,7 @@ int32_t m3World_CastRayAll(m3WorldId worldId, m3Pos3 origin, m3Vec3 translation,
 typedef struct m3ShapeCastContext
 {
     m3World* world;
+    int32_t ignoreBody;                   // -1 none: the character excludes itself
     m3Pos3 base;                          // the cast start: TOI floats re-center here
     m3Vec3 castPoints[M3_HULL_MAX_VERTS]; // sphere 1, capsule 2,
                                           // box 8, hull up to 24
@@ -132,6 +133,10 @@ static void ShapeCastTestShape(m3ShapeCastContext* ctx, int32_t shape)
 {
     m3World* world = ctx->world;
     int32_t body = world->shapeBody[shape];
+    if (body == ctx->ignoreBody)
+    {
+        return; // the caster's own body never blocks its cast
+    }
     if (world->shapeType[shape] == (uint8_t)m3_voxelShape)
     {
         // Voxel targets (3-5): per-box TOI against the merged
@@ -357,6 +362,10 @@ static void ShapeCastTestShape(m3ShapeCastContext* ctx, int32_t shape)
 static void ShapeCastTestPlane(m3ShapeCastContext* ctx, int32_t shape)
 {
     m3World* world = ctx->world;
+    if (world->shapeBody[shape] == ctx->ignoreBody)
+    {
+        return;
+    }
     m3Vec3 n = world->shapeGeom[shape].v;
     m3real offset =
         world->shapeGeom[shape].s -
@@ -432,13 +441,15 @@ static bool ShapeCastCallback(int32_t shape, void* userContext)
     return true;
 }
 
-static m3RayHit CastConvexClosest(m3WorldId worldId, m3Pos3 base, const m3Vec3* points,
-                                  int32_t pointCount, m3real radius, m3Vec3 translation)
+m3RayHit m3CastConvexClosestEx(m3World* worldPtr, m3Pos3 base, const m3Vec3* points,
+                               int32_t pointCount, m3real radius, m3Vec3 translation,
+                               int32_t ignoreBody)
 {
     m3ShapeCastContext ctx;
     memset(&ctx, 0, sizeof(ctx));
+    ctx.ignoreBody = ignoreBody;
     ctx.best.fraction = 1.0f;
-    m3World* world = m3WorldFromId(worldId);
+    m3World* world = worldPtr;
     // A skinless cast (radius zero) is legal for real point clouds:
     // boxes and hulls cast their corners; spheres and capsules keep
     // their mandatory skin.
@@ -518,7 +529,12 @@ m3RayHit m3World_CastBoxClosest(m3WorldId worldId, m3Pos3 center, m3Vec3 halfExt
                         (c & 4) != 0 ? halfExtents.z : -halfExtents.z};
         corners[c] = m3RotateVec3(rotation, local);
     }
-    return CastConvexClosest(worldId, center, corners, 8, 0.0f, translation);
+    m3World* world = m3WorldFromId(worldId);
+    if (world == NULL)
+    {
+        return miss;
+    }
+    return m3CastConvexClosestEx(world, center, corners, 8, 0.0f, translation, -1);
 }
 
 m3RayHit m3World_CastHullClosest(m3WorldId worldId, m3Pos3 base, const m3Vec3* points,
@@ -538,21 +554,40 @@ m3RayHit m3World_CastHullClosest(m3WorldId worldId, m3Pos3 base, const m3Vec3* p
             return miss;
         }
     }
-    return CastConvexClosest(worldId, base, points, count, 0.0f, translation);
+    m3World* world = m3WorldFromId(worldId);
+    if (world == NULL)
+    {
+        return miss;
+    }
+    return m3CastConvexClosestEx(world, base, points, count, 0.0f, translation, -1);
 }
 
 m3RayHit m3World_CastSphereClosest(m3WorldId worldId, m3Pos3 center, m3real radius,
                                    m3Vec3 translation)
 {
     m3Vec3 point = {0.0f, 0.0f, 0.0f};
-    return CastConvexClosest(worldId, center, &point, 1, radius, translation);
+    m3World* world = m3WorldFromId(worldId);
+    if (world == NULL)
+    {
+        m3RayHit miss;
+        memset(&miss, 0, sizeof(miss));
+        return miss;
+    }
+    return m3CastConvexClosestEx(world, center, &point, 1, radius, translation, -1);
 }
 
 m3RayHit m3World_CastCapsuleClosest(m3WorldId worldId, m3Pos3 center, m3Vec3 point1, m3Vec3 point2,
                                     m3real radius, m3Vec3 translation)
 {
     m3Vec3 points[2] = {point1, point2};
-    return CastConvexClosest(worldId, center, points, 2, radius, translation);
+    m3World* world = m3WorldFromId(worldId);
+    if (world == NULL)
+    {
+        m3RayHit miss;
+        memset(&miss, 0, sizeof(miss));
+        return miss;
+    }
+    return m3CastConvexClosestEx(world, center, points, 2, radius, translation, -1);
 }
 
 // ------------------------------------------------------------------

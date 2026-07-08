@@ -13,6 +13,7 @@
 #include "dynamic_tree.h"
 
 #include "maul3d/body.h"
+#include "maul3d/character.h"
 #include "maul3d/joint.h"
 #include "maul3d/shape.h"
 #include "maul3d/world.h"
@@ -64,6 +65,9 @@ typedef enum m3Op
     m3_opVoxelClear = 13,            // shape id + coords
     m3_opVoxelClearBox = 14,         // shape id + inclusive region
     m3_opVoxelSetFill = 15,          // shape id + coords + fill byte
+    m3_opCreateCharacter = 16,       // def + expected id
+    m3_opDestroyCharacter = 17,      // id
+    m3_opCharacterMove = 18,         // id + translation
 } m3Op;
 
 // Immutable interned hull data (lifetime 3): vertices, face planes,
@@ -410,6 +414,20 @@ typedef struct m3World
     // warm-start impulse is simulation state (the architecture doc
     // names it); the body lists drive the jointed-pair contact
     // filter, the destroy cascade, and island coupling.
+    // Characters (4-4): pool + per-slot state. Config floats and
+    // the grounded story are all simulation state (hashed for live
+    // slots, snapshotted, rolled back).
+    int32_t characterCapacity;
+    m3IdPool charPool;
+    int32_t* charBody; // the internal kinematic body slot
+    m3real* charRadius;
+    m3real* charHalfHeight;
+    m3real* charCosSlope;
+    m3real* charSnap;
+    m3real* charSkin;
+    uint8_t* charGrounded;
+    m3Vec3* charGroundNormal;
+
     // Generic 6-DOF state (4-3): packed modes (2 bits per axis,
     // linear 0..5, angular 6..11, motor axis 12..15) and per-axis
     // limit vectors. Folded into the hash only for generic-typed
@@ -575,6 +593,16 @@ void m3VoxelRebuildLinks(m3World* world);
 void m3VoxelCoverageBuild(m3World* world, int32_t slot);
 void m3VoxelCoverageRefreshAround(m3World* world, int32_t slot);
 void m3VoxelBoundsHull(m3Vec3 lo, m3Vec3 hi, m3HullData* out);
+
+// Character internals (4-4): create/destroy/move without journal
+// (replay drives these; public wrappers validate and record).
+int32_t m3CreateCharacterInternal(m3World* world, const m3CharacterDef* def);
+void m3DestroyCharacterInternal(m3World* world, int32_t slot);
+void m3CharacterMoveInternal(m3World* world, int32_t slot, m3Vec3 translation);
+int32_t m3CharacterSlot(const m3World* world, m3CharacterId characterId);
+m3RayHit m3CastConvexClosestEx(m3World* world, m3Pos3 base, const m3Vec3* points,
+                               int32_t pointCount, m3real radius, m3Vec3 translation,
+                               int32_t ignoreBody);
 
 // Voxel edit internals (3-2): apply without journaling (replay
 // drives these); the public entries validate, journal, then call.

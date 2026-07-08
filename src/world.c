@@ -40,6 +40,7 @@ m3WorldDef m3DefaultWorldDef(void)
     def.meshCapacity = 4;
     def.jointCapacity = 64;
     def.voxelCapacity = 4;
+    def.characterCapacity = 4;
     def.workerCount = 1;
     def.internalValue = M3_WORLD_COOKIE;
     return def;
@@ -50,7 +51,7 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     m3WorldId nullId = {0, 0};
     if (def == NULL || def->internalValue != M3_WORLD_COOKIE || def->bodyCapacity <= 0 ||
         def->shapeCapacity <= 0 || def->meshCapacity <= 0 || def->jointCapacity <= 0 ||
-        def->voxelCapacity <= 0 || def->workerCount <= 0 ||
+        def->voxelCapacity <= 0 || def->characterCapacity <= 0 || def->workerCount <= 0 ||
         (def->enqueueTask == NULL) != (def->finishTask == NULL) || !m3FiniteV3(def->gravity))
     {
         // User-input validation is contract, not invariant: the API
@@ -81,6 +82,7 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     world->shapeCapacity = def->shapeCapacity;
     world->meshCapacity = def->meshCapacity;
     world->voxelCapacity = def->voxelCapacity;
+    world->characterCapacity = def->characterCapacity;
     world->jointCapacity = def->jointCapacity;
     world->workerCount = def->workerCount;
     world->enqueueTask = def->enqueueTask;
@@ -158,6 +160,19 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     M3_ALLOC(world->jointGenLinUpper, def->jointCapacity, m3Vec3);
     M3_ALLOC(world->jointGenAngLower, def->jointCapacity, m3Vec3);
     M3_ALLOC(world->jointGenAngUpper, def->jointCapacity, m3Vec3);
+    world->charPool = m3IdPoolCreate(def->characterCapacity);
+    M3_ALLOC(world->charBody, def->characterCapacity, int32_t);
+    M3_ALLOC(world->charRadius, def->characterCapacity, m3real);
+    M3_ALLOC(world->charHalfHeight, def->characterCapacity, m3real);
+    M3_ALLOC(world->charCosSlope, def->characterCapacity, m3real);
+    M3_ALLOC(world->charSnap, def->characterCapacity, m3real);
+    M3_ALLOC(world->charSkin, def->characterCapacity, m3real);
+    M3_ALLOC(world->charGrounded, def->characterCapacity, uint8_t);
+    M3_ALLOC(world->charGroundNormal, def->characterCapacity, m3Vec3);
+    for (int32_t i = 0; i < def->characterCapacity; ++i)
+    {
+        world->charBody[i] = -1;
+    }
     M3_ALLOC(world->jointNextA, def->jointCapacity, int32_t);
     M3_ALLOC(world->jointNextB, def->jointCapacity, int32_t);
     M3_ALLOC(world->bodyJointHead, cap, int32_t);
@@ -293,6 +308,15 @@ void m3DestroyWorld(m3WorldId worldId)
     m3Free(world->jointGenLinUpper);
     m3Free(world->jointGenAngLower);
     m3Free(world->jointGenAngUpper);
+    m3IdPoolDestroy(&world->charPool);
+    m3Free(world->charBody);
+    m3Free(world->charRadius);
+    m3Free(world->charHalfHeight);
+    m3Free(world->charCosSlope);
+    m3Free(world->charSnap);
+    m3Free(world->charSkin);
+    m3Free(world->charGrounded);
+    m3Free(world->charGroundNormal);
     m3Free(world->jointNextA);
     m3Free(world->jointNextB);
     m3Free(world->bodyJointHead);
@@ -905,6 +929,64 @@ static bool JournalReplayApply(m3World* world, const void* data, int32_t size)
                 }
             }
             m3VoxelClearBoxInternal(world, shape, record.lo, record.hi);
+            break;
+        }
+        case m3_opCreateCharacter:
+        {
+            struct
+            {
+                m3CharacterDef def;
+                m3CharacterId expected;
+            } record;
+            if (bytes != (int32_t)sizeof(record))
+            {
+                return false;
+            }
+            memcpy(&record, payload, sizeof(record));
+            int32_t slot = m3CreateCharacterInternal(world, &record.def);
+            if (slot < 0 || slot + 1 != record.expected.index1 ||
+                world->charPool.generations[slot] != record.expected.generation)
+            {
+                return false; // id determinism holds for characters too
+            }
+            break;
+        }
+        case m3_opDestroyCharacter:
+        {
+            m3CharacterId id;
+            if (bytes != (int32_t)sizeof(id))
+            {
+                return false;
+            }
+            memcpy(&id, payload, sizeof(id));
+            id.world0 = world->worldIndex0;
+            int32_t slot = m3CharacterSlot(world, id);
+            if (slot < 0)
+            {
+                return false;
+            }
+            m3DestroyCharacterInternal(world, slot);
+            break;
+        }
+        case m3_opCharacterMove:
+        {
+            struct
+            {
+                m3CharacterId id;
+                m3Vec3 translation;
+            } record;
+            if (bytes != (int32_t)sizeof(record))
+            {
+                return false;
+            }
+            memcpy(&record, payload, sizeof(record));
+            record.id.world0 = world->worldIndex0;
+            int32_t slot = m3CharacterSlot(world, record.id);
+            if (slot < 0)
+            {
+                return false;
+            }
+            m3CharacterMoveInternal(world, slot, record.translation);
             break;
         }
         default:

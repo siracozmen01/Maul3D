@@ -22,7 +22,7 @@
 #endif
 
 #define M3_SNAPSHOT_MAGIC   0x4D33534Eu // 'M3SN'
-#define M3_SNAPSHOT_VERSION 20u
+#define M3_SNAPSHOT_VERSION 21u
 // v20: generic joint state. NOTE for the ledger: v19 (voxel fill
 // fractions, 3-6) shipped MISLABELED as 18: the bump script died
 // after a partial edit, the same failure mode as the rev-17 skip
@@ -79,11 +79,16 @@ typedef struct m3SnapshotHeader
     int32_t voxelFreeHead;
     int32_t voxelFreeCount;
     int32_t voxelRetiredCount;
-    int32_t reserved[3]; // keeps the 8-byte-aligned header padding-free
+    int32_t charCapacity;
+    int32_t charMaxIndex;
+    int32_t charFreeHead;
+    int32_t charFreeCount;
+    int32_t charRetiredCount;
+    int32_t reserved[2]; // keeps the 8-byte-aligned header padding-free
     m3Vec3 gravity;
 } m3SnapshotHeader;
 
-_Static_assert(sizeof(m3SnapshotHeader) == 176, "snapshot header must be padding-free");
+_Static_assert(sizeof(m3SnapshotHeader) == 192, "snapshot header must be padding-free");
 
 static uint64_t ConfigHash(void)
 {
@@ -192,6 +197,17 @@ static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3Wal
     M3_BLOCK(world->voxelPool.alive, world->voxelCapacity * (int32_t)sizeof(uint8_t));
     M3_BLOCK(world->voxelPool.freeQueue, world->voxelCapacity * (int32_t)sizeof(int32_t));
     M3_BLOCK(world->shapeVoxelIndex, world->shapeCapacity * (int32_t)sizeof(int32_t));
+    M3_BLOCK(world->charBody, world->characterCapacity * (int32_t)sizeof(int32_t));
+    M3_BLOCK(world->charRadius, world->characterCapacity * (int32_t)sizeof(m3real));
+    M3_BLOCK(world->charHalfHeight, world->characterCapacity * (int32_t)sizeof(m3real));
+    M3_BLOCK(world->charCosSlope, world->characterCapacity * (int32_t)sizeof(m3real));
+    M3_BLOCK(world->charSnap, world->characterCapacity * (int32_t)sizeof(m3real));
+    M3_BLOCK(world->charSkin, world->characterCapacity * (int32_t)sizeof(m3real));
+    M3_BLOCK(world->charGrounded, world->characterCapacity * (int32_t)sizeof(uint8_t));
+    M3_BLOCK(world->charGroundNormal, world->characterCapacity * (int32_t)sizeof(m3Vec3));
+    M3_BLOCK(world->charPool.generations, world->characterCapacity * (int32_t)sizeof(uint16_t));
+    M3_BLOCK(world->charPool.alive, world->characterCapacity * (int32_t)sizeof(uint8_t));
+    M3_BLOCK(world->charPool.freeQueue, world->characterCapacity * (int32_t)sizeof(int32_t));
     M3_BLOCK(world->meshRefCounts, world->meshCapacity * (int32_t)sizeof(int32_t));
     M3_BLOCK(world->meshPool.generations, world->meshCapacity * (int32_t)sizeof(uint16_t));
     M3_BLOCK(world->meshPool.alive, world->meshCapacity * (int32_t)sizeof(uint8_t));
@@ -283,6 +299,11 @@ int32_t m3World_Snapshot(m3WorldId worldId, void* out, int32_t capacity)
     header.jointFreeHead = world->jointPool.freeHead;
     header.jointFreeCount = world->jointPool.freeCount;
     header.jointRetiredCount = world->jointPool.retiredCount;
+    header.charCapacity = world->characterCapacity;
+    header.charMaxIndex = world->charPool.maxIndex;
+    header.charFreeHead = world->charPool.freeHead;
+    header.charFreeCount = world->charPool.freeCount;
+    header.charRetiredCount = world->charPool.retiredCount;
     header.voxelCapacity = world->voxelCapacity;
     header.voxelMaxIndex = world->voxelPool.maxIndex;
     header.voxelFreeHead = world->voxelPool.freeHead;
@@ -314,7 +335,8 @@ bool m3World_Restore(m3WorldId worldId, const void* data, int32_t size)
         header.shapeCapacity != world->shapeCapacity ||
         header.meshCapacity != world->meshCapacity ||
         header.jointCapacity != world->jointCapacity ||
-        header.voxelCapacity != world->voxelCapacity)
+        header.voxelCapacity != world->voxelCapacity ||
+        header.charCapacity != world->characterCapacity)
     {
         // Wrong world shape or wrong build semantics: refuse loudly,
         // never a partial restore.
@@ -344,6 +366,10 @@ bool m3World_Restore(m3WorldId worldId, const void* data, int32_t size)
     world->jointPool.freeHead = header.jointFreeHead;
     world->jointPool.freeCount = header.jointFreeCount;
     world->jointPool.retiredCount = header.jointRetiredCount;
+    world->charPool.maxIndex = header.charMaxIndex;
+    world->charPool.freeHead = header.charFreeHead;
+    world->charPool.freeCount = header.charFreeCount;
+    world->charPool.retiredCount = header.charRetiredCount;
     world->voxelPool.maxIndex = header.voxelMaxIndex;
     world->voxelPool.freeHead = header.voxelFreeHead;
     world->voxelPool.freeCount = header.voxelFreeCount;
@@ -461,6 +487,26 @@ uint64_t m3World_Hash(m3WorldId worldId)
             // for worlds that never touch voxels).
             h = m3Hash64(h, &world->shapeVoxelIndex[i], 4);
         }
+    }
+
+    // Character state: live slots only, the additive-state rule.
+    int32_t maxChar = world->charPool.maxIndex;
+    for (int32_t i = 0; i < maxChar; ++i)
+    {
+        uint8_t alive = world->charPool.alive[i];
+        h = m3Hash64(h, &alive, 1);
+        if (alive == 0)
+        {
+            continue;
+        }
+        h = m3Hash64(h, &world->charBody[i], 4);
+        h = m3Hash64(h, &world->charRadius[i], 4);
+        h = m3Hash64(h, &world->charHalfHeight[i], 4);
+        h = m3Hash64(h, &world->charCosSlope[i], 4);
+        h = m3Hash64(h, &world->charSnap[i], 4);
+        h = m3Hash64(h, &world->charSkin[i], 4);
+        h = m3Hash64(h, &world->charGrounded[i], 1);
+        h = m3Hash64(h, &world->charGroundNormal[i], (int32_t)sizeof(m3Vec3));
     }
 
     // Voxel chunk content is simulation state (destruction edits it
