@@ -49,7 +49,8 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     m3WorldId nullId = {0, 0};
     if (def == NULL || def->internalValue != M3_WORLD_COOKIE || def->bodyCapacity <= 0 ||
         def->shapeCapacity <= 0 || def->meshCapacity <= 0 || def->jointCapacity <= 0 ||
-        def->workerCount <= 0 || (def->enqueueTask == NULL) != (def->finishTask == NULL))
+        def->workerCount <= 0 || (def->enqueueTask == NULL) != (def->finishTask == NULL) ||
+        !m3FiniteV3(def->gravity))
     {
         // User-input validation is contract, not invariant: the API
         // promises a null id for a bad def (tests exercise this), so

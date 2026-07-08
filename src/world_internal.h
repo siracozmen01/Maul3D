@@ -426,6 +426,31 @@ int32_t m3CreateShapeInternal(m3World* world, int32_t bodyIndex, uint8_t type,
 void m3DestroyShapeInternal(m3World* world, int32_t index);
 void m3RecomputeMass(m3World* world, int32_t bodyIndex);
 
+// Hostile-input guards (2d-1): every def field that reaches
+// simulation state must be finite. NaN comparisons are false and
+// inf minus inf is NaN, so the x - x == 0 form refuses NaN and both
+// infinities in one branchless test, no libm, no macro promotion.
+static inline bool m3FiniteF(m3real x)
+{
+    return x - x == 0.0f;
+}
+static inline bool m3FiniteD(double x)
+{
+    return x - x == 0.0;
+}
+static inline bool m3FiniteV3(m3Vec3 v)
+{
+    return m3FiniteF(v.x) && m3FiniteF(v.y) && m3FiniteF(v.z);
+}
+static inline bool m3FinitePos3(m3Pos3 p)
+{
+    return m3FiniteD(p.x) && m3FiniteD(p.y) && m3FiniteD(p.z);
+}
+static inline bool m3FiniteQuat(m3Quat q)
+{
+    return m3FiniteF(q.x) && m3FiniteF(q.y) && m3FiniteF(q.z) && m3FiniteF(q.w);
+}
+
 // Broadphase v1 (the swappable seam): fills pairKeys in canonical
 // ascending key order from fat AABBs; the dynamic tree replaces the
 // scan in 2b behind this same contract.

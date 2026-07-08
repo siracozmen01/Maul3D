@@ -135,6 +135,19 @@ m3BodyId m3CreateBody(m3WorldId worldId, const m3BodyDef* def)
         // the null id (see m3CreateWorld).
         return m3_nullBodyId;
     }
+    // Hostile-input wall (2d-1): nothing non-finite reaches state,
+    // and a rotation that is not close to unit is a corrupted def,
+    // not a request (loud refusal beats silent renormalization).
+    m3real qq = def->rotation.x * def->rotation.x + def->rotation.y * def->rotation.y +
+                def->rotation.z * def->rotation.z + def->rotation.w * def->rotation.w;
+    if (!m3FinitePos3(def->position) || !m3FiniteQuat(def->rotation) ||
+        !m3FiniteV3(def->linearVelocity) || !m3FiniteV3(def->angularVelocity) ||
+        !m3FiniteF(def->gravityScale) || !m3FiniteF(def->linearDamping) ||
+        !m3FiniteF(def->angularDamping) || def->linearDamping < 0.0f ||
+        def->angularDamping < 0.0f || !(qq > 0.98f) || !(qq < 1.02f))
+    {
+        return m3_nullBodyId;
+    }
     int32_t index = m3CreateBodyInternal(world, def);
     if (index < 0)
     {
@@ -229,6 +242,10 @@ void m3Body_SetLinearVelocity(m3BodyId bodyId, m3Vec3 velocity)
         M3_ASSERT(false);
         return;
     }
+    if (!m3FiniteV3(velocity))
+    {
+        return; // hostile command: a documented no-op, never poison
+    }
     if (world->journalActive != 0)
     {
         struct
@@ -252,6 +269,10 @@ void m3Body_SetAngularVelocity(m3BodyId bodyId, m3Vec3 velocity)
     {
         M3_ASSERT(false);
         return;
+    }
+    if (!m3FiniteV3(velocity))
+    {
+        return; // hostile command: a documented no-op, never poison
     }
     if (world->journalActive != 0)
     {

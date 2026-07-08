@@ -195,6 +195,17 @@ m3JointId m3CreateJoint(const m3JointDef* def)
     {
         return m3_nullJointId; // a hinge needs real axes
     }
+    // Hostile-input wall (2d-1): finite fields only, ordered limits
+    // only, and a cone that is a cone.
+    if (!m3FiniteV3(def->localAnchorA) || !m3FiniteV3(def->localAnchorB) ||
+        !m3FiniteV3(def->localAxisA) || !m3FiniteV3(def->localAxisB) ||
+        !m3FiniteF(def->lowerLimit) || !m3FiniteF(def->upperLimit) || !m3FiniteF(def->motorSpeed) ||
+        !m3FiniteF(def->maxMotorEffort) || !m3FiniteF(def->coneAngle) ||
+        def->maxMotorEffort < 0.0f || (def->enableLimit && def->lowerLimit > def->upperLimit) ||
+        (def->enableCone && def->coneAngle < 0.0f))
+    {
+        return m3_nullJointId;
+    }
     m3World* world = m3WorldFromIndex0(def->bodyA.world0);
     if (world == NULL || def->bodyB.world0 != def->bodyA.world0)
     {

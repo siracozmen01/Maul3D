@@ -438,6 +438,11 @@ static m3ShapeId CreateShapeCommon(m3BodyId bodyId, const m3ShapeDef* def, uint8
         // Contract, not invariant: bad input returns the null id.
         return m3_nullShapeId;
     }
+    if (!m3FiniteF(def->density) || !(def->density > 0.0f) || !m3FiniteF(def->friction) ||
+        def->friction < 0.0f || !m3FiniteF(def->restitution) || def->restitution < 0.0f)
+    {
+        return m3_nullShapeId; // hostile material: refused loudly
+    }
     int32_t index = m3CreateShapeInternal(world, bodyIndex, type, geom, def, NULL, NULL);
     if (index < 0)
     {
@@ -460,7 +465,8 @@ static m3ShapeId CreateShapeCommon(m3BodyId bodyId, const m3ShapeDef* def, uint8
 
 m3ShapeId m3CreateSphereShape(m3BodyId bodyId, const m3ShapeDef* def, const m3Sphere* sphere)
 {
-    if (sphere == NULL || !(sphere->radius > 0.0f))
+    if (sphere == NULL || !(sphere->radius > 0.0f) || !m3FiniteF(sphere->radius) ||
+        !m3FiniteV3(sphere->center))
     {
         return m3_nullShapeId;
     }
@@ -478,9 +484,11 @@ m3ShapeId m3CreateSphereShape(m3BodyId bodyId, const m3ShapeDef* def, const m3Sp
 
 m3ShapeId m3CreatePlaneShape(m3BodyId bodyId, const m3ShapeDef* def, const m3Plane* plane)
 {
-    if (plane == NULL)
+    if (plane == NULL || !m3FiniteV3(plane->normal) || !m3FiniteF(plane->offset) ||
+        !(m3Dot3(plane->normal, plane->normal) > 1.0e-12f))
     {
-        return m3_nullShapeId;
+        return m3_nullShapeId; // a zero or poisoned normal never
+                               // reaches the normalize below
     }
     m3World* world = m3WorldFromIndex0(bodyId.world0);
     int32_t bodyIndex = world != NULL ? m3BodySlot(world, bodyId) : -1;
@@ -496,7 +504,8 @@ m3ShapeId m3CreatePlaneShape(m3BodyId bodyId, const m3ShapeDef* def, const m3Pla
 
 m3ShapeId m3CreateCapsuleShape(m3BodyId bodyId, const m3ShapeDef* def, const m3Capsule* capsule)
 {
-    if (capsule == NULL || !(capsule->radius > 0.0f))
+    if (capsule == NULL || !(capsule->radius > 0.0f) || !m3FiniteF(capsule->radius) ||
+        !m3FiniteV3(capsule->point1) || !m3FiniteV3(capsule->point2))
     {
         return m3_nullShapeId;
     }
@@ -523,6 +532,18 @@ m3ShapeId m3CreateHullShape(m3BodyId bodyId, const m3ShapeDef* def, const m3Vec3
     if (bodyIndex < 0 || def == NULL || def->internalValue != M3_SHAPE_COOKIE)
     {
         return m3_nullShapeId;
+    }
+    if (points == NULL || count <= 0)
+    {
+        return m3_nullShapeId;
+    }
+    for (int32_t i = 0; i < count; ++i)
+    {
+        if (!m3FiniteV3(points[i]))
+        {
+            return m3_nullShapeId; // a poisoned cloud never reaches
+                                   // QuickHull's arithmetic
+        }
     }
     m3HullData data;
     if (!m3ComputeHull(points, count, &data))
@@ -577,6 +598,13 @@ m3ShapeId m3CreateMeshShape(m3BodyId bodyId, const m3ShapeDef* def, const m3Vec3
             return m3_nullShapeId; // out-of-range index: contract
         }
     }
+    for (int32_t i = 0; i < vertexCount; ++i)
+    {
+        if (!m3FiniteV3(vertices[i]))
+        {
+            return m3_nullShapeId; // poisoned vertex: contract
+        }
+    }
     m3MeshData* mesh = (m3MeshData*)m3AllocZeroed((int32_t)sizeof(m3MeshData));
     if (mesh == NULL)
     {
@@ -626,9 +654,17 @@ m3ShapeId m3CreateMeshShape(m3BodyId bodyId, const m3ShapeDef* def, const m3Vec3
 m3ShapeId m3CreateHeightFieldShape(m3BodyId bodyId, const m3ShapeDef* def, const float* heights,
                                    int32_t nx, int32_t nz, m3real cellSize)
 {
-    if (heights == NULL || nx < 2 || nx > 32 || nz < 2 || nz > 32 || !(cellSize > 0.0f))
+    if (heights == NULL || nx < 2 || nx > 32 || nz < 2 || nz > 32 || !(cellSize > 0.0f) ||
+        !m3FiniteF(cellSize))
     {
         return m3_nullShapeId; // grid contract: chunks tile larger terrain
+    }
+    for (int32_t i = 0; i < nx * nz; ++i)
+    {
+        if (!m3FiniteF(heights[i]))
+        {
+            return m3_nullShapeId; // poisoned sample: contract
+        }
     }
     // Triangulate the grid (CCW seen from +y) and reuse the mesh
     // path whole: welding, journaling, snapshotting all come free.
@@ -664,7 +700,8 @@ m3ShapeId m3CreateHeightFieldShape(m3BodyId bodyId, const m3ShapeDef* def, const
 
 m3ShapeId m3CreateBoxShape(m3BodyId bodyId, const m3ShapeDef* def, m3Vec3 halfExtents)
 {
-    if (!(halfExtents.x > 0.0f) || !(halfExtents.y > 0.0f) || !(halfExtents.z > 0.0f))
+    if (!(halfExtents.x > 0.0f) || !(halfExtents.y > 0.0f) || !(halfExtents.z > 0.0f) ||
+        !m3FiniteV3(halfExtents))
     {
         return m3_nullShapeId; // contract: bad extents return null
     }
