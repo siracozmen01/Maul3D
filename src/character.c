@@ -184,7 +184,7 @@ void m3CharacterMoveInternal(m3World* world, int32_t slot, m3Vec3 translation)
                                    lifted.z + (double)(horizontal.z * invH * go)};
                 m3real reach = lift + stepHeight;
                 m3RayHit land = CharacterCast(world, slot, advanced, (m3Vec3){0.0f, -reach, 0.0f});
-                m3Vec3 floorNormal;
+                m3Vec3 floorNormal = {0.0f, 0.0f, 0.0f};
                 // Acceptance is the RAY'S alone, and the ray probes
                 // HALF A RADIUS AHEAD of the landing axis. A steep
                 // ramp rising out of a walkable floor blocks the
@@ -258,7 +258,7 @@ void m3CharacterMoveInternal(m3World* world, int32_t slot, m3Vec3 translation)
     {
         m3RayHit down =
             CharacterCast(world, slot, pos, (m3Vec3){0.0f, -world->charSnap[slot], 0.0f});
-        m3Vec3 floorNormal;
+        m3Vec3 floorNormal = {0.0f, 0.0f, 0.0f};
         if (down.hit && (down.normal.y >= cosSlope ||
                          WalkableBelow(world, slot, pos, world->charSnap[slot], &floorNormal)))
         {
@@ -295,7 +295,7 @@ void m3CharacterRefreshGrounding(m3World* world, int32_t slot)
     }
     m3Pos3 pos = world->transforms[world->charBody[slot]].p;
     m3RayHit down = CharacterCast(world, slot, pos, (m3Vec3){0.0f, -world->charSnap[slot], 0.0f});
-    m3Vec3 floorNormal;
+    m3Vec3 floorNormal = {0.0f, 0.0f, 0.0f};
     if (!down.hit || (down.normal.y < world->charCosSlope[slot] &&
                       !WalkableBelow(world, slot, pos, world->charSnap[slot], &floorNormal)))
     {
