@@ -193,6 +193,12 @@ target_link_libraries(test_draw PRIVATE maul3d)
 maul3d_apply_flags(test_draw)
 add_test(NAME draw COMMAND test_draw)
 
+add_executable(test_soak test/test_soak.c)
+target_link_libraries(test_soak PRIVATE maul3d)
+target_include_directories(test_soak PRIVATE src)
+maul3d_apply_flags(test_soak)
+add_test(NAME soak COMMAND test_soak)
+
 add_executable(test_sequences test/test_sequences.c)
 target_link_libraries(test_sequences PRIVATE maul3d)
 maul3d_apply_flags(test_sequences)

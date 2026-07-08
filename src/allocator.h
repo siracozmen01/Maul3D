@@ -27,6 +27,8 @@
 
 void* m3AllocZeroed(int32_t bytes);
 void m3Free(void* memory);
+// Soak bookkeeping: cumulative alloc and free call counts (2d-6).
+void m3DebugAllocCounts(int64_t* allocs, int64_t* frees);
 
 /// Per-step scratch: a bump allocator with 16-byte alignment. Reset
 /// once per step. Exhaustion returns NULL and latches the overflow

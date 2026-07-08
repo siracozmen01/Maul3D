@@ -6,6 +6,27 @@
 #include <stdlib.h>
 #include <string.h>
 
+// No-growth bookkeeping (2d-6): the soak asserts that steady-state
+// stepping performs ZERO net allocation. Counters, not sizes: the
+// free contract carries no size, and a flat live count plus the
+// LeakSanitizer cell together are the growth proof. Main-thread
+// only by the allocation map (create, restore, replay paths); task
+// workers never allocate.
+static int64_t s_allocCalls = 0;
+static int64_t s_freeCalls = 0;
+
+void m3DebugAllocCounts(int64_t* allocs, int64_t* frees)
+{
+    if (allocs != NULL)
+    {
+        *allocs = s_allocCalls;
+    }
+    if (frees != NULL)
+    {
+        *frees = s_freeCalls;
+    }
+}
+
 void* m3AllocZeroed(int32_t bytes)
 {
     if (bytes <= 0)
@@ -15,11 +36,19 @@ void* m3AllocZeroed(int32_t bytes)
     }
     void* memory = calloc(1, (size_t)bytes);
     M3_ASSERT(memory != NULL);
+    if (memory != NULL)
+    {
+        s_allocCalls += 1;
+    }
     return memory;
 }
 
 void m3Free(void* memory)
 {
+    if (memory != NULL)
+    {
+        s_freeCalls += 1;
+    }
     free(memory);
 }
 
