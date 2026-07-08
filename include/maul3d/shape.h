@@ -154,6 +154,14 @@ extern "C"
     /// refuse loudly. A chunk edited down to empty stays a valid
     /// shape that collides with nothing (the natural end state of
     /// destruction).
+    ///
+    /// The anchor convention: an island is anchored through the
+    /// CHUNK's y = 0 base layer, not through world ground. Build
+    /// structures at their chunk's base; a floating platform is a
+    /// chunk whose BODY sits in the air with the platform at local
+    /// y = 0. Voxels with no path to the base layer survive
+    /// creation but fragment on the first clearing edit anywhere in
+    /// the chunk (the sweep is chunk-wide by design).
     M3_API bool m3VoxelChunk_SetVoxel(m3ShapeId shapeId, int32_t x, int32_t y, int32_t z,
                                       uint16_t payload);
     M3_API bool m3VoxelChunk_ClearVoxel(m3ShapeId shapeId, int32_t x, int32_t y, int32_t z);

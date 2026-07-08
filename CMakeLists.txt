@@ -196,6 +196,12 @@ add_test(NAME draw COMMAND test_draw)
 
 # White-box suites: static builds only (internal symbols).
 if(NOT MAUL3D_BUILD_SHARED)
+    add_executable(test_voxstorm test/test_voxstorm.c)
+    target_link_libraries(test_voxstorm PRIVATE maul3d)
+    target_include_directories(test_voxstorm PRIVATE src)
+    maul3d_apply_flags(test_voxstorm)
+    add_test(NAME voxstorm COMMAND test_voxstorm)
+
     add_executable(test_voxel test/test_voxel.c)
     target_link_libraries(test_voxel PRIVATE maul3d)
     target_include_directories(test_voxel PRIVATE src)
