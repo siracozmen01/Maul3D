@@ -133,7 +133,10 @@ typedef enum m3Op
     m3_opSetRestitutionThreshold = 45, // world threshold
     m3_opSetMaximumLinearSpeed = 46,   // world speed cap
     m3_opEnableSleeping = 47,          // world toggle (off wakes everyone)
-    m3_opEnableContinuous = 48,        // world toggle
+    m3_opEnableContinuous = 48,
+    m3_opSetHitEventThreshold = 49, // world hit speed gate (8-5)
+    m3_opEnableShapeHitEvents = 50, // shape + on/off
+    m3_opEnableShapePreSolve = 51,  // shape + on/off        // world toggle
 } m3Op;
 
 // Immutable interned hull data (lifetime 3): vertices, face planes,
@@ -404,6 +407,7 @@ typedef struct m3World
     float maximumLinearSpeed;
     uint8_t sleepEnabled;
     uint8_t continuousEnabled;
+    float hitEventThreshold; // approach speed gate for hit events (8-5)
     uint64_t stepCount;
     int32_t bodyCapacity;
     int32_t shapeCapacity;
@@ -455,6 +459,8 @@ typedef struct m3World
     float* shapeDensity;
     float* shapeFriction;
     float* shapeRestitution;
+    uint8_t* shapeHitEvents;       // 8-5: emit hit events (default 0)
+    uint8_t* shapePreSolve;        // 8-5: run the pre-solve veto (default 0)
     float* shapeRollingResistance; // hashed only when nonzero (the
                                    // additive-state golden rule)
     uint64_t* shapeCategory;       // filters (8-1): hashed only when a
@@ -619,6 +625,15 @@ typedef struct m3World
 
     // Contact events (transient observers, never snapshotted;
     // cleared on step and on restore).
+    m3HitEvent* hitEvents; // 8-5 streams, transient observers
+    int32_t hitEventCount;
+    int32_t hitEventsDropped;
+    m3BodyMoveEvent* moveEvents;
+    int32_t moveEventCount;
+    m3JointBreakEvent* jointBreakEvents;
+    int32_t jointBreakEventCount;
+    m3PreSolveFn* preSolveFn; // host wiring, never state (like the task hooks)
+    void* preSolveContext;
     m3ContactEvent* beginEvents;
     m3ContactEvent* endEvents;
     m3ContactEvent* sensorBeginEvents;
@@ -673,6 +688,13 @@ void m3WakeRegionAabb(m3World* world, const double lo[3], const double hi[3]);
 #define M3_CONTACT_PUSH_MAX_SPEED_DEFAULT 3.0f
 #define M3_RESTITUTION_THRESHOLD_DEFAULT  1.0f
 #define M3_MAX_LINEAR_SPEED_DEFAULT       400.0f
+#define M3_HIT_EVENT_THRESHOLD_DEFAULT    1.0f
+
+void m3SetHitEventThresholdInternal(m3World* world, float value);
+void m3EnableShapeHitEventsInternal(m3World* world, int32_t slot, int32_t on);
+void m3EnableShapePreSolveInternal(m3World* world, int32_t slot, int32_t on);
+// 8-6 emits through this; capacity jointCapacity, cannot overflow.
+void m3AppendJointBreakEvent(m3World* world, m3JointId joint);
 
 void m3SetGravityInternal(m3World* world, m3Vec3 gravity);
 void m3SetShapeFrictionInternal(m3World* world, int32_t slot, float value);

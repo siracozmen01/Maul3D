@@ -22,7 +22,8 @@
 #endif
 
 #define M3_SNAPSHOT_MAGIC   0x4D33534Eu // 'M3SN'
-#define M3_SNAPSHOT_VERSION 33u
+#define M3_SNAPSHOT_VERSION 34u
+// v34: hit threshold + shape event flags (8-5).
 // v33: world tuning knobs (8-4).
 // v32: central friction manifold payload replaces per-point
 //      tangent impulses (solver rev 21).
@@ -185,6 +186,7 @@ static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3Wal
     M3_BLOCK(&world->maximumLinearSpeed, (int32_t)sizeof(float));
     M3_BLOCK(&world->sleepEnabled, 1);
     M3_BLOCK(&world->continuousEnabled, 1);
+    M3_BLOCK(&world->hitEventThreshold, (int32_t)sizeof(float));
     // Identity is state: generations, liveness, and the FIFO queue
     // restore exactly, so post-rollback id minting cannot diverge.
     M3_BLOCK(world->bodyPool.generations, cap * (int32_t)sizeof(uint16_t));
@@ -219,6 +221,8 @@ static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3Wal
     M3_BLOCK(world->shapeMeshIndex, shapeCap * (int32_t)sizeof(int32_t));
     M3_BLOCK(world->shapeSensor, shapeCap * (int32_t)sizeof(uint8_t));
     M3_BLOCK(world->shapeRollingResistance, shapeCap * (int32_t)sizeof(float));
+    M3_BLOCK(world->shapeHitEvents, shapeCap * (int32_t)sizeof(uint8_t));
+    M3_BLOCK(world->shapePreSolve, shapeCap * (int32_t)sizeof(uint8_t));
     M3_BLOCK(world->shapeCategory, shapeCap * (int32_t)sizeof(uint64_t));
     M3_BLOCK(world->shapeMask, shapeCap * (int32_t)sizeof(uint64_t));
     M3_BLOCK(world->shapeGroup, shapeCap * (int32_t)sizeof(int32_t));
@@ -491,6 +495,10 @@ bool m3World_Restore(m3WorldId worldId, const void* data, int32_t size)
     world->fragmentEventCount = 0;
     world->fragmentRecipeCount = 0;
     world->fragmentDropped = 0;
+    world->hitEventCount = 0;
+    world->hitEventsDropped = 0;
+    world->moveEventCount = 0;
+    world->jointBreakEventCount = 0;
     world->hullPool.maxIndex = header.hullMaxIndex;
     world->hullPool.freeHead = header.hullFreeHead;
     world->hullPool.freeCount = header.hullFreeCount;
@@ -552,7 +560,7 @@ uint64_t m3World_Hash(m3WorldId worldId)
         world->contactPushMaxSpeed != M3_CONTACT_PUSH_MAX_SPEED_DEFAULT ||
         world->restitutionThreshold != M3_RESTITUTION_THRESHOLD_DEFAULT ||
         world->maximumLinearSpeed != M3_MAX_LINEAR_SPEED_DEFAULT || world->sleepEnabled == 0 ||
-        world->continuousEnabled == 0)
+        world->continuousEnabled == 0 || world->hitEventThreshold != M3_HIT_EVENT_THRESHOLD_DEFAULT)
     {
         // Additive-state golden rule, sixth use: tuning knobs fold
         // only off their defaults.
@@ -563,6 +571,7 @@ uint64_t m3World_Hash(m3WorldId worldId)
         h = m3Hash64(h, &world->maximumLinearSpeed, 4);
         h = m3Hash64(h, &world->sleepEnabled, 1);
         h = m3Hash64(h, &world->continuousEnabled, 1);
+        h = m3Hash64(h, &world->hitEventThreshold, 4);
     }
     int32_t maxIndex = world->bodyPool.maxIndex;
     for (int32_t i = 0; i < maxIndex; ++i)
@@ -622,6 +631,13 @@ uint64_t m3World_Hash(m3WorldId worldId)
         h = m3Hash64(h, &world->shapeDensity[i], 4);
         h = m3Hash64(h, &world->shapeFriction[i], 4);
         h = m3Hash64(h, &world->shapeRestitution[i], 4);
+        if (world->shapeHitEvents[i] != 0 || world->shapePreSolve[i] != 0)
+        {
+            // Event flags are observable shape state: they fold
+            // off-default (additive rule, seventh use).
+            h = m3Hash64(h, &world->shapeHitEvents[i], 1);
+            h = m3Hash64(h, &world->shapePreSolve[i], 1);
+        }
         if (world->shapeRollingResistance[i] != 0.0f)
         {
             // The additive-state golden rule: the new field folds

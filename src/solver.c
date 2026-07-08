@@ -179,6 +179,35 @@ static int32_t PrepareContacts(m3World* world, m3ContactConstraint* constraints,
         {
             continue; // sensors detect, they never respond
         }
+        if (world->preSolveFn != NULL &&
+            (world->shapePreSolve[shapeA] != 0 || world->shapePreSolve[shapeB] != 0))
+        {
+            // The pre-solve veto (8-5): serial, canonical pair order.
+            // The LOUD contract lives on the API: the callback must
+            // be pure, or replay divergence is the host's own.
+            int32_t deep = 0;
+            for (int32_t k = 1; k < manifold->pointCount; ++k)
+            {
+                if (manifold->points[k].separation < manifold->points[deep].separation)
+                {
+                    deep = k;
+                }
+            }
+            m3Vec3 lcB = m3RotateVec3(world->transforms[bodyB].q, world->localCenters[bodyB]);
+            m3Pos3 point;
+            point.x = world->transforms[bodyB].p.x + (double)lcB.x +
+                      (double)manifold->points[deep].anchorB.x;
+            point.y = world->transforms[bodyB].p.y + (double)lcB.y +
+                      (double)manifold->points[deep].anchorB.y;
+            point.z = world->transforms[bodyB].p.z + (double)lcB.z +
+                      (double)manifold->points[deep].anchorB.z;
+            m3ShapeId idA = {shapeA + 1, world->worldIndex0, world->shapePool.generations[shapeA]};
+            m3ShapeId idB = {shapeB + 1, world->worldIndex0, world->shapePool.generations[shapeB]};
+            if (!world->preSolveFn(idA, idB, point, manifold->normal, world->preSolveContext))
+            {
+                continue; // vetoed: no constraint this step
+            }
+        }
 
         m3ContactConstraint* c = constraints + count;
         count += 1;
@@ -2010,6 +2039,51 @@ static void StoreImpulses(m3World* world, m3ContactConstraint* constraints, int3
         {
             manifold->points[k].normalImpulse = c->points[k].normalImpulse;
         }
+
+        // Hit events (8-5, the reference recipe): at most one per
+        // contact, for the fastest-approaching point, only when a
+        // side opted in and the impact actually fired.
+        uint64_t key = world->pairKeys[c->manifoldIndex];
+        int32_t shapeA = (int32_t)(key >> 32);
+        int32_t shapeB = (int32_t)(key & 0xFFFFFFFFu);
+        if (world->shapeHitEvents[shapeA] != 0 || world->shapeHitEvents[shapeB] != 0)
+        {
+            int32_t best = -1;
+            for (int32_t k = 0; k < c->pointCount; ++k)
+            {
+                if (c->points[k].relativeVelocity < -world->hitEventThreshold &&
+                    c->points[k].totalNormalImpulse > 0.0f &&
+                    (best < 0 || c->points[k].relativeVelocity < c->points[best].relativeVelocity))
+                {
+                    best = k;
+                }
+            }
+            if (best >= 0)
+            {
+                if (world->hitEventCount < world->pairCapacity)
+                {
+                    m3HitEvent* e = &world->hitEvents[world->hitEventCount++];
+                    e->shapeA = (m3ShapeId){shapeA + 1, world->worldIndex0,
+                                            world->shapePool.generations[shapeA]};
+                    e->shapeB = (m3ShapeId){shapeB + 1, world->worldIndex0,
+                                            world->shapePool.generations[shapeB]};
+                    m3Vec3 lcA =
+                        m3RotateVec3(world->transforms[c->bodyA].q, world->localCenters[c->bodyA]);
+                    e->point.x = world->transforms[c->bodyA].p.x + (double)lcA.x +
+                                 (double)c->points[best].rA.x;
+                    e->point.y = world->transforms[c->bodyA].p.y + (double)lcA.y +
+                                 (double)c->points[best].rA.y;
+                    e->point.z = world->transforms[c->bodyA].p.z + (double)lcA.z +
+                                 (double)c->points[best].rA.z;
+                    e->normal = c->normal;
+                    e->approachSpeed = -c->points[best].relativeVelocity;
+                }
+                else
+                {
+                    world->hitEventsDropped += 1;
+                }
+            }
+        }
         manifold->frictionImpulse =
             m3Add3(m3MulSV3(c->frictionImpulse1, c->t1), m3MulSV3(c->frictionImpulse2, c->t2));
         manifold->twistImpulse = c->twistImpulse;
@@ -2743,6 +2817,10 @@ void m3StepInternal(m3World* world, float dt, int32_t substeps)
     world->fragmentEventCount = 0;
     world->fragmentRecipeCount = 0;
     world->fragmentDropped = 0;
+    world->hitEventCount = 0;
+    world->hitEventsDropped = 0;
+    world->moveEventCount = 0;
+    world->jointBreakEventCount = 0;
     {
         int32_t iNew = 0;
         int32_t iOld = 0;
@@ -3024,6 +3102,19 @@ void m3StepInternal(m3World* world, float dt, int32_t substeps)
     if (world->sleepEnabled != 0)
     {
         IslandSleepPass(world, islandParent, com0, rot0, dt);
+    }
+
+    // Body move events (8-5): one per mover, ascending body order
+    // (the mover list is built that way), post-step transform, and
+    // fellAsleep on the step the island dropped off. Capacity is
+    // bodyCapacity: movers cannot overflow it.
+    for (int32_t m = 0; m < moverCount; ++m)
+    {
+        int32_t i = movers[m];
+        m3BodyMoveEvent* e = &world->moveEvents[world->moveEventCount++];
+        e->body = (m3BodyId){i + 1, world->worldIndex0, world->bodyPool.generations[i]};
+        e->transform = world->transforms[i];
+        e->fellAsleep = world->types[i] == (uint8_t)m3_dynamicBody && world->awake[i] == 0;
     }
     m3CharacterCarryRiders(world, com0, rot0);
     m3SoftBodyPass(world, dt, substeps);

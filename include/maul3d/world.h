@@ -65,6 +65,8 @@ extern "C"
         float maximumLinearSpeed;   // hard velocity cap (400)
         int32_t enableSleeping;     // 1 = islands may sleep (default 1)
         int32_t enableContinuous;   // 1 = CCD phase runs (default 1)
+        float hitEventThreshold;    // hit events need approach speed
+                                    // above this (default 1) (8-5)
         int32_t internalValue;
     } m3WorldDef;
 
@@ -188,6 +190,75 @@ extern "C"
     /// is the lower shape index; either side may be the sensor.
     M3_API const m3ContactEvent* m3World_SensorBeginEvents(m3WorldId worldId, int32_t* count);
     M3_API const m3ContactEvent* m3World_SensorEndEvents(m3WorldId worldId, int32_t* count);
+
+    /// A hit event (8-5): two shapes collided with approach speed
+    /// above the world threshold. Emitted at most once per contact
+    /// per step, for the fastest-approaching manifold point, and
+    /// only when either shape opted in (m3Shape_EnableHitEvents).
+    /// Streams are transient observers like contact events.
+    typedef struct m3HitEvent
+    {
+        m3ShapeId shapeA;
+        m3ShapeId shapeB;
+        m3Pos3 point;         /// approximate contact point, world space
+        m3Vec3 normal;        /// from shape A to shape B
+        m3real approachSpeed; /// relative normal speed at impact, > 0
+    } m3HitEvent;
+
+    M3_API const m3HitEvent* m3World_HitEvents(m3WorldId worldId, int32_t* count);
+    /// Hits beyond capacity still simulate; only their events drop,
+    /// and this counter says how many, loudly.
+    M3_API int32_t m3World_HitEventsDropped(m3WorldId worldId);
+
+    /// Hit events require approach speed above this. Journaled.
+    M3_API void m3World_SetHitEventThreshold(m3WorldId worldId, float value);
+
+    /// A body move event (8-5): one per body that MOVED this step
+    /// (every mover), in ascending body order, carrying the post-step
+    /// transform. fellAsleep marks the step a body drops off; a
+    /// sleeping body emits nothing until it wakes. Render sync reads
+    /// this instead of polling every body.
+    typedef struct m3BodyMoveEvent
+    {
+        m3BodyId body;
+        m3Transform transform;
+        bool fellAsleep;
+    } m3BodyMoveEvent;
+
+    M3_API const m3BodyMoveEvent* m3World_BodyMoveEvents(m3WorldId worldId, int32_t* count);
+
+    /// A joint break event (8-5 machinery; joints learn to break in
+    /// the joint runtime slice). The id is already stale when the
+    /// event is read: the joint destroyed itself. Use it as a key,
+    /// not a handle.
+    typedef struct m3JointBreakEvent
+    {
+        m3JointId joint;
+    } m3JointBreakEvent;
+
+    M3_API const m3JointBreakEvent* m3World_JointBreakEvents(m3WorldId worldId, int32_t* count);
+
+    /// Pre-solve veto (8-5): called during contact preparation, in
+    /// canonical pair order, for pairs where either shape opted in
+    /// (m3Shape_EnablePreSolve). Return false to disable the contact
+    /// for THIS step (the one-way platform tool). point is the
+    /// deepest contact point, normal points from shape A to shape B.
+    ///
+    /// THE DETERMINISM CONTRACT, LOUD: the journal records inputs,
+    /// never host whims. The callback MUST be a pure function of its
+    /// arguments (and of host state that is itself bit-identical on
+    /// replay). Register the SAME pure callback before replaying a
+    /// journal or resimulating from a snapshot; a callback that
+    /// consults a clock, a random source, or mutable host state
+    /// breaks bit-exactness and that breakage is YOURS. The engine
+    /// calls it from the serial prepare pass, never from workers.
+    typedef bool m3PreSolveFn(m3ShapeId shapeA, m3ShapeId shapeB, m3Pos3 point, m3Vec3 normal,
+                              void* context);
+
+    /// Register (or clear with NULL) the pre-solve callback. Host
+    /// wiring like the task hooks: never journaled, never snapshot
+    /// state; pair it with the contract above.
+    M3_API void m3World_SetPreSolveCallback(m3WorldId worldId, m3PreSolveFn* fn, void* context);
 
     /// Closest-hit ray cast: origin in world doubles, translation =
     /// direction times reach. fraction in [0, 1] along the

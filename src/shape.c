@@ -325,6 +325,8 @@ int32_t m3CreateShapeInternal(m3World* world, int32_t bodyIndex, uint8_t type,
     world->shapeGroup[index] = def->groupIndex;
     world->shapeUserData[index] = def->userData;
     world->shapeSensor[index] = def->isSensor ? 1 : 0;
+    world->shapeHitEvents[index] = def->enableHitEvents ? 1 : 0;
+    world->shapePreSolve[index] = def->enablePreSolveEvents ? 1 : 0;
     // Push onto the body's list head (canonical: creation order is
     // recoverable because replay recreates in the same order).
     world->shapeNext[index] = world->bodyShapeHead[bodyIndex];
@@ -449,6 +451,8 @@ void m3DestroyShapeInternal(m3World* world, int32_t index)
     world->shapeGroup[index] = 0;
     world->shapeUserData[index] = 0;
     world->shapeSensor[index] = 0;
+    world->shapeHitEvents[index] = 0;
+    world->shapePreSolve[index] = 0;
     world->shapeNext[index] = -1;
     if (world->proxyIds[index] != M3_TREE_NULL)
     {
@@ -1008,4 +1012,68 @@ float m3Shape_GetDensity(m3ShapeId shapeId)
     int32_t slot;
     m3World* world = ResolveShape(shapeId, &slot);
     return world != NULL ? world->shapeDensity[slot] : 0.0f;
+}
+
+void m3EnableShapeHitEventsInternal(m3World* world, int32_t slot, int32_t on)
+{
+    world->shapeHitEvents[slot] = on != 0 ? 1 : 0;
+}
+
+void m3EnableShapePreSolveInternal(m3World* world, int32_t slot, int32_t on)
+{
+    world->shapePreSolve[slot] = on != 0 ? 1 : 0;
+}
+
+static void ShapeFlagOp(m3ShapeId shapeId, int32_t op, bool flag)
+{
+    int32_t slot;
+    m3World* world = ResolveShape(shapeId, &slot);
+    if (world == NULL)
+    {
+        return;
+    }
+    if (world->journalActive != 0)
+    {
+        struct
+        {
+            m3ShapeId id;
+            int32_t on;
+        } record;
+        memset(&record, 0, sizeof(record));
+        record.id = shapeId;
+        record.on = flag ? 1 : 0;
+        m3JournalRecord(world, op, &record, (int32_t)sizeof(record));
+    }
+    if (op == m3_opEnableShapeHitEvents)
+    {
+        m3EnableShapeHitEventsInternal(world, slot, flag ? 1 : 0);
+    }
+    else
+    {
+        m3EnableShapePreSolveInternal(world, slot, flag ? 1 : 0);
+    }
+}
+
+void m3Shape_EnableHitEvents(m3ShapeId shapeId, bool flag)
+{
+    ShapeFlagOp(shapeId, m3_opEnableShapeHitEvents, flag);
+}
+
+bool m3Shape_AreHitEventsEnabled(m3ShapeId shapeId)
+{
+    int32_t slot;
+    m3World* world = ResolveShape(shapeId, &slot);
+    return world != NULL && world->shapeHitEvents[slot] != 0;
+}
+
+void m3Shape_EnablePreSolve(m3ShapeId shapeId, bool flag)
+{
+    ShapeFlagOp(shapeId, m3_opEnableShapePreSolve, flag);
+}
+
+bool m3Shape_IsPreSolveEnabled(m3ShapeId shapeId)
+{
+    int32_t slot;
+    m3World* world = ResolveShape(shapeId, &slot);
+    return world != NULL && world->shapePreSolve[slot] != 0;
 }

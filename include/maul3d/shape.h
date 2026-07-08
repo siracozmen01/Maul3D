@@ -62,6 +62,8 @@ extern "C"
         /// through, bullets do not stop, sleepers are not woken.
         /// Sensors do not sense other sensors.
         bool isSensor;
+        bool enableHitEvents;      // 8-5: default false, streams cost
+        bool enablePreSolveEvents; // 8-5: default false, veto calls cost
         int32_t internalValue;
     } m3ShapeDef;
 
@@ -211,6 +213,13 @@ extern "C"
     /// mass, center and inertia from all its shapes. Journaled.
     M3_API void m3Shape_SetDensity(m3ShapeId shapeId, float density, bool updateBodyMass);
     M3_API float m3Shape_GetDensity(m3ShapeId shapeId);
+
+    /// Opt a shape into hit events / the pre-solve veto (8-5).
+    /// Journaled; the flags are state and snapshot with the world.
+    M3_API void m3Shape_EnableHitEvents(m3ShapeId shapeId, bool flag);
+    M3_API bool m3Shape_AreHitEventsEnabled(m3ShapeId shapeId);
+    M3_API void m3Shape_EnablePreSolve(m3ShapeId shapeId, bool flag);
+    M3_API bool m3Shape_IsPreSolveEnabled(m3ShapeId shapeId);
 
     static const m3ShapeId m3_nullShapeId = {0, 0, 0};
 

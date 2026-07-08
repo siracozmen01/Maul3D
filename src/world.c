@@ -51,6 +51,7 @@ m3WorldDef m3DefaultWorldDef(void)
     def.maximumLinearSpeed = M3_MAX_LINEAR_SPEED_DEFAULT;
     def.enableSleeping = 1;
     def.enableContinuous = 1;
+    def.hitEventThreshold = M3_HIT_EVENT_THRESHOLD_DEFAULT;
     def.internalValue = M3_WORLD_COOKIE;
     return def;
 }
@@ -67,7 +68,8 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
         !m3FiniteF(def->contactDampingRatio) || def->contactDampingRatio <= 0.0f ||
         !m3FiniteF(def->contactPushMaxSpeed) || def->contactPushMaxSpeed <= 0.0f ||
         !m3FiniteF(def->restitutionThreshold) || def->restitutionThreshold < 0.0f ||
-        !m3FiniteF(def->maximumLinearSpeed) || def->maximumLinearSpeed <= 0.0f)
+        !m3FiniteF(def->maximumLinearSpeed) || def->maximumLinearSpeed <= 0.0f ||
+        !m3FiniteF(def->hitEventThreshold) || def->hitEventThreshold < 0.0f)
     {
         // User-input validation is contract, not invariant: the API
         // promises a null id for a bad def (tests exercise this), so
@@ -100,6 +102,9 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     world->maximumLinearSpeed = def->maximumLinearSpeed;
     world->sleepEnabled = def->enableSleeping != 0 ? 1 : 0;
     world->continuousEnabled = def->enableContinuous != 0 ? 1 : 0;
+    world->hitEventThreshold = def->hitEventThreshold;
+    world->preSolveFn = NULL;
+    world->preSolveContext = NULL;
     world->bodyCapacity = cap;
     world->shapeCapacity = def->shapeCapacity;
     world->meshCapacity = def->meshCapacity;
@@ -301,6 +306,8 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     }
     M3_ALLOC(world->shapeMeshIndex, shapeCap, int32_t);
     M3_ALLOC(world->shapeSensor, shapeCap, uint8_t);
+    M3_ALLOC(world->shapeHitEvents, shapeCap, uint8_t);
+    M3_ALLOC(world->shapePreSolve, shapeCap, uint8_t);
     for (int32_t i = 0; i < shapeCap; ++i)
     {
         world->shapeMeshIndex[i] = -1;
@@ -318,6 +325,13 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     M3_ALLOC(world->endEvents, world->pairCapacity, m3ContactEvent);
     M3_ALLOC(world->sensorBeginEvents, world->pairCapacity, m3ContactEvent);
     M3_ALLOC(world->sensorEndEvents, world->pairCapacity, m3ContactEvent);
+    M3_ALLOC(world->hitEvents, world->pairCapacity, m3HitEvent);
+    M3_ALLOC(world->moveEvents, def->bodyCapacity, m3BodyMoveEvent);
+    M3_ALLOC(world->jointBreakEvents, def->jointCapacity, m3JointBreakEvent);
+    world->hitEventCount = 0;
+    world->hitEventsDropped = 0;
+    world->moveEventCount = 0;
+    world->jointBreakEventCount = 0;
     world->beginEventCount = 0;
     world->endEventCount = 0;
     M3_ALLOC(world->pairKeys, world->pairCapacity, uint64_t);
@@ -481,6 +495,11 @@ void m3DestroyWorld(m3WorldId worldId)
     m3Free(world->fragmentRecipe);
     m3Free(world->shapeMeshIndex);
     m3Free(world->shapeSensor);
+    m3Free(world->shapeHitEvents);
+    m3Free(world->shapePreSolve);
+    m3Free(world->hitEvents);
+    m3Free(world->moveEvents);
+    m3Free(world->jointBreakEvents);
     m3Free(world->beginEvents);
     m3Free(world->endEvents);
     m3Free(world->sensorBeginEvents);
@@ -664,6 +683,87 @@ bool m3World_IsContinuousEnabled(m3WorldId worldId)
 {
     m3World* world = m3WorldFromId(worldId);
     return world != NULL && world->continuousEnabled != 0;
+}
+
+// --- Events (8-5) -----------------------------------------------------------
+
+void m3SetHitEventThresholdInternal(m3World* world, float value)
+{
+    world->hitEventThreshold = value;
+}
+
+void m3World_SetHitEventThreshold(m3WorldId worldId, float value)
+{
+    m3World* world = m3WorldFromId(worldId);
+    if (world == NULL || !m3FiniteF(value) || value < 0.0f)
+    {
+        return;
+    }
+    if (world->journalActive != 0)
+    {
+        m3JournalRecord(world, m3_opSetHitEventThreshold, &value, (int32_t)sizeof(value));
+    }
+    m3SetHitEventThresholdInternal(world, value);
+}
+
+const m3HitEvent* m3World_HitEvents(m3WorldId worldId, int32_t* count)
+{
+    m3World* world = m3WorldFromId(worldId);
+    if (world == NULL)
+    {
+        *count = 0;
+        return NULL;
+    }
+    *count = world->hitEventCount;
+    return world->hitEvents;
+}
+
+int32_t m3World_HitEventsDropped(m3WorldId worldId)
+{
+    m3World* world = m3WorldFromId(worldId);
+    return world != NULL ? world->hitEventsDropped : 0;
+}
+
+const m3BodyMoveEvent* m3World_BodyMoveEvents(m3WorldId worldId, int32_t* count)
+{
+    m3World* world = m3WorldFromId(worldId);
+    if (world == NULL)
+    {
+        *count = 0;
+        return NULL;
+    }
+    *count = world->moveEventCount;
+    return world->moveEvents;
+}
+
+const m3JointBreakEvent* m3World_JointBreakEvents(m3WorldId worldId, int32_t* count)
+{
+    m3World* world = m3WorldFromId(worldId);
+    if (world == NULL)
+    {
+        *count = 0;
+        return NULL;
+    }
+    *count = world->jointBreakEventCount;
+    return world->jointBreakEvents;
+}
+
+void m3AppendJointBreakEvent(m3World* world, m3JointId joint)
+{
+    // Capacity is jointCapacity: at most every joint breaks once.
+    world->jointBreakEvents[world->jointBreakEventCount].joint = joint;
+    world->jointBreakEventCount += 1;
+}
+
+void m3World_SetPreSolveCallback(m3WorldId worldId, m3PreSolveFn* fn, void* context)
+{
+    m3World* world = m3WorldFromId(worldId);
+    if (world == NULL)
+    {
+        return;
+    }
+    world->preSolveFn = fn;
+    world->preSolveContext = context;
 }
 
 // --- Journal ---------------------------------------------------------------
@@ -1739,6 +1839,46 @@ static bool JournalReplayApply(m3World* world, const void* data, int32_t size)
             else
             {
                 m3EnableContinuousInternal(world, on);
+            }
+            break;
+        }
+        case m3_opSetHitEventThreshold:
+        {
+            float value;
+            if (bytes != (int32_t)sizeof(value))
+            {
+                return false;
+            }
+            memcpy(&value, payload, sizeof(value));
+            m3SetHitEventThresholdInternal(world, value);
+            break;
+        }
+        case m3_opEnableShapeHitEvents:
+        case m3_opEnableShapePreSolve:
+        {
+            struct
+            {
+                m3ShapeId id;
+                int32_t on;
+            } record;
+            if (bytes != (int32_t)sizeof(record))
+            {
+                return false;
+            }
+            memcpy(&record, payload, sizeof(record));
+            record.id.world0 = world->worldIndex0;
+            int32_t slot = m3ShapeSlot(world, record.id);
+            if (slot < 0)
+            {
+                return false;
+            }
+            if (op == m3_opEnableShapeHitEvents)
+            {
+                m3EnableShapeHitEventsInternal(world, slot, record.on);
+            }
+            else
+            {
+                m3EnableShapePreSolveInternal(world, slot, record.on);
             }
             break;
         }
