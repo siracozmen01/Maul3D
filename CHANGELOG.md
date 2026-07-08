@@ -4,6 +4,30 @@ All notable changes to Maul3D. Versions are tags on green CI SHAs;
 every entry's determinism gates were verified across all CI cells at
 tag time.
 
+## v1.4 (2026-07-08)
+
+The soft body release, and the close of the ratified roadmap.
+
+- Deterministic XPBD particle lattices (`m3CreateSoftBody`): rope,
+  cloth, and jelly from one box-lattice factory; structural and
+  face-diagonal rods with compliance; small-steps schedule; fixed
+  index order everywhere; snapshot v27/v28; journal ops 22 to 25
+  with id verification.
+- Collision against the full rigid shape set with friction from
+  the touched shape; two-way contact impulses (jelly has weight);
+  the carved floor drops the rope the same step.
+- Pins and body-frame anchors (capture position, lattice pull
+  lands on the body, silent release on body death).
+- The scale suite carries a lattice through its worker-twin,
+  replay, and rollback gates; the red team storms a jelly on a
+  collapsing deck to bit-identical twins.
+- MANUAL chapter: soft bodies. Testbed: the jelly scene.
+- With this release the ratified competitive-gap roadmap is
+  complete: character controller, joints, and casts (v1.1),
+  vehicles (v1.2), the 5k scale proof (v1.3), deterministic soft
+  body (v1.4). GPU stays declined on the record: cross-vendor GPU
+  floats cannot hold the bit contract that IS this engine.
+
 ## v1.3 (2026-07-08)
 
 The scale release: the 5k-body proof, the profile-convicted

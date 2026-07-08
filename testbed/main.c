@@ -19,6 +19,7 @@
 #include "maul3d/draw.h"
 #include "maul3d/joint.h"
 #include "maul3d/shape.h"
+#include "maul3d/softbody.h"
 #include "maul3d/vehicle.h"
 #include "raylib.h"
 
@@ -84,6 +85,7 @@ typedef struct tbScene
     m3ShapeId chunk;    // the carvable chunk, if the scene has one
     m3CharacterId hero; // the playable walker, if the scene has one
     m3VehicleId car;    // the playable car, if the scene has one
+    m3SoftBodyId jelly; // the star of the jelly scene
     m3BodyId carBody;   // its chassis (camera and wheel draw)
     m3BodyId ferry;     // the host-driven platform, if any
     const char* name;
@@ -477,9 +479,61 @@ static tbScene SceneCircuit(void)
     return scene;
 }
 
+// Scene 6: the jelly. Drop a wobbling lattice on the keep, carve
+// the wall out from under it, and rewind the whole custard.
+static tbScene SceneJelly(void)
+{
+    tbScene scene;
+    memset(&scene, 0, sizeof(scene));
+    scene.name = "jelly";
+    scene.blurb = "a soft lattice on the keep: E carves, LMB shoots, R rewinds";
+    m3WorldDef def = SceneDef();
+    def.softBodyCapacity = 2;
+    scene.world = m3CreateWorld(&def);
+    AddFloor(scene.world);
+
+    static uint8_t voxels[16 * 16 * 16];
+    memset(voxels, 0, sizeof(voxels));
+    for (int32_t z = 0; z < 16; ++z)
+    {
+        for (int32_t x = 0; x < 16; ++x)
+        {
+            voxels[x + 16 * (0 + 16 * z)] = 1;
+        }
+    }
+    for (int32_t y = 1; y <= 6; ++y)
+    {
+        for (int32_t i = 2; i <= 13; ++i)
+        {
+            voxels[i + 16 * (y + 16 * 2)] = 1;
+            voxels[i + 16 * (y + 16 * 13)] = 1;
+            voxels[2 + 16 * (y + 16 * i)] = 1;
+            voxels[13 + 16 * (y + 16 * i)] = 1;
+        }
+    }
+    m3BodyDef gd = m3DefaultBodyDef();
+    gd.position = (m3Pos3){-8.0, 0.0, -8.0};
+    m3BodyId keep = m3CreateBody(scene.world, &gd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    sd.friction = 0.6f;
+    scene.chunk = m3CreateVoxelChunkShape(keep, &sd, voxels, NULL, 1.0f);
+
+    m3SoftBodyDef sb = m3DefaultSoftBodyDef();
+    sb.position = (m3Pos3){-5.6, 8.5, -0.6};
+    sb.countX = 7;
+    sb.countY = 7;
+    sb.countZ = 7;
+    sb.spacing = 0.22f;
+    sb.compliance = 2.0e-4f;
+    sb.radius = 0.09f;
+    sb.particleMass = 0.08f;
+    scene.jelly = m3CreateSoftBody(scene.world, &sb);
+    return scene;
+}
+
 typedef tbScene (*SceneBuilder)(void);
-static const SceneBuilder s_builders[] = {SceneKeep, SceneRain, SceneMachines, SceneWalker,
-                                          SceneCircuit};
+static const SceneBuilder s_builders[] = {SceneKeep,   SceneRain,    SceneMachines,
+                                          SceneWalker, SceneCircuit, SceneJelly};
 #define SCENE_COUNT ((int32_t)(sizeof(s_builders) / sizeof(s_builders[0])))
 
 // ------------------------------------------------------ host recipes
@@ -881,6 +935,17 @@ int main(void)
         draw.drawContacts = showContacts;
         draw.drawAabbs = showAabbs;
         m3World_Draw(scene.world, &draw);
+        if (m3SoftBody_IsValid(scene.jelly))
+        {
+            // Soft bodies are particles, not shapes: the debug draw
+            // cannot know them, so the testbed cubes them directly.
+            int32_t pc = m3SoftBody_GetParticleCount(scene.jelly);
+            for (int32_t p = 0; p < pc; ++p)
+            {
+                m3Pos3 q = m3SoftBody_GetParticlePosition(scene.jelly, p);
+                DrawCubeV(FromPos(q), (Vector3){0.13f, 0.13f, 0.13f}, (Color){120, 230, 130, 255});
+            }
+        }
         if (driveScene)
         {
             // Wheels are rays, so the debug draw cannot know them:

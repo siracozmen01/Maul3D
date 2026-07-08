@@ -489,6 +489,15 @@ void m3SoftBodyPass(m3World* world, float dt, int32_t substeps)
             int32_t abase = slot * M3_SOFTBODY_MAX_ANCHORS;
             for (int32_t a = 0; a < anchorCount; ++a)
             {
+                // A dead or recycled body releases its anchor: the
+                // particle must return to the integrator, or it
+                // hangs frozen in the air where its beam died.
+                int32_t abody = world->softAnchorBody[abase + a];
+                if (abody < 0 || world->bodyPool.alive[abody] == 0 ||
+                    world->bodyPool.generations[abody] != world->softAnchorGen[abase + a])
+                {
+                    continue;
+                }
                 int32_t particle = world->softAnchorParticle[abase + a];
                 anchored[particle >> 3] |= (uint8_t)(1u << (particle & 7));
             }

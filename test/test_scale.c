@@ -10,6 +10,7 @@
 // smoke) live in the bench binary where wall time belongs.
 
 #include "maul3d/shape.h"
+#include "maul3d/softbody.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -179,6 +180,18 @@ static m3ShapeId BuildMiniBlock(m3WorldId world)
     m3ShapeId lower = m3CreateVoxelChunkShape(m3CreateBody(world, &td), &sd, tower, NULL, 0.5f);
     td.position = (m3Pos3){-4.0, 8.0, -4.0}; // welded stack
     m3CreateVoxelChunkShape(m3CreateBody(world, &td), &sd, tower, NULL, 0.5f);
+
+    // A jelly rides the block: soft bodies are in the scale gate
+    // and the worker-twin proof from 7-4 on.
+    m3SoftBodyDef jd = m3DefaultSoftBodyDef();
+    jd.position = (m3Pos3){6.0, 10.0, 6.0};
+    jd.countX = 6;
+    jd.countY = 6;
+    jd.countZ = 6;
+    jd.spacing = 0.2f;
+    jd.compliance = 1.0e-4f;
+    jd.radius = 0.08f;
+    m3CreateSoftBody(world, &jd);
 
     m3ShapeDef bs = m3DefaultShapeDef();
     bs.friction = 0.6f;
