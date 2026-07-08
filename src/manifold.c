@@ -2673,6 +2673,11 @@ void m3UpdateContactsRange(m3World* world, int32_t start, int32_t end, const uin
                 if (oldKeys[mid] == key)
                 {
                     const m3Manifold* previous = &oldManifolds[mid];
+                    // The central friction payload carries with the
+                    // PAIR, not with the points (rev 21).
+                    fresh.frictionImpulse = previous->frictionImpulse;
+                    fresh.twistImpulse = previous->twistImpulse;
+                    fresh.rollingImpulse = previous->rollingImpulse;
                     for (int32_t k = 0; k < fresh.pointCount; ++k)
                     {
                         for (int32_t o = 0; o < previous->pointCount; ++o)
@@ -2680,10 +2685,6 @@ void m3UpdateContactsRange(m3World* world, int32_t start, int32_t end, const uin
                             if (previous->points[o].id == fresh.points[k].id)
                             {
                                 fresh.points[k].normalImpulse = previous->points[o].normalImpulse;
-                                fresh.points[k].tangentImpulse1 =
-                                    previous->points[o].tangentImpulse1;
-                                fresh.points[k].tangentImpulse2 =
-                                    previous->points[o].tangentImpulse2;
                                 fresh.points[k].flags |= 1; // persisted
                                 break;
                             }

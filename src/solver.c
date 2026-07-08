@@ -51,21 +51,19 @@ typedef struct m3ConstraintPoint
     m3Vec3 rB;
     m3real baseSeparation; // separation minus dot(rB - rA, n) at prepare
     m3real normalMass;
-    m3real tangentMass1;
-    m3real tangentMass2;
+    m3real leverArm;         // |rA - originA|: the twist budget arm
     m3real relativeVelocity; // vn at prepare, for the restitution pass
     m3real normalImpulse;
-    m3real tangentImpulse1;
-    m3real tangentImpulse2;
     m3real totalNormalImpulse; // summed across every solve pass of
-                               // the step (the reference budget):
-                               // the relax pass legally refunds the
-                               // ACCUMULATOR at speculative rest,
-                               // and a friction cap read from the
-                               // refunded value is zero exactly
-                               // where bodies hover on the slop gap
-                               // (the 6-3 conviction: frictionless
-                               // eternal sliders under every pile)
+                               // the step; the restitution gate
+                               // reads it (a zero means the point
+                               // never fired). The friction caps do
+                               // NOT read it (rev 21): they budget
+                               // from the pass-local sum of live
+                               // accumulators, the reference rule.
+                               // The cross-pass sum inflated the
+                               // cone up to 8x and a shoved crate
+                               // stuck, dug its edge, and hopped.
 } m3ConstraintPoint;
 
 typedef struct m3ContactConstraint
@@ -77,6 +75,20 @@ typedef struct m3ContactConstraint
     m3Vec3 normal;
     m3Vec3 t1;
     m3Vec3 t2;
+    // Central friction (rev 21, the reference layout): one 2x2 row
+    // at the mean anchors plus a twist row about the normal, instead
+    // of per-point tangent rows. Per-corner friction on a box gave
+    // gravity a fake pitch lever (the vehicle arc's hub lesson, at
+    // the contact level).
+    m3Vec3 originA;
+    m3Vec3 originB;
+    m3real frictionK11; // inverted 2x2 tangent mass, symmetric
+    m3real frictionK12;
+    m3real frictionK22;
+    m3real frictionImpulse1;
+    m3real frictionImpulse2;
+    m3real twistMass;
+    m3real twistImpulse;
     m3real friction;
     m3real restitution;
     m3real invMassA;
@@ -85,7 +97,7 @@ typedef struct m3ContactConstraint
     m3Mat3 invIB;
     m3Softness softness;
     m3real rollingResistance; // max-mixed, extent-scaled (6-3)
-    m3Vec3 rollingImpulse;    // per-step accumulator, cold each prepare
+    m3Vec3 rollingImpulse;    // warm across steps via the manifold (rev 21)
     m3Mat3 rollingK;          // iA + iB, solved per relax iteration
     m3ConstraintPoint points[M3_MANIFOLD_MAX_POINTS];
 } m3ContactConstraint;
@@ -194,7 +206,7 @@ static int32_t PrepareContacts(m3World* world, m3ContactConstraint* constraints,
         c->rollingResistance =
             m3MaxF(world->shapeRollingResistance[shapeA], world->shapeRollingResistance[shapeB]) *
             m3MaxF(world->maxExtents[bodyA], world->maxExtents[bodyB]);
-        c->rollingImpulse = (m3Vec3){0.0f, 0.0f, 0.0f};
+        c->rollingImpulse = manifold->rollingImpulse; // reference warm start (rev 21)
         if (c->rollingResistance > 0.0f)
         {
             m3Mat3 sum = c->invIA;
@@ -213,16 +225,64 @@ static int32_t PrepareContacts(m3World* world, m3ContactConstraint* constraints,
             cp->baseSeparation = manifold->points[k].separation -
                                  (m3Dot3(cp->rB, c->normal) - m3Dot3(cp->rA, c->normal));
             cp->normalMass = EffectiveMass(c, cp->rA, cp->rB, c->normal);
-            cp->tangentMass1 = EffectiveMass(c, cp->rA, cp->rB, c->t1);
-            cp->tangentMass2 = EffectiveMass(c, cp->rA, cp->rB, c->t2);
             cp->relativeVelocity =
                 m3Dot3(m3Sub3(VelocityAt(world, bodyB, cp->rB), VelocityAt(world, bodyA, cp->rA)),
                        c->normal);
             cp->normalImpulse = manifold->points[k].normalImpulse;
-            cp->tangentImpulse1 = manifold->points[k].tangentImpulse1;
-            cp->tangentImpulse2 = manifold->points[k].tangentImpulse2;
             cp->totalNormalImpulse = 0.0f;
         }
+
+        // Central friction preparation: mean anchors, per-point
+        // lever arms for the twist budget, the coupled 2x2 tangent
+        // mass inverted once, and warm impulses read from the
+        // manifold's WORLD-frame storage so a rotated tangent basis
+        // cannot corrupt the carry.
+        m3Vec3 originA = {0.0f, 0.0f, 0.0f};
+        m3Vec3 originB = {0.0f, 0.0f, 0.0f};
+        for (int32_t k = 0; k < c->pointCount; ++k)
+        {
+            originA = m3Add3(originA, c->points[k].rA);
+            originB = m3Add3(originB, c->points[k].rB);
+        }
+        m3real invCount = 1.0f / (m3real)c->pointCount;
+        c->originA = m3MulSV3(invCount, originA);
+        c->originB = m3MulSV3(invCount, originB);
+        for (int32_t k = 0; k < c->pointCount; ++k)
+        {
+            c->points[k].leverArm = m3Length3(m3Sub3(c->points[k].rA, c->originA));
+        }
+
+        m3Vec3 rtA1 = m3Cross3(c->originA, c->t1);
+        m3Vec3 rtA2 = m3Cross3(c->originA, c->t2);
+        m3Vec3 rtB1 = m3Cross3(c->originB, c->t1);
+        m3Vec3 rtB2 = m3Cross3(c->originB, c->t2);
+        m3real k11 = c->invMassA + c->invMassB + m3Dot3(rtA1, m3MulMV3(c->invIA, rtA1)) +
+                     m3Dot3(rtB1, m3MulMV3(c->invIB, rtB1));
+        m3real k22 = c->invMassA + c->invMassB + m3Dot3(rtA2, m3MulMV3(c->invIA, rtA2)) +
+                     m3Dot3(rtB2, m3MulMV3(c->invIB, rtB2));
+        m3real k12 =
+            m3Dot3(rtA1, m3MulMV3(c->invIA, rtA2)) + m3Dot3(rtB1, m3MulMV3(c->invIB, rtB2));
+        m3real det = k11 * k22 - k12 * k12;
+        if (det > 0.0f)
+        {
+            m3real invDet = 1.0f / det;
+            c->frictionK11 = k22 * invDet;
+            c->frictionK22 = k11 * invDet;
+            c->frictionK12 = -k12 * invDet;
+        }
+        else
+        {
+            c->frictionK11 = 0.0f;
+            c->frictionK22 = 0.0f;
+            c->frictionK12 = 0.0f;
+        }
+        c->frictionImpulse1 = m3Dot3(manifold->frictionImpulse, c->t1);
+        c->frictionImpulse2 = m3Dot3(manifold->frictionImpulse, c->t2);
+
+        m3Vec3 iSumN = m3Add3(m3MulMV3(c->invIA, c->normal), m3MulMV3(c->invIB, c->normal));
+        m3real twistK = m3Dot3(c->normal, iSumN);
+        c->twistMass = twistK > 0.0f ? 1.0f / twistK : 0.0f;
+        c->twistImpulse = manifold->twistImpulse;
     }
     return count;
 }
@@ -233,10 +293,21 @@ static void WarmStartOne(m3World* world, m3ContactConstraint* c)
     for (int32_t k = 0; k < c->pointCount; ++k)
     {
         m3ConstraintPoint* cp = &c->points[k];
-        m3Vec3 impulse = m3Add3(
-            m3MulSV3(cp->normalImpulse, c->normal),
-            m3Add3(m3MulSV3(cp->tangentImpulse1, c->t1), m3MulSV3(cp->tangentImpulse2, c->t2)));
-        ApplyImpulse(world, c, impulse, cp->rA, cp->rB);
+        ApplyImpulse(world, c, m3MulSV3(cp->normalImpulse, c->normal), cp->rA, cp->rB);
+    }
+    m3Vec3 f = m3Add3(m3MulSV3(c->frictionImpulse1, c->t1), m3MulSV3(c->frictionImpulse2, c->t2));
+    ApplyImpulse(world, c, f, c->originA, c->originB);
+    // Twist and rolling are pure angular rows.
+    m3Vec3 tw = m3Add3(m3MulSV3(c->twistImpulse, c->normal), c->rollingImpulse);
+    if (world->types[c->bodyA] == (uint8_t)m3_dynamicBody)
+    {
+        world->angularVelocities[c->bodyA] =
+            m3Sub3(world->angularVelocities[c->bodyA], m3MulMV3(c->invIA, tw));
+    }
+    if (world->types[c->bodyB] == (uint8_t)m3_dynamicBody)
+    {
+        world->angularVelocities[c->bodyB] =
+            m3Add3(world->angularVelocities[c->bodyB], m3MulMV3(c->invIB, tw));
     }
 }
 static void SolveOneContact(m3World* world, m3ContactConstraint* c, const m3Vec3* deltaPos,
@@ -246,7 +317,11 @@ static void SolveOneContact(m3World* world, m3ContactConstraint* c, const m3Vec3
 
         // Normal rows first, then friction rows, per the reference
         // schedule. The Jacobian keeps the fixed prepare-time anchors;
-        // rotated anchors only measure the separation drift.
+        // rotated anchors only measure the separation drift. The
+        // friction budgets are PASS-LOCAL (rev 21): the sum of live
+        // normal accumulators in this pass, not a cross-pass total.
+        m3real passNormal = 0.0f;
+        m3real twistLimit = 0.0f;
         for (int32_t k = 0; k < c->pointCount; ++k)
         {
             m3ConstraintPoint* cp = &c->points[k];
@@ -277,7 +352,9 @@ static void SolveOneContact(m3World* world, m3ContactConstraint* c, const m3Vec3
             m3real newImpulse = m3MaxF(cp->normalImpulse + impulse, 0.0f);
             impulse = newImpulse - cp->normalImpulse;
             cp->normalImpulse = newImpulse;
-            cp->totalNormalImpulse += newImpulse; // the reference sum
+            cp->totalNormalImpulse += newImpulse; // the restitution gate
+            passNormal += newImpulse;
+            twistLimit += cp->leverArm * newImpulse;
             ApplyImpulse(world, c, m3MulSV3(impulse, c->normal), cp->rA, cp->rB);
         }
 
@@ -290,50 +367,54 @@ static void SolveOneContact(m3World* world, m3ContactConstraint* c, const m3Vec3
             return;
         }
 
-        for (int32_t k = 0; k < c->pointCount; ++k)
+        // Central twist friction: brakes spin about the contact
+        // normal, budgeted by the lever-arm-weighted normal sum
+        // (a single-point manifold has no twist authority).
         {
-            m3ConstraintPoint* cp = &c->points[k];
-            m3Vec3 vrel =
-                m3Sub3(VelocityAt(world, c->bodyB, cp->rB), VelocityAt(world, c->bodyA, cp->rA));
-            m3real vt1 = m3Dot3(vrel, c->t1);
-            m3real vt2 = m3Dot3(vrel, c->t2);
-            m3real f1 = cp->tangentImpulse1 - cp->tangentMass1 * vt1;
-            m3real f2 = cp->tangentImpulse2 - cp->tangentMass2 * vt2;
-            m3real maxFriction = c->friction * cp->totalNormalImpulse;
-            m3real mag2 = f1 * f1 + f2 * f2;
-            if (mag2 > maxFriction * maxFriction)
+            m3Vec3 wRel =
+                m3Sub3(world->angularVelocities[c->bodyB], world->angularVelocities[c->bodyA]);
+            m3real twistSpeed = m3Dot3(c->normal, wRel);
+            m3real maxTwist = c->friction * twistLimit;
+            m3real delta = -c->twistMass * twistSpeed;
+            m3real oldTwist = c->twistImpulse;
+            m3real newTwist = oldTwist + delta;
+            if (newTwist < -maxTwist)
             {
-                m3real mag = sqrtf(mag2);
-                m3real scale = mag > 0.0f ? maxFriction / mag : 0.0f;
-                f1 *= scale;
-                f2 *= scale;
+                newTwist = -maxTwist;
             }
-            m3real d1 = f1 - cp->tangentImpulse1;
-            m3real d2 = f2 - cp->tangentImpulse2;
-            cp->tangentImpulse1 = f1;
-            cp->tangentImpulse2 = f2;
-            ApplyImpulse(world, c, m3Add3(m3MulSV3(d1, c->t1), m3MulSV3(d2, c->t2)), cp->rA,
-                         cp->rB);
+            else if (newTwist > maxTwist)
+            {
+                newTwist = maxTwist;
+            }
+            delta = newTwist - oldTwist;
+            c->twistImpulse = newTwist;
+            m3Vec3 tw = m3MulSV3(delta, c->normal);
+            if (world->types[c->bodyA] == (uint8_t)m3_dynamicBody)
+            {
+                world->angularVelocities[c->bodyA] =
+                    m3Sub3(world->angularVelocities[c->bodyA], m3MulMV3(c->invIA, tw));
+            }
+            if (world->types[c->bodyB] == (uint8_t)m3_dynamicBody)
+            {
+                world->angularVelocities[c->bodyB] =
+                    m3Add3(world->angularVelocities[c->bodyB], m3MulMV3(c->invIB, tw));
+            }
         }
 
-        // Rolling resistance (6-3, the reference recipe): a pure
+        // Rolling resistance (6-3, aligned fully in rev 21): a pure
         // angular row braking relative rotation, capped by the
-        // step-long normal work times the mixed coefficient. The
-        // accumulator starts cold each step (persistence would
-        // grow the snapshot for a brake). Without this row a
-        // sphere pile never stops rolling and never sleeps.
+        // pass-local normal budget, warm across steps through the
+        // manifold like the reference. The 6-3 cold start only
+        // held up because the inflated cross-pass budget hid it.
+        // Without this row a sphere pile never stops rolling and
+        // never sleeps.
         if (c->rollingResistance > 0.0f)
         {
             m3Vec3 wRel =
                 m3Sub3(world->angularVelocities[c->bodyB], world->angularVelocities[c->bodyA]);
             m3Vec3 delta = m3MulSV3(-1.0f, Solve3(&c->rollingK, wRel));
             m3Vec3 accum = m3Add3(c->rollingImpulse, delta);
-            m3real total = 0.0f;
-            for (int32_t k = 0; k < c->pointCount; ++k)
-            {
-                total += c->points[k].totalNormalImpulse;
-            }
-            m3real maxRoll = c->rollingResistance * total;
+            m3real maxRoll = c->rollingResistance * passNormal; // pass-local (rev 21)
             m3real mag2 = m3Dot3(accum, accum);
             if (mag2 > maxRoll * maxRoll && mag2 > 0.0f)
             {
@@ -345,6 +426,32 @@ static void SolveOneContact(m3World* world, m3ContactConstraint* c, const m3Vec3
                 m3Sub3(world->angularVelocities[c->bodyA], m3MulMV3(c->invIA, delta));
             world->angularVelocities[c->bodyB] =
                 m3Add3(world->angularVelocities[c->bodyB], m3MulMV3(c->invIB, delta));
+        }
+
+        // Central friction: one coupled 2x2 row at the mean anchors,
+        // clamped to the pass-local Coulomb circle.
+        {
+            m3Vec3 vrel = m3Sub3(VelocityAt(world, c->bodyB, c->originB),
+                                 VelocityAt(world, c->bodyA, c->originA));
+            m3real vt1 = m3Dot3(vrel, c->t1);
+            m3real vt2 = m3Dot3(vrel, c->t2);
+            m3real f1 = c->frictionImpulse1 - (c->frictionK11 * vt1 + c->frictionK12 * vt2);
+            m3real f2 = c->frictionImpulse2 - (c->frictionK12 * vt1 + c->frictionK22 * vt2);
+            m3real maxFriction = c->friction * passNormal;
+            m3real mag2 = f1 * f1 + f2 * f2;
+            if (mag2 > maxFriction * maxFriction)
+            {
+                m3real mag = sqrtf(mag2);
+                m3real scale = mag > 0.0f ? maxFriction / mag : 0.0f;
+                f1 *= scale;
+                f2 *= scale;
+            }
+            m3real d1 = f1 - c->frictionImpulse1;
+            m3real d2 = f2 - c->frictionImpulse2;
+            c->frictionImpulse1 = f1;
+            c->frictionImpulse2 = f2;
+            ApplyImpulse(world, c, m3Add3(m3MulSV3(d1, c->t1), m3MulSV3(d2, c->t2)), c->originA,
+                         c->originB);
         }
     }
 }
@@ -1906,9 +2013,11 @@ static void StoreImpulses(m3World* world, m3ContactConstraint* constraints, int3
         for (int32_t k = 0; k < c->pointCount; ++k)
         {
             manifold->points[k].normalImpulse = c->points[k].normalImpulse;
-            manifold->points[k].tangentImpulse1 = c->points[k].tangentImpulse1;
-            manifold->points[k].tangentImpulse2 = c->points[k].tangentImpulse2;
         }
+        manifold->frictionImpulse =
+            m3Add3(m3MulSV3(c->frictionImpulse1, c->t1), m3MulSV3(c->frictionImpulse2, c->t2));
+        manifold->twistImpulse = c->twistImpulse;
+        manifold->rollingImpulse = c->rollingImpulse;
     }
 }
 // ---------------------------------------------------------------

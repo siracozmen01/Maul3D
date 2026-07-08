@@ -31,7 +31,25 @@
 // new-capability-only, harmless in effect but a discipline miss,
 // recorded here so the ledger stays honest).
 #define M3_SOLVER_REV                                                                              \
-    20 // rev 20: the reference contact friction
+    21 // rev 21: central friction, the reference
+       // 3D layout. One coupled 2x2 tangent row
+       // at the manifold's mean anchors plus a
+       // twist row about the normal, warm-stored
+       // in the world frame; friction and rolling
+       // budgets are PASS-LOCAL sums of live
+       // normal accumulators. Rev 20 read a
+       // cross-pass sum (a misreading of the
+       // reference: its totalNormalImpulse is a
+       // local variable per pass), inflating the
+       // cone up to 8x; and its per-corner
+       // tangent rows handed gravity a fake
+       // pitch lever. A shoved crate stuck in
+       // centimeters, dug its leading edge, and
+       // hopped. Convicted against Maul2D
+       // (textbook mu*g decay, identical scene)
+       // and box3d contact_solver.c; the slide
+       // law test pins Coulomb for good.
+       // rev 20: the reference contact friction
        // budget and schedule (6-3). The friction
        // cap now reads the STEP-LONG sum of
        // normal impulses (the reference's
@@ -289,13 +307,11 @@ typedef struct m3ManifoldPoint
     m3Vec3 anchorB;
     m3real separation; // negative = penetration, positive = speculative
     m3real normalImpulse;
-    m3real tangentImpulse1;
-    m3real tangentImpulse2;
     uint16_t id;    // feature id (spheres have exactly one feature: 0)
     uint16_t flags; // bit 0: persisted (impulses carried this rebuild)
 } m3ManifoldPoint;
 
-_Static_assert(sizeof(m3ManifoldPoint) == 44, "manifold point must be padding-free");
+_Static_assert(sizeof(m3ManifoldPoint) == 36, "manifold point must be padding-free");
 
 // Up to four contact points (2b-5): a hull face on a plane or a face
 // pair needs four; spheres use one. Feature ids identify points across
@@ -306,10 +322,19 @@ typedef struct m3Manifold
 {
     m3Vec3 normal; // from shape A to shape B, world frame
     int32_t pointCount;
+    // Central friction warm-start payload (rev 21): stored in the
+    // WORLD frame so the next step's tangent basis re-projects it.
+    // Rolling joins it: the reference warm-starts the rolling row
+    // every substep, and the 6-3 cold-start deviation only looked
+    // adequate under the inflated cross-pass budget it shipped
+    // beside (the ledger stays honest).
+    m3Vec3 frictionImpulse;
+    m3real twistImpulse;
+    m3Vec3 rollingImpulse;
     m3ManifoldPoint points[M3_MANIFOLD_MAX_POINTS];
 } m3Manifold;
 
-_Static_assert(sizeof(m3Manifold) == 192, "manifold must be padding-free");
+_Static_assert(sizeof(m3Manifold) == 188, "manifold must be padding-free");
 
 // Journal payload for shape creation (replay re-derives mass).
 typedef struct m3CreateShapeOp

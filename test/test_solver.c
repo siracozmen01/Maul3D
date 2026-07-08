@@ -171,6 +171,58 @@ static void TestFrictionSlows(void)
     CHECK(vx[0] > 4.9, "the frictionless ball keeps its speed");
 }
 
+static void TestSlideDistanceLaw(void)
+{
+    // Coulomb's slide law: a settled crate shoved at v slides
+    // v*v/(2*mu*g) with decel mu*g, never launches upward, never
+    // rebounds. Rev 20 summed the friction budget across the eight
+    // solve passes of a step, inflating the cone up to 8x: the
+    // crate stuck in centimeters, dug its leading edge, and hopped.
+    // Convicted against Maul2D (textbook decay on the identical
+    // scene) and the box3d reference (pass-local budget, central
+    // friction). This is the rev 21 law.
+    double slides[2];
+    const double shoves[2] = {3.0, 0.5};
+    for (int32_t pass = 0; pass < 2; ++pass)
+    {
+        m3WorldId world = MakeWorld();
+        AddGroundPlane(world, 0.6f);
+        m3BodyDef bd = m3DefaultBodyDef();
+        bd.type = m3_dynamicBody;
+        bd.position = (m3Pos3){0.0, 0.5, 0.0};
+        m3BodyId crate = m3CreateBody(world, &bd);
+        m3ShapeDef sd = m3DefaultShapeDef();
+        sd.friction = 0.6f;
+        m3CreateBoxShape(crate, &sd, (m3Vec3){0.5f, 0.5f, 0.5f});
+        StepN(world, 60);
+        double x0 = m3Body_GetPosition(crate).x;
+        m3Body_ApplyLinearImpulse(crate, (m3Vec3){(float)shoves[pass], 0.0f, 0.0f});
+        double maxVy = 0.0;
+        double minVx = 0.0;
+        for (int32_t i = 0; i < 120; ++i)
+        {
+            m3World_Step(world, 1.0f / 60.0f, 4);
+            m3Vec3 v = m3Body_GetLinearVelocity(crate);
+            if ((double)v.y > maxVy)
+            {
+                maxVy = (double)v.y;
+            }
+            if ((double)v.x < minVx)
+            {
+                minVx = (double)v.x;
+            }
+        }
+        slides[pass] = m3Body_GetPosition(crate).x - x0;
+        CHECK(maxVy < 0.05, "a horizontal shove never launches the crate");
+        CHECK(minVx > -0.05, "friction never reverses the slide");
+        m3DestroyWorld(world);
+    }
+    // mu*g = 6: theory 0.75 m and 0.0208 m. Generous bands absorb
+    // the manifold's finite anchor spread, not a broken cone.
+    CHECK(slides[0] > 0.60 && slides[0] < 0.90, "the fast shove slides by the law");
+    CHECK(slides[1] > 0.014 && slides[1] < 0.028, "the slow shove slides by the law");
+}
+
 static void TestReplayEquality(void)
 {
     // In-process replay: the same construction stepped twice gives the
@@ -1317,6 +1369,7 @@ int main(void)
     TestStandingStack();
     TestRestitution();
     TestFrictionSlows();
+    TestSlideDistanceLaw();
     TestReplayEquality();
     TestBoxRests();
     TestCapsuleRestsFlat();

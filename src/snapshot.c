@@ -22,7 +22,9 @@
 #endif
 
 #define M3_SNAPSHOT_MAGIC   0x4D33534Eu // 'M3SN'
-#define M3_SNAPSHOT_VERSION 31u
+#define M3_SNAPSHOT_VERSION 32u
+// v32: central friction manifold payload replaces per-point
+//      tangent impulses (solver rev 21).
 // v31: runtime body control state (8-3).
 // v30: host force and torque accumulators (8-2).
 // v29: collision filters (8-1).
