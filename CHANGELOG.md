@@ -4,6 +4,34 @@ All notable changes to Maul3D. Versions are tags on green CI SHAs;
 every entry's determinism gates were verified across all CI cells at
 tag time.
 
+## v1.2 (2026-07-08)
+
+The vehicle release: deterministic raycast vehicles on the full
+terrain stack, all additive under the 1.x freeze.
+
+- The raycast vehicle (`m3CreateVehicle`): wheels are suspension
+  ray casts, not bodies; spring and damper from hertz and zeta
+  with per-wheel mass shares; two-phase impulse application from
+  pass-start velocities; snapshot v24/v25; journal ops 19..21
+  with id verification; the chassis cascade rule.
+- Drive, steer, brake (`m3Vehicle_SetCommands`): journaled command
+  STATE with range clamps and hostile no-ops; flat drive force,
+  brake that never reverses rolling, lateral kill by the solver's
+  effective mass split across wheels; ONE friction circle per
+  wheel against the suspension load (the surrender is the drift).
+  Tangent impulses at the wheel hub. Wheel spin as render state.
+- Terrain: welded voxel seams, quarter-cell ramps, walls, fragment
+  storms, and heightfields all driven and pinned; VoxelWakeRegion
+  wakes sleeping chassis whose wheel rays overlap a carved region
+  (a parked car drops the step its deck vanishes).
+- Surface-relative tires (5-4): a car parked on a ferry rides it,
+  brakes hold against the deck under it, and Newton's third law
+  applies wheel impulses back onto dynamic ground (driving on a
+  slab kicks the slab).
+- MANUAL chapter: vehicles.
+- Testbed: the circuit scene (WASD drive, chase camera, SPACE
+  handbrake, a fort to crash through).
+
 ## v1.1 (2026-07-08)
 
 The game-ready release: generic shape casts, the full joint set,

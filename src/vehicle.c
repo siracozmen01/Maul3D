@@ -261,7 +261,24 @@ void m3VehicleApplySuspension(m3World* world, float dt)
             {
                 forward = m3MulSV3(1.0f / sqrtf(fLen2), forward);
                 m3Vec3 side = m3Cross3(n, forward);
-                m3Vec3 vContact = m3Add3(v0, m3Cross3(w0, hubArm));
+                // Tire velocities are RELATIVE to the surface under
+                // the wheel: a car parked on a ferry must ride the
+                // ferry, not fight it (an absolute kill drags every
+                // moving platform to a halt under its passenger).
+                int32_t hitShape = hit.shape.index1 - 1;
+                int32_t hitBody = world->shapeBody[hitShape];
+                m3Vec3 vSurf = {0.0f, 0.0f, 0.0f};
+                if (world->types[hitBody] != (uint8_t)m3_staticBody)
+                {
+                    m3Vec3 rlcH =
+                        m3RotateVec3(world->transforms[hitBody].q, world->localCenters[hitBody]);
+                    m3Vec3 armH = {(m3real)(hit.point.x - world->transforms[hitBody].p.x) - rlcH.x,
+                                   (m3real)(hit.point.y - world->transforms[hitBody].p.y) - rlcH.y,
+                                   (m3real)(hit.point.z - world->transforms[hitBody].p.z) - rlcH.z};
+                    vSurf = m3Add3(world->linearVelocities[hitBody],
+                                   m3Cross3(world->angularVelocities[hitBody], armH));
+                }
+                m3Vec3 vContact = m3Sub3(m3Add3(v0, m3Cross3(w0, hubArm)), vSurf);
                 m3real vLon = m3Dot3(vContact, forward);
                 m3real vLat = m3Dot3(vContact, side);
 
@@ -313,6 +330,26 @@ void m3VehicleApplySuspension(m3World* world, float dt)
             impulses[applied] = total;
             arms[applied] = hubArm;
             applied += 1;
+
+            // Newton's third law for dynamic ground (5-4): a wheel
+            // pressing or driving on a fragment pushes the fragment
+            // back, or cars would mint momentum from loose rubble.
+            int32_t under = world->shapeBody[hit.shape.index1 - 1];
+            if (world->types[under] == (uint8_t)m3_dynamicBody && world->invMass[under] > 0.0f)
+            {
+                m3Vec3 rlcU = m3RotateVec3(world->transforms[under].q, world->localCenters[under]);
+                m3Vec3 armU = {(m3real)(hit.point.x - world->transforms[under].p.x) - rlcU.x,
+                               (m3real)(hit.point.y - world->transforms[under].p.y) - rlcU.y,
+                               (m3real)(hit.point.z - world->transforms[under].p.z) - rlcU.z};
+                m3Vec3 back = m3MulSV3(-1.0f, total);
+                world->linearVelocities[under] =
+                    m3Add3(world->linearVelocities[under], m3MulSV3(world->invMass[under], back));
+                world->angularVelocities[under] =
+                    m3Add3(world->angularVelocities[under],
+                           m3MulMV3(m3WorldInvInertia(world, under), m3Cross3(armU, back)));
+                world->awake[under] = 1;
+                world->sleepTimes[under] = 0.0f;
+            }
         }
         for (int32_t a = 0; a < applied; ++a)
         {

@@ -626,6 +626,127 @@ static void TestPoolAndCascade(void)
     m3DestroyWorld(world);
 }
 
+static void TestFerryRideAndChurn(void)
+{
+    // Red team (5-4): a car parked on a moving kinematic ferry
+    // rides it (the tire works in surface-relative velocity), and
+    // stops with it; then vehicle churn twins prove the pool under
+    // create/destroy load.
+    m3WorldId world = PlaneWorld();
+    m3ShapeDef sd = m3DefaultShapeDef();
+    m3BodyDef fd = m3DefaultBodyDef();
+    fd.type = m3_kinematicBody;
+    fd.position = (m3Pos3){0.0, 1.0, 0.0};
+    m3BodyId ferry = m3CreateBody(world, &fd);
+    m3CreateBoxShape(ferry, &sd, (m3Vec3){3.0f, 0.25f, 3.0f}); // top at 1.25
+
+    m3BodyId chassis;
+    m3VehicleId car = MakeCar(world, (m3Pos3){0.0, 2.5, 0.0}, &chassis);
+    CHECK(m3Vehicle_IsValid(car), "the ferry car creates");
+    for (int32_t i = 0; i < 120; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+    }
+    double x0 = m3Body_GetPosition(chassis).x;
+    // Handbrake on: free-rolling wheels have no longitudinal grip
+    // by design (that is what wheels are), so parking on a ferry
+    // that sails along the car's forward axis takes the brake.
+    m3Vehicle_SetCommands(car, 0.0f, 0.0f, 1.0f);
+    m3Body_SetLinearVelocity(ferry, (m3Vec3){0.6f, 0.0f, 0.0f});
+    for (int32_t i = 0; i < 120; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+    }
+    m3Pos3 p = m3Body_GetPosition(chassis);
+    CHECK(p.x - x0 > 0.9 && p.x - x0 < 1.3, "the parked car rides the ferry");
+    m3Body_SetLinearVelocity(ferry, (m3Vec3){0.0f, 0.0f, 0.0f});
+    for (int32_t i = 0; i < 90; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+    }
+    m3Vec3 v = m3Body_GetLinearVelocity(chassis);
+    CHECK(fabsf(v.x) < 0.05f, "the car stops with its ferry");
+    m3DestroyWorld(world);
+
+    // Churn twins: create, drive, destroy, repeat, on two worlds.
+    uint64_t hashes[2];
+    for (int32_t run = 0; run < 2; ++run)
+    {
+        m3WorldId sea = PlaneWorld();
+        for (int32_t cycle = 0; cycle < 6; ++cycle)
+        {
+            m3BodyId body;
+            m3VehicleId veh = MakeCar(sea, (m3Pos3){(double)(cycle % 3) * 3.0, 1.0, 0.0}, &body);
+            CHECK(m3Vehicle_IsValid(veh), "the churn car creates");
+            m3Vehicle_SetCommands(veh, 0.7f, cycle % 2 == 0 ? 0.4f : -0.4f, 0.0f);
+            for (int32_t i = 0; i < 30; ++i)
+            {
+                m3World_Step(sea, 1.0f / 60.0f, 4);
+            }
+            if (cycle % 2 == 0)
+            {
+                m3DestroyVehicle(veh); // the chassis remains a plain body
+            }
+            else
+            {
+                m3DestroyBody(body); // the cascade path
+            }
+        }
+        hashes[run] = m3World_Hash(sea);
+        m3DestroyWorld(sea);
+    }
+    CHECK(hashes[0] == hashes[1], "twin churns are bit-identical");
+}
+
+static void TestDriveOnFragment(void)
+{
+    // Newton holds on loose ground: a car standing on a free
+    // dynamic slab presses it (the slab feels the weight) and
+    // driving kicks the slab backward while the car goes forward.
+    m3WorldDef def = m3DefaultWorldDef();
+    def.bodyCapacity = 16;
+    def.shapeCapacity = 16;
+    def.vehicleCapacity = 1;
+    m3WorldId world = m3CreateWorld(&def);
+    m3BodyDef gd = m3DefaultBodyDef();
+    m3BodyId ground = m3CreateBody(world, &gd);
+    m3ShapeDef gs = m3DefaultShapeDef();
+    gs.friction = 0.02f; // ice under the slab: the kick shows
+    m3Plane floor = {{0.0f, 1.0f, 0.0f}, 0.0f};
+    m3CreatePlaneShape(ground, &gs, &floor);
+
+    m3BodyDef slabDef = m3DefaultBodyDef();
+    slabDef.type = m3_dynamicBody;
+    slabDef.position = (m3Pos3){0.0, 0.15, 0.0};
+    m3BodyId slab = m3CreateBody(world, &slabDef);
+    m3ShapeDef ss = m3DefaultShapeDef();
+    ss.density = 500.0f; // 4 x 0.3 x 4 slab: 2400 kg
+    ss.friction = 0.02f; // combined with the icy plane the static
+                         // budget stays under the drive reaction
+                         // (the first draft left default friction
+                         // and the solver rightly pinned the slab)
+    m3CreateBoxShape(slab, &ss, (m3Vec3){2.0f, 0.15f, 2.0f});
+
+    m3BodyId chassis;
+    m3VehicleId car = MakeCar(world, (m3Pos3){0.0, 1.2, 0.0}, &chassis);
+    for (int32_t i = 0; i < 150; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+    }
+    m3Vec3 slabRest = m3Body_GetLinearVelocity(slab);
+    CHECK(fabsf(slabRest.x) < 0.01f, "the loaded slab rests");
+    m3Vehicle_SetCommands(car, 1.0f, 0.0f, 0.0f);
+    for (int32_t i = 0; i < 60; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+    }
+    m3Vec3 vCar = m3Body_GetLinearVelocity(chassis);
+    m3Vec3 vSlab = m3Body_GetLinearVelocity(slab);
+    CHECK(vCar.x > 0.5f, "the car drives off the slab");
+    CHECK(vSlab.x < -0.01f, "the slab takes the drive reaction backward");
+    m3DestroyWorld(world);
+}
+
 static void TestVehicleContracts(void)
 {
     // Hostile defs refuse with the null id, loudly documented.
@@ -708,6 +829,8 @@ int main(void)
     TestCarveUnderParkedCar();
     TestStormUnderMovingCar();
     TestHeightfieldDrive();
+    TestFerryRideAndChurn();
+    TestDriveOnFragment();
     TestBounceTwinsAndRollback();
     TestPoolAndCascade();
     TestVehicleContracts();

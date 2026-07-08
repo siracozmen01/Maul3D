@@ -19,6 +19,7 @@
 #include "maul3d/draw.h"
 #include "maul3d/joint.h"
 #include "maul3d/shape.h"
+#include "maul3d/vehicle.h"
 #include "raylib.h"
 
 #include <math.h>
@@ -82,6 +83,8 @@ typedef struct tbScene
     m3WorldId world;
     m3ShapeId chunk;    // the carvable chunk, if the scene has one
     m3CharacterId hero; // the playable walker, if the scene has one
+    m3VehicleId car;    // the playable car, if the scene has one
+    m3BodyId carBody;   // its chassis (camera and wheel draw)
     m3BodyId ferry;     // the host-driven platform, if any
     const char* name;
     const char* blurb;
@@ -95,6 +98,7 @@ static m3WorldDef SceneDef(void)
     def.jointCapacity = 32;
     def.voxelCapacity = 2;
     def.characterCapacity = 2;
+    def.vehicleCapacity = 2;
     return def;
 }
 
@@ -381,8 +385,101 @@ static tbScene SceneWalker(void)
     return scene;
 }
 
+// Scene 5: the circuit. Drive the raycast car: WASD, SPACE
+// handbrake, a ramp to jump and a fort wall to crash through, all
+// of it rewindable.
+static tbScene SceneCircuit(void)
+{
+    tbScene scene;
+    memset(&scene, 0, sizeof(scene));
+    scene.name = "circuit";
+    scene.blurb = "W/S throttle, A/D steer, SPACE handbrake, crash the fort";
+    m3WorldDef def = SceneDef();
+    scene.world = m3CreateWorld(&def);
+    AddFloor(scene.world);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    sd.friction = 0.6f;
+
+    // The fort to crash through (unit cells, same bones as the keep).
+    static uint8_t voxels[16 * 16 * 16];
+    memset(voxels, 0, sizeof(voxels));
+    for (int32_t z = 0; z < 16; ++z)
+    {
+        for (int32_t x = 0; x < 16; ++x)
+        {
+            voxels[x + 16 * (0 + 16 * z)] = 1;
+        }
+    }
+    for (int32_t y = 1; y <= 5; ++y)
+    {
+        for (int32_t i = 2; i <= 13; ++i)
+        {
+            voxels[i + 16 * (y + 16 * 2)] = 1;
+            voxels[i + 16 * (y + 16 * 13)] = 1;
+            voxels[2 + 16 * (y + 16 * i)] = 1;
+            voxels[13 + 16 * (y + 16 * i)] = 1;
+        }
+    }
+    m3BodyDef kd = m3DefaultBodyDef();
+    kd.position = (m3Pos3){4.0, 0.0, -8.0};
+    m3BodyId keep = m3CreateBody(scene.world, &kd);
+    scene.chunk = m3CreateVoxelChunkShape(keep, &sd, voxels, NULL, 1.0f);
+
+    // A quarter-cell ramp west of the fort.
+    static uint8_t rampVox[16 * 16 * 16];
+    memset(rampVox, 0, sizeof(rampVox));
+    for (int32_t z = 0; z < 16; ++z)
+    {
+        for (int32_t x = 0; x < 16; ++x)
+        {
+            int32_t top = x / 3;
+            for (int32_t y = 0; y <= top; ++y)
+            {
+                rampVox[x + 16 * (y + 16 * z)] = 1;
+            }
+        }
+    }
+    m3BodyDef rd = m3DefaultBodyDef();
+    rd.position = (m3Pos3){-18.0, 0.0, -2.0};
+    m3CreateVoxelChunkShape(m3CreateBody(scene.world, &rd), &sd, rampVox, NULL, 0.25f);
+
+    // Crates around the yard for the bumper.
+    m3ShapeDef cs = m3DefaultShapeDef();
+    cs.friction = 0.4f;
+    for (int32_t k = 0; k < 6; ++k)
+    {
+        m3BodyDef bd = m3DefaultBodyDef();
+        bd.type = m3_dynamicBody;
+        bd.position = (m3Pos3){-6.0 + (double)(k % 3) * 2.0, 0.45, 2.0 + (double)(k / 3) * 2.0};
+        m3CreateBoxShape(m3CreateBody(scene.world, &bd), &cs, (m3Vec3){0.4f, 0.4f, 0.4f});
+    }
+
+    // The car.
+    m3BodyDef cd = m3DefaultBodyDef();
+    cd.type = m3_dynamicBody;
+    cd.position = (m3Pos3){-10.0, 1.2, 4.0};
+    scene.carBody = m3CreateBody(scene.world, &cd);
+    m3ShapeDef bodyShape = m3DefaultShapeDef();
+    bodyShape.density = 300.0f;
+    bodyShape.friction = 0.3f;
+    m3CreateBoxShape(scene.carBody, &bodyShape, (m3Vec3){1.0f, 0.25f, 0.5f});
+    m3VehicleDef vd = m3DefaultVehicleDef();
+    vd.chassis = scene.carBody;
+    vd.wheelCount = 4;
+    for (int32_t w = 0; w < 4; ++w)
+    {
+        vd.wheels[w].anchor =
+            (m3Vec3){(w & 1) != 0 ? 0.8f : -0.8f, -0.25f, (w & 2) != 0 ? 0.45f : -0.45f};
+        vd.wheels[w].driven = true;
+        vd.wheels[w].steerable = (w & 1) != 0;
+    }
+    scene.car = m3CreateVehicle(scene.world, &vd);
+    return scene;
+}
+
 typedef tbScene (*SceneBuilder)(void);
-static const SceneBuilder s_builders[] = {SceneKeep, SceneRain, SceneMachines, SceneWalker};
+static const SceneBuilder s_builders[] = {SceneKeep, SceneRain, SceneMachines, SceneWalker,
+                                          SceneCircuit};
 #define SCENE_COUNT ((int32_t)(sizeof(s_builders) / sizeof(s_builders[0])))
 
 // ------------------------------------------------------ host recipes
@@ -520,7 +617,14 @@ int main(void)
         Vector3 forward = {-cosf(s_yaw), 0.0f, -sinf(s_yaw)};
         Vector3 rightv = {-forward.z, 0.0f, forward.x};
         bool walkerScene = m3Character_IsValid(scene.hero);
-        if (!walkerScene)
+        bool driveScene = m3Vehicle_IsValid(scene.car);
+        if (driveScene)
+        {
+            // Chase target: shadow the car.
+            m3Pos3 cp = m3Body_GetPosition(scene.carBody);
+            s_target = (Vector3){(float)cp.x, (float)cp.y + 1.0f, (float)cp.z};
+        }
+        else if (!walkerScene)
         {
             if (IsKeyDown(KEY_W))
             {
@@ -621,7 +725,7 @@ int main(void)
         }
 
         // ---- time: pause, step, rewind, run
-        if (IsKeyPressed(KEY_SPACE) && !walkerScene)
+        if (IsKeyPressed(KEY_SPACE) && !walkerScene && !driveScene)
         {
             paused = !paused;
         }
@@ -714,6 +818,15 @@ int main(void)
             }
             m3Character_Move(scene.hero, (m3Vec3){wish.x / 60.0f, heroVy / 60.0f, wish.z / 60.0f});
         }
+        // The car: W/S throttle, A/D steer, SPACE handbrake.
+        if (driveScene && !paused)
+        {
+            float throttle = (IsKeyDown(KEY_W) ? 1.0f : 0.0f) - (IsKeyDown(KEY_S) ? 0.7f : 0.0f);
+            float steer = (IsKeyDown(KEY_A) ? 1.0f : 0.0f) - (IsKeyDown(KEY_D) ? 1.0f : 0.0f);
+            float brake = IsKeyDown(KEY_SPACE) ? 1.0f : 0.0f;
+            m3Vehicle_SetCommands(scene.car, throttle, steer, brake);
+        }
+
         // The ferry shuttles between the moat banks, host-driven.
         if (walkerScene && m3Body_IsValid(scene.ferry) && !paused)
         {
@@ -768,6 +881,28 @@ int main(void)
         draw.drawContacts = showContacts;
         draw.drawAabbs = showAabbs;
         m3World_Draw(scene.world, &draw);
+        if (driveScene)
+        {
+            // Wheels are rays, so the debug draw cannot know them:
+            // rebuild the hubs from the def geometry and the read
+            // back compressions (four spheres per frame is nothing;
+            // the rain scene's slideshow was hundreds).
+            m3Pos3 cp = m3Body_GetPosition(scene.carBody);
+            m3Quat cq = m3Body_GetRotation(scene.carBody);
+            for (int32_t w = 0; w < 4; ++w)
+            {
+                m3Vec3 anchor = {(w & 1) != 0 ? 0.8f : -0.8f, -0.25f,
+                                 (w & 2) != 0 ? 0.45f : -0.45f};
+                float suspLen = 0.4f - m3Vehicle_GetCompression(scene.car, w);
+                m3Vec3 local = {anchor.x, anchor.y - suspLen, anchor.z};
+                m3Vec3 world3 = m3RotateVec3(cq, local);
+                Vector3 hub = {(float)cp.x + world3.x, (float)cp.y + world3.y,
+                               (float)cp.z + world3.z};
+                bool on = m3Vehicle_IsWheelGrounded(scene.car, w);
+                DrawSphere(hub, 0.3f,
+                           on ? (Color){80, 200, 120, 255} : (Color){150, 150, 160, 255});
+            }
+        }
         if (look.hit)
         {
             DrawSphere(FromPos(look.point), 0.09f, (Color){255, 240, 120, 255});
@@ -776,7 +911,9 @@ int main(void)
 
         DrawText(TextFormat("Maul3D testbed [%s] %s", scene.name, scene.blurb), 12, 12, 18,
                  RAYWHITE);
-        DrawText(walkerScene
+        DrawText(driveScene ? "RMB orbit | W/S throttle | A/D steer | SPACE handbrake | "
+                              "LMB shoot | B crate | TAB scene | P pause | hold R REWIND"
+                 : walkerScene
                      ? "RMB orbit | WASD walk | SHIFT run | SPACE jump | E carve under feet | "
                        "LMB shoot | B crate | TAB scene | P pause | hold R REWIND"
                      : "RMB orbit | wheel zoom | WASD pan | LMB shoot | E carve | B crate | "

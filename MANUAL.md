@@ -335,6 +335,41 @@ impulses persist in the snapshot (warm starts are simulation
 state). Creation validates everything and returns the null id on
 any violation; destroying a body cascades through its joints.
 
+## Vehicles
+
+A vehicle (`m3CreateVehicle`) is the classic raycast car: the
+chassis is a normal dynamic body you create and shape; wheels are
+NOT bodies. Each wheel is a suspension ray cast from a
+chassis-local anchor (the chassis never blocks its own rays), a
+spring and damper impulse scaled by hertz, zeta, and a per-wheel
+share of the chassis mass, and a tire working in the contact
+plane. All wheel impulses land at the top of the step, before the
+solver, from the same pass-start velocities.
+
+- Commands (`m3Vehicle_SetCommands`: throttle, steer, brake) are
+  journaled STATE, clamped to range; non-finite values are hostile
+  no-ops that never journal; a commanded car wakes. Replay and
+  rollback reproduce a drive to the bit.
+- The chassis-local +x axis is forward. Steerable wheels rotate
+  their frame about the suspension axis by steer * maxSteerAngle.
+- The tire: driven wheels push with a flat driveForce, brakes
+  oppose rolling and never reverse it, and lateral slip dies at
+  the solver's effective mass split across wheels. One friction
+  circle per wheel clamps the tangent sum against tireGrip times
+  the suspension load: what surrenders under a hard corner is the
+  drift.
+- Tires work in SURFACE-RELATIVE velocity: a car parked (brake on)
+  on a moving platform rides it, and wheel impulses push back on
+  dynamic ground (driving across a loose slab kicks the slab).
+- Free-rolling wheels have no longitudinal grip by design; parking
+  on a slope or a ferry takes the brake, like a real car.
+- Destruction interplay: carving the deck from under a parked,
+  even sleeping, car wakes it the same step (wheel rays count as
+  presence for the voxel wake).
+- Suspension compression, wheel contact, and spin angle read back
+  per wheel for rendering; destroying the chassis destroys the
+  vehicle.
+
 ## The character controller
 
 A character (`m3CreateCharacter`) is a kinematic capsule the
