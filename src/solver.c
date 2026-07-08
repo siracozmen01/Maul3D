@@ -195,27 +195,21 @@ static int32_t PrepareContacts(m3World* world, m3ContactConstraint* constraints,
     }
     return count;
 }
-static void WarmStart(m3World* world, m3ContactConstraint* constraints, int32_t count)
+static void WarmStartOne(m3World* world, m3ContactConstraint* c)
 {
-    for (int32_t i = 0; i < count; ++i)
+    for (int32_t k = 0; k < c->pointCount; ++k)
     {
-        m3ContactConstraint* c = constraints + i;
-        for (int32_t k = 0; k < c->pointCount; ++k)
-        {
-            m3ConstraintPoint* cp = &c->points[k];
-            m3Vec3 impulse = m3Add3(
-                m3MulSV3(cp->normalImpulse, c->normal),
-                m3Add3(m3MulSV3(cp->tangentImpulse1, c->t1), m3MulSV3(cp->tangentImpulse2, c->t2)));
-            ApplyImpulse(world, c, impulse, cp->rA, cp->rB);
-        }
+        m3ConstraintPoint* cp = &c->points[k];
+        m3Vec3 impulse = m3Add3(
+            m3MulSV3(cp->normalImpulse, c->normal),
+            m3Add3(m3MulSV3(cp->tangentImpulse1, c->t1), m3MulSV3(cp->tangentImpulse2, c->t2)));
+        ApplyImpulse(world, c, impulse, cp->rA, cp->rB);
     }
 }
-static void SolveContacts(m3World* world, m3ContactConstraint* constraints, int32_t count,
-                          const m3Vec3* deltaPos, const m3Quat* deltaRot, m3real invH, bool useBias)
+static void SolveOneContact(m3World* world, m3ContactConstraint* c, const m3Vec3* deltaPos,
+                            const m3Quat* deltaRot, m3real invH, bool useBias)
 {
-    for (int32_t i = 0; i < count; ++i)
     {
-        m3ContactConstraint* c = constraints + i;
 
         // Normal rows first, then friction rows, per the reference
         // schedule. The Jacobian keeps the fixed prepare-time anchors;
@@ -280,6 +274,154 @@ static void SolveContacts(m3World* world, m3ContactConstraint* constraints, int3
         }
     }
 }
+
+// ---------------------------------------------------------------
+// Graph coloring (2b-12): constraints in one color share no awake
+// dynamic body, so any schedule inside a color writes disjoint
+// velocities and the bits cannot move. The greedy walk runs in
+// canonical constraint order with first-free-bit colors; whatever
+// cannot color inside the palette lands in the overflow bucket and
+// solves serially. Wide 4-lane batching joins the profiling era
+// (recorded in the plan); the parallel structure lands here.
+// ---------------------------------------------------------------
+#define M3_GRAPH_COLORS 16
+
+typedef struct m3SolverColoring
+{
+    uint8_t* colors; // per constraint
+    int32_t* lists;  // constraint indices grouped by color
+    int32_t starts[M3_GRAPH_COLORS + 2];
+} m3SolverColoring;
+
+static int BuildColoring(m3World* world, m3ContactConstraint* constraints, int32_t count,
+                         m3SolverColoring* out)
+{
+    int32_t maxBody = world->bodyPool.maxIndex;
+    out->colors = (uint8_t*)m3StackAlloc(&world->scratch, count > 0 ? count : 1);
+    uint32_t* bodyMasks = (uint32_t*)m3StackAlloc(
+        &world->scratch, maxBody > 0 ? maxBody * (int32_t)sizeof(uint32_t) : 4);
+    out->lists =
+        (int32_t*)m3StackAlloc(&world->scratch, count > 0 ? count * (int32_t)sizeof(int32_t) : 4);
+    if (out->colors == NULL || bodyMasks == NULL || out->lists == NULL)
+    {
+        return 0;
+    }
+    memset(bodyMasks, 0, (size_t)(maxBody > 0 ? maxBody : 1) * sizeof(uint32_t));
+
+    int32_t counts[M3_GRAPH_COLORS + 1];
+    memset(counts, 0, sizeof(counts));
+    for (int32_t i = 0; i < count; ++i)
+    {
+        m3ContactConstraint* c = &constraints[i];
+        int dynA = world->types[c->bodyA] == (uint8_t)m3_dynamicBody && world->awake[c->bodyA];
+        int dynB = world->types[c->bodyB] == (uint8_t)m3_dynamicBody && world->awake[c->bodyB];
+        uint32_t mask = (dynA ? bodyMasks[c->bodyA] : 0u) | (dynB ? bodyMasks[c->bodyB] : 0u);
+        int32_t color = M3_GRAPH_COLORS; // overflow unless a bit frees up
+        for (int32_t bit = 0; bit < M3_GRAPH_COLORS; ++bit)
+        {
+            if ((mask & (1u << bit)) == 0u)
+            {
+                color = bit;
+                break;
+            }
+        }
+        out->colors[i] = (uint8_t)color;
+        if (color < M3_GRAPH_COLORS)
+        {
+            if (dynA)
+            {
+                bodyMasks[c->bodyA] |= 1u << color;
+            }
+            if (dynB)
+            {
+                bodyMasks[c->bodyB] |= 1u << color;
+            }
+        }
+        counts[color] += 1;
+    }
+    int32_t cursor = 0;
+    for (int32_t c = 0; c <= M3_GRAPH_COLORS; ++c)
+    {
+        out->starts[c] = cursor;
+        cursor += counts[c];
+    }
+    out->starts[M3_GRAPH_COLORS + 1] = cursor;
+    int32_t fill[M3_GRAPH_COLORS + 1];
+    memcpy(fill, out->starts, sizeof(fill));
+    for (int32_t i = 0; i < count; ++i)
+    {
+        out->lists[fill[out->colors[i]]++] = i; // ascending inside a color
+    }
+    return 1;
+}
+
+typedef struct m3SolveTaskContext
+{
+    m3World* world;
+    m3ContactConstraint* constraints;
+    const int32_t* list;
+    const m3Vec3* deltaPos;
+    const m3Quat* deltaRot;
+    m3real invH;
+    int useBias;
+    int warmStartOnly;
+} m3SolveTaskContext;
+
+static void SolveRangeTask(int32_t startIndex, int32_t endIndex, void* taskContext)
+{
+    m3SolveTaskContext* ctx = (m3SolveTaskContext*)taskContext;
+    for (int32_t k = startIndex; k < endIndex; ++k)
+    {
+        m3ContactConstraint* c = &ctx->constraints[ctx->list[k]];
+        if (ctx->warmStartOnly)
+        {
+            WarmStartOne(ctx->world, c);
+        }
+        else
+        {
+            SolveOneContact(ctx->world, c, ctx->deltaPos, ctx->deltaRot, ctx->invH,
+                            ctx->useBias != 0);
+        }
+    }
+}
+
+// Colors run in order with a barrier between them; inside a color
+// the host may split any way it likes (disjoint bodies), and the
+// overflow bucket always runs serial (its members may conflict).
+static void RunColored(m3World* world, const m3SolverColoring* coloring,
+                       m3ContactConstraint* constraints, const m3Vec3* deltaPos,
+                       const m3Quat* deltaRot, m3real invH, int useBias, int warmStartOnly)
+{
+    for (int32_t color = 0; color <= M3_GRAPH_COLORS; ++color)
+    {
+        int32_t start = coloring->starts[color];
+        int32_t end = coloring->starts[color + 1];
+        int32_t size = end - start;
+        if (size == 0)
+        {
+            continue;
+        }
+        m3SolveTaskContext ctx;
+        ctx.world = world;
+        ctx.constraints = constraints;
+        ctx.list = coloring->lists + start;
+        ctx.deltaPos = deltaPos;
+        ctx.deltaRot = deltaRot;
+        ctx.invH = invH;
+        ctx.useBias = useBias;
+        ctx.warmStartOnly = warmStartOnly;
+        if (world->enqueueTask != NULL && size >= 16 && color < M3_GRAPH_COLORS)
+        {
+            void* task = world->enqueueTask(SolveRangeTask, size, 8, &ctx, world->userTaskContext);
+            world->finishTask(task, world->userTaskContext);
+        }
+        else
+        {
+            SolveRangeTask(0, size, &ctx);
+        }
+    }
+}
+
 static void Restitution(m3World* world, m3ContactConstraint* constraints, int32_t count)
 {
     for (int32_t i = 0; i < count; ++i)
@@ -1012,6 +1154,13 @@ void m3StepInternal(m3World* world, float dt, int32_t substeps)
     m3real invH = h > 0.0f ? 1.0f / h : 0.0f;
     int32_t constraintCount = PrepareContacts(world, constraints, h);
 
+    m3SolverColoring coloring;
+    if (!BuildColoring(world, constraints, constraintCount, &coloring))
+    {
+        M3_ASSERT(false);
+        return;
+    }
+
     for (int32_t sub = 0; sub < substeps; ++sub)
     {
         // Integrate velocities (fixed body order): gravity, damping.
@@ -1032,8 +1181,8 @@ void m3StepInternal(m3World* world, float dt, int32_t substeps)
             world->angularVelocities[i] = w;
         }
 
-        WarmStart(world, constraints, constraintCount);
-        SolveContacts(world, constraints, constraintCount, deltaPos, deltaRot, invH, true);
+        RunColored(world, &coloring, constraints, deltaPos, deltaRot, invH, 0, 1);
+        RunColored(world, &coloring, constraints, deltaPos, deltaRot, invH, 1, 0);
 
         // Integrate positions and accumulate the substep deltas the
         // separation tracking reads.
@@ -1067,7 +1216,7 @@ void m3StepInternal(m3World* world, float dt, int32_t substeps)
         }
 
         // Relax: remove the bias energy (reference schedule).
-        SolveContacts(world, constraints, constraintCount, deltaPos, deltaRot, invH, false);
+        RunColored(world, &coloring, constraints, deltaPos, deltaRot, invH, 0, 0);
     }
 
     Restitution(world, constraints, constraintCount);

@@ -282,11 +282,67 @@ static void GateWorkerTwins(void)
     CHECK(h4 == h4b, "gate 4: the threaded run is self-stable");
 }
 
+static void GateColoredPile(void)
+{
+    // The colored solver under real threads: a dense pile (boxes and
+    // spheres jammed together, many shared bodies, overflow colors
+    // guaranteed) must hash identically serial versus pooled. This is
+    // the worker-twin gate aimed straight at the solver.
+    uint64_t hashes[2];
+    for (int32_t variant = 0; variant < 2; ++variant)
+    {
+        m3WorldDef def = m3DefaultWorldDef();
+        def.bodyCapacity = 64;
+        def.shapeCapacity = 64;
+        def.workerCount = variant == 0 ? 1 : 4;
+        if (variant == 1)
+        {
+            def.enqueueTask = PoolEnqueue;
+            def.finishTask = PoolFinish;
+        }
+        m3WorldId world = m3CreateWorld(&def);
+        m3BodyDef gd = m3DefaultBodyDef();
+        m3BodyId ground = m3CreateBody(world, &gd);
+        m3ShapeDef sd = m3DefaultShapeDef();
+        sd.friction = 0.6f;
+        m3Plane floor = {{0.0f, 1.0f, 0.0f}, 0.0f};
+        m3CreatePlaneShape(ground, &sd, &floor);
+
+        m3BodyDef bd = m3DefaultBodyDef();
+        bd.type = m3_dynamicBody;
+        for (int32_t k = 0; k < 24; ++k)
+        {
+            double x = 0.55 * (double)(k % 4) - 0.8;
+            double z = 0.55 * (double)((k / 4) % 3) - 0.5;
+            double y = 0.5 + 0.65 * (double)(k / 12);
+            bd.position = (m3Pos3){x, y, z};
+            m3BodyId body = m3CreateBody(world, &bd);
+            if (k % 2 == 0)
+            {
+                m3CreateBoxShape(body, &sd, (m3Vec3){0.25f, 0.25f, 0.25f});
+            }
+            else
+            {
+                m3Sphere ball = {{0.0f, 0.0f, 0.0f}, 0.27f};
+                m3CreateSphereShape(body, &sd, &ball);
+            }
+        }
+        for (int32_t i = 0; i < 150; ++i)
+        {
+            m3World_Step(world, 1.0f / 60.0f, 4);
+        }
+        hashes[variant] = m3World_Hash(world);
+        m3DestroyWorld(world);
+    }
+    CHECK(hashes[0] == hashes[1], "the colored pile is bit-identical serial versus pooled");
+}
+
 int main(void)
 {
     GateGoldenAndReplay();
     GateRollback();
     GateWorkerTwins();
+    GateColoredPile();
     if (s_failures == 0)
     {
         printf("test_determinism: all four gates hold\n");
