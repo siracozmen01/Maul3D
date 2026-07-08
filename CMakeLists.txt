@@ -115,6 +115,11 @@ target_link_libraries(test_draw PRIVATE maul3d)
 maul3d_apply_flags(test_draw)
 add_test(NAME draw COMMAND test_draw)
 
+add_executable(test_sequences test/test_sequences.c)
+target_link_libraries(test_sequences PRIVATE maul3d)
+maul3d_apply_flags(test_sequences)
+add_test(NAME sequences COMMAND test_sequences)
+
 add_executable(test_fuzz test/test_fuzz.c)
 target_link_libraries(test_fuzz PRIVATE maul3d)
 maul3d_apply_flags(test_fuzz)

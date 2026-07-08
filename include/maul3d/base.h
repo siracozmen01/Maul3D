@@ -44,6 +44,15 @@ extern "C"
         uint16_t generation;
     } m3WorldId;
 
+    /// Id lifetime rule: an id is valid until its object or its
+    /// WORLD is destroyed. Body, shape, and joint ids name their
+    /// world by slot (not generation), so after a world is
+    /// destroyed its ids must be dropped by the caller; a new
+    /// world recycling the slot cannot tell foreign stale ids
+    /// from its own (the reference shares this limitation). Using
+    /// a stale id is a contract violation that never crashes:
+    /// getters return zeros, commands and destroys no-op,
+    /// creates refuse.
     typedef struct m3BodyId
     {
         int32_t index1;

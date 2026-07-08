@@ -144,6 +144,10 @@ extern "C"
     /// an overflow, loudly); Replay applies a stream to this world.
     M3_API bool m3World_JournalBegin(m3WorldId worldId, void* buffer, int32_t capacity);
     M3_API int32_t m3World_JournalEnd(m3WorldId worldId);
+    /// Replay a recorded session into this world. ATOMIC: on any
+    /// refusal (truncation, corruption, an op that cannot re-mint
+    /// its recorded id) the world is restored to its pre-call state
+    /// and false returns; a half-applied session is impossible.
     M3_API bool m3World_JournalReplay(m3WorldId worldId, const void* data, int32_t size);
 
 #ifdef __cplusplus

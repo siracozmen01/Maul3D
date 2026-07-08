@@ -175,8 +175,7 @@ void m3DestroyBody(m3BodyId bodyId)
     m3World* world = ResolveBody(bodyId, &index);
     if (world == NULL)
     {
-        M3_ASSERT(false);
-        return;
+        return; // stale or foreign id: contract, not invariant
     }
     if (world->journalActive != 0)
     {
@@ -239,8 +238,7 @@ void m3Body_SetLinearVelocity(m3BodyId bodyId, m3Vec3 velocity)
     m3World* world = ResolveBody(bodyId, &index);
     if (world == NULL)
     {
-        M3_ASSERT(false);
-        return;
+        return; // stale or foreign id: contract, not invariant
     }
     if (!m3FiniteV3(velocity))
     {
@@ -267,8 +265,7 @@ void m3Body_SetAngularVelocity(m3BodyId bodyId, m3Vec3 velocity)
     m3World* world = ResolveBody(bodyId, &index);
     if (world == NULL)
     {
-        M3_ASSERT(false);
-        return;
+        return; // stale or foreign id: contract, not invariant
     }
     if (!m3FiniteV3(velocity))
     {

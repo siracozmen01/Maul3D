@@ -69,8 +69,8 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     }
     if (slot < 0)
     {
-        M3_ASSERT(false);
-        return nullId; // table exhausted: loud, never silent
+        return nullId; // table exhausted: loud, never silent, and a
+                       // capacity refusal is contract, not invariant
     }
 
     m3World* world = (m3World*)m3AllocZeroed((int32_t)sizeof(m3World));
@@ -208,8 +208,7 @@ void m3DestroyWorld(m3WorldId worldId)
     m3World* world = m3WorldFromId(worldId);
     if (world == NULL)
     {
-        M3_ASSERT(false);
-        return;
+        return; // stale or foreign id: contract, not invariant
     }
     int32_t slot = world->worldIndex0;
 
@@ -318,8 +317,7 @@ bool m3World_JournalBegin(m3WorldId worldId, void* buffer, int32_t capacity)
     m3World* world = m3WorldFromId(worldId);
     if (world == NULL || buffer == NULL || capacity < 8 || world->journalActive != 0)
     {
-        M3_ASSERT(false);
-        return false;
+        return false; // contract, not invariant
     }
     world->journalBuffer = (uint8_t*)buffer;
     world->journalCapacity = capacity;
@@ -334,8 +332,7 @@ int32_t m3World_JournalEnd(m3WorldId worldId)
     m3World* world = m3WorldFromId(worldId);
     if (world == NULL)
     {
-        M3_ASSERT(false);
-        return -1;
+        return -1; // contract, not invariant
     }
     int32_t bytes = world->journalOverflow != 0 ? -1 : world->journalCursor;
     world->journalBuffer = NULL;
@@ -406,14 +403,11 @@ const m3ContactEvent* m3World_ContactEndEvents(m3WorldId worldId, int32_t* count
     return world->endEvents;
 }
 
-bool m3World_JournalReplay(m3WorldId worldId, const void* data, int32_t size)
+// The replay worker: applies ops in order and reports the first
+// refusal. Partial application is possible HERE; the public wrapper
+// below makes the whole call atomic.
+static bool JournalReplayApply(m3World* world, const void* data, int32_t size)
 {
-    m3World* world = m3WorldFromId(worldId);
-    if (world == NULL || data == NULL || size < 0)
-    {
-        M3_ASSERT(false);
-        return false;
-    }
     const uint8_t* stream = (const uint8_t*)data;
     int32_t cursor = 0;
     while (cursor < size)
@@ -684,4 +678,37 @@ bool m3World_JournalReplay(m3WorldId worldId, const void* data, int32_t size)
         }
     }
     return cursor == size;
+}
+
+bool m3World_JournalReplay(m3WorldId worldId, const void* data, int32_t size)
+{
+    m3World* world = m3WorldFromId(worldId);
+    if (world == NULL || data == NULL || size < 0)
+    {
+        return false; // contract, not invariant
+    }
+    // Atomic replay (2d-2): the world either takes the whole session
+    // or none of it. A pre-replay snapshot backs out any partial
+    // application on refusal, so a corrupted or truncated journal
+    // can never leave a half-built world behind.
+    int32_t snapBytes = m3World_SnapshotSize(worldId);
+    uint8_t* snap = (uint8_t*)m3AllocZeroed(snapBytes);
+    if (snap == NULL)
+    {
+        return false; // no memory for the guarantee means no replay
+    }
+    if (m3World_Snapshot(worldId, snap, snapBytes) != snapBytes)
+    {
+        m3Free(snap);
+        return false;
+    }
+    bool ok = JournalReplayApply(world, data, size);
+    if (!ok)
+    {
+        bool restored = m3World_Restore(worldId, snap, snapBytes);
+        M3_ASSERT(restored); // our own snapshot must restore: invariant
+        (void)restored;
+    }
+    m3Free(snap);
+    return ok;
 }
