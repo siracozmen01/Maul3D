@@ -22,7 +22,7 @@
 #endif
 
 #define M3_SNAPSHOT_MAGIC   0x4D33534Eu // 'M3SN'
-#define M3_SNAPSHOT_VERSION 12u         // v12: sleep state
+#define M3_SNAPSHOT_VERSION 13u         // v13: mesh edge flags
 
 // The math types are canonical field data only because they are
 // provably padding-free; a change here is a format version bump.

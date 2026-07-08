@@ -1109,6 +1109,127 @@ static void TestSleepDeterminism(void)
     CHECK(hashes[0] == hashes[1], "the sleep scene is bit-deterministic");
 }
 
+static void TestBulletStopsAtMeshWall(void)
+{
+    // The 2b-9d correctness fix: meshes are TOI targets now. A 200
+    // m/s bullet used to tunnel straight through a triangulated wall
+    // (the documented gap); it must stop against it like it does
+    // against a box wall.
+    m3WorldDef def = m3DefaultWorldDef();
+    def.gravity = (m3Vec3){0.0f, 0.0f, 0.0f};
+    def.bodyCapacity = 8;
+    def.shapeCapacity = 8;
+    m3WorldId world = m3CreateWorld(&def);
+
+    // A vertical two-triangle wall at x = 5, facing -x.
+    m3BodyDef bd = m3DefaultBodyDef();
+    bd.position = (m3Pos3){5.0, -2.0, -2.0};
+    m3BodyId wall = m3CreateBody(world, &bd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    m3Vec3 verts[4] = {
+        {0.0f, 0.0f, 0.0f}, {0.0f, 4.0f, 0.0f}, {0.0f, 0.0f, 4.0f}, {0.0f, 4.0f, 4.0f}};
+    uint16_t tris[6] = {0, 2, 1, 1, 2, 3}; // normals face -x
+    CHECK(m3Shape_IsValid(m3CreateMeshShape(wall, &sd, verts, 4, tris, 2)), "the mesh wall builds");
+
+    bd.type = m3_dynamicBody;
+    bd.position = (m3Pos3){0.0, 0.0, 0.0};
+    bd.linearVelocity = (m3Vec3){200.0f, 0.0f, 0.0f};
+    bd.isBullet = true;
+    m3BodyId ball = m3CreateBody(world, &bd);
+    m3Sphere sphere = {{0.0f, 0.0f, 0.0f}, 0.1f};
+    m3CreateSphereShape(ball, &sd, &sphere);
+
+    int stayed = 1;
+    for (int32_t i = 0; i < 60; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+        if (m3Body_GetPosition(ball).x > 5.0)
+        {
+            stayed = 0;
+        }
+    }
+    CHECK(stayed, "the bullet never tunnels through the mesh wall");
+    m3DestroyWorld(world);
+}
+
+static void TestBoxOnRoofRidge(void)
+{
+    // The baked convexity proof: two tilted quads meet in a genuinely
+    // convex ridge. A box dropped square on the ridge makes contact
+    // THROUGH the ridge edge (a real feature, exempt from the claim
+    // filter) and must come to rest straddling it, never fall inside.
+    m3WorldDef def = m3DefaultWorldDef();
+    def.bodyCapacity = 8;
+    def.shapeCapacity = 8;
+    m3WorldId world = m3CreateWorld(&def);
+
+    m3BodyDef bd = m3DefaultBodyDef();
+    m3BodyId roof = m3CreateBody(world, &bd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    sd.friction = 0.8f;
+    // Ridge along z at x = 0, apex y = 1, sloping to y = 0 at x = +-2.
+    m3Vec3 verts[6] = {{-2.0f, 0.0f, -2.0f}, {0.0f, 1.0f, -2.0f}, {2.0f, 0.0f, -2.0f},
+                       {-2.0f, 0.0f, 2.0f},  {0.0f, 1.0f, 2.0f},  {2.0f, 0.0f, 2.0f}};
+    uint16_t tris[12] = {0, 4, 1, 0, 3, 4,  // -x slope (normals up-left)
+                         1, 5, 2, 1, 4, 5}; // +x slope (normals up-right)
+    CHECK(m3Shape_IsValid(m3CreateMeshShape(roof, &sd, verts, 6, tris, 4)), "the roof builds");
+
+    bd.type = m3_dynamicBody;
+    bd.position = (m3Pos3){0.0, 1.8, 0.0};
+    m3BodyId box = m3CreateBody(world, &bd);
+    m3CreateBoxShape(box, &sd, (m3Vec3){0.4f, 0.4f, 0.4f});
+
+    StepN(world, 300);
+    m3Pos3 p = m3Body_GetPosition(box);
+    CHECK(p.y > 1.0, "the box rests on the ridge, never swallowed by it");
+    CHECK(p.x > -1.0 && p.x < 1.0 && p.z > -2.0 && p.z < 2.0, "the box stays near the apex");
+    m3DestroyWorld(world);
+}
+
+static void TestHeightFieldBowl(void)
+{
+    // The heightfield chunk helper rides the whole mesh path: a
+    // sphere dropped off-center in a bowl-shaped field rolls downhill
+    // and settles near the middle, always above the surface.
+    m3WorldDef def = m3DefaultWorldDef();
+    def.bodyCapacity = 8;
+    def.shapeCapacity = 8;
+    m3WorldId world = m3CreateWorld(&def);
+
+    m3BodyDef bd = m3DefaultBodyDef();
+    bd.position = (m3Pos3){-8.0, 0.0, -8.0}; // center the grid on the origin
+    m3BodyId ground = m3CreateBody(world, &bd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    sd.friction = 0.2f;
+    float heights[17 * 17];
+    for (int32_t iz = 0; iz < 17; ++iz)
+    {
+        for (int32_t ix = 0; ix < 17; ++ix)
+        {
+            float dx = (float)(ix - 8);
+            float dz = (float)(iz - 8);
+            heights[iz * 17 + ix] = 0.02f * (dx * dx + dz * dz); // a parabolic bowl
+        }
+    }
+    CHECK(m3Shape_IsValid(m3CreateHeightFieldShape(ground, &sd, heights, 17, 17, 1.0f)),
+          "the heightfield chunk builds");
+    CHECK(!m3Shape_IsValid(m3CreateHeightFieldShape(ground, &sd, heights, 40, 17, 1.0f)),
+          "an oversized grid is refused");
+
+    bd.type = m3_dynamicBody;
+    bd.position = (m3Pos3){3.0, 1.5, 0.0};
+    m3BodyId ball = m3CreateBody(world, &bd);
+    m3Sphere sphere = {{0.0f, 0.0f, 0.0f}, 0.4f};
+    m3CreateSphereShape(ball, &sd, &sphere);
+
+    StepN(world, 600);
+    m3Pos3 p = m3Body_GetPosition(ball);
+    CHECK(p.x > -2.5 && p.x < 2.5 && p.z > -2.5 && p.z < 2.5,
+          "the ball rolls downhill toward the bowl's middle");
+    CHECK(p.y > 0.3 && p.y < 1.2, "the ball stays above the surface");
+    m3DestroyWorld(world);
+}
+
 static void TestSolverHashGate(void)
 {
     // The fixed solver scene for the CI gate: a plane, a three-sphere
@@ -1153,6 +1274,9 @@ int main(void)
     TestKinematicPlatform();
     TestSleepFreezesAndWakes();
     TestSleepDeterminism();
+    TestBulletStopsAtMeshWall();
+    TestBoxOnRoofRidge();
+    TestHeightFieldBowl();
     TestSolverHashGate();
     if (s_failures == 0)
     {

@@ -239,6 +239,59 @@ void m3RecomputeMass(m3World* world, int32_t bodyIndex)
     world->localCenters[bodyIndex] = center;
 }
 
+// Edge convexity for the welding filter: for every triangle edge,
+// find the neighbor sharing the undirected vertex pair. No neighbor
+// (a boundary) or a neighbor bending away (convex ridge) marks a
+// REAL feature; flat and concave edges stay ghost candidates.
+void m3BakeMeshEdgeFlags(m3MeshData* mesh)
+{
+    const m3real tol = 0.005f;
+    int32_t triCount = mesh->triangleCount;
+    for (int32_t t = 0; t < triCount; ++t)
+    {
+        mesh->edgeFlags[t] = 0;
+        m3Vec3 a = mesh->vertices[mesh->indices[3 * t + 0]];
+        m3Vec3 b = mesh->vertices[mesh->indices[3 * t + 1]];
+        m3Vec3 c = mesh->vertices[mesh->indices[3 * t + 2]];
+        m3Vec3 n = m3Normalize3(m3Cross3(m3Sub3(b, a), m3Sub3(c, a)));
+        m3real off = m3Dot3(n, a);
+        for (int32_t k = 0; k < 3; ++k)
+        {
+            int32_t v1 = mesh->indices[3 * t + k];
+            int32_t v2 = mesh->indices[3 * t + (k + 1) % 3];
+            int32_t neighborOpp = -1;
+            for (int32_t u = 0; u < triCount && neighborOpp < 0; ++u)
+            {
+                if (u == t)
+                {
+                    continue;
+                }
+                for (int32_t j = 0; j < 3; ++j)
+                {
+                    int32_t w1 = mesh->indices[3 * u + j];
+                    int32_t w2 = mesh->indices[3 * u + (j + 1) % 3];
+                    if ((w1 == v2 && w2 == v1) || (w1 == v1 && w2 == v2))
+                    {
+                        neighborOpp = mesh->indices[3 * u + (j + 2) % 3];
+                        break;
+                    }
+                }
+            }
+            if (neighborOpp < 0)
+            {
+                mesh->edgeFlags[t] |= (uint8_t)(1 << k); // boundary: real
+                continue;
+            }
+            m3real d = m3Dot3(n, mesh->vertices[neighborOpp]) - off;
+            if (d < -tol)
+            {
+                mesh->edgeFlags[t] |= (uint8_t)(1 << k); // convex ridge: real
+            }
+            // Flat or concave: stays zero, a ghost candidate.
+        }
+    }
+}
+
 int32_t m3CreateShapeInternal(m3World* world, int32_t bodyIndex, uint8_t type,
                               const m3ShapeGeom* geom, const m3ShapeDef* def,
                               const m3HullData* prebuilt, const m3MeshData* meshPrebuilt)
@@ -295,6 +348,7 @@ int32_t m3CreateShapeInternal(m3World* world, int32_t bodyIndex, uint8_t type,
             return -1; // mesh slots exhausted: loud at the caller
         }
         world->meshData[meshIndex] = *meshPrebuilt;
+        m3BakeMeshEdgeFlags(&world->meshData[meshIndex]);
         world->meshRefCounts[meshIndex] = 1;
         world->shapeMeshIndex[index] = meshIndex;
     }
@@ -564,6 +618,45 @@ m3ShapeId m3CreateMeshShape(m3BodyId bodyId, const m3ShapeDef* def, const m3Vec3
         }
     }
     return id;
+}
+
+m3ShapeId m3CreateHeightFieldShape(m3BodyId bodyId, const m3ShapeDef* def, const float* heights,
+                                   int32_t nx, int32_t nz, m3real cellSize)
+{
+    if (heights == NULL || nx < 2 || nx > 32 || nz < 2 || nz > 32 || !(cellSize > 0.0f))
+    {
+        return m3_nullShapeId; // grid contract: chunks tile larger terrain
+    }
+    // Triangulate the grid (CCW seen from +y) and reuse the mesh
+    // path whole: welding, journaling, snapshotting all come free.
+    m3Vec3 verts[M3_MESH_MAX_VERTS];
+    uint16_t tris[3 * M3_MESH_MAX_TRIS];
+    for (int32_t iz = 0; iz < nz; ++iz)
+    {
+        for (int32_t ix = 0; ix < nx; ++ix)
+        {
+            verts[iz * nx + ix] =
+                (m3Vec3){cellSize * (m3real)ix, heights[iz * nx + ix], cellSize * (m3real)iz};
+        }
+    }
+    int32_t n = 0;
+    for (int32_t iz = 0; iz < nz - 1; ++iz)
+    {
+        for (int32_t ix = 0; ix < nx - 1; ++ix)
+        {
+            uint16_t v00 = (uint16_t)(iz * nx + ix);
+            uint16_t v10 = (uint16_t)(iz * nx + ix + 1);
+            uint16_t v01 = (uint16_t)((iz + 1) * nx + ix);
+            uint16_t v11 = (uint16_t)((iz + 1) * nx + ix + 1);
+            tris[n++] = v00;
+            tris[n++] = v11;
+            tris[n++] = v10;
+            tris[n++] = v00;
+            tris[n++] = v01;
+            tris[n++] = v11;
+        }
+    }
+    return m3CreateMeshShape(bodyId, def, verts, nx * nz, tris, n / 3);
 }
 
 m3ShapeId m3CreateBoxShape(m3BodyId bodyId, const m3ShapeDef* def, m3Vec3 halfExtents)

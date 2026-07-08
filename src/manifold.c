@@ -1692,17 +1692,21 @@ static void CollideMeshConvex(m3World* world, m3Manifold* fresh, int32_t meshSha
         int newVert1 = ClaimVertex(&set, i1);
         int newVert2 = ClaimVertex(&set, i2);
         int newVert3 = ClaimVertex(&set, i3);
+        // Baked convexity (2b-9d): a genuinely convex ridge or a
+        // boundary is a REAL feature and overrides the claim filter;
+        // only flat and concave edges can be ghosts.
+        uint8_t convex = mesh->edgeFlags[t];
         int shouldCollide = 0;
         switch (tentative[k].local.feature)
         {
         case 1 | 2:
-            shouldCollide = newEdge1;
+            shouldCollide = (convex & 1) != 0 || newEdge1;
             break;
         case 2 | 4:
-            shouldCollide = newEdge2;
+            shouldCollide = (convex & 2) != 0 || newEdge2;
             break;
         case 1 | 4:
-            shouldCollide = newEdge3;
+            shouldCollide = (convex & 4) != 0 || newEdge3;
             break;
         case 1:
             shouldCollide = newVert1;
@@ -1714,11 +1718,13 @@ static void CollideMeshConvex(m3World* world, m3Manifold* fresh, int32_t meshSha
             shouldCollide = newVert3;
             break;
         case M3_TRI_FEATURE_HULL_FACE:
-            // A tilted hull-face contact is a ghost if any of its
-            // triangle's features already belong to a face contact
-            // (a conservative stand-in for the baked edge-convexity
-            // flags, which join the BVH slice).
-            shouldCollide = newEdge1 && newEdge2 && newEdge3 && newVert1 && newVert2 && newVert3;
+            // A tilted hull-face contact on a triangle with a real
+            // convex edge is legitimate (a box teetering on a roof
+            // ridge); on all-flat triangles it survives only when
+            // the whole triangle is unclaimed (the reference's
+            // only-ignore-flat-edges rule).
+            shouldCollide = convex != 0 ||
+                            (newEdge1 && newEdge2 && newEdge3 && newVert1 && newVert2 && newVert3);
             break;
         default:
             break;

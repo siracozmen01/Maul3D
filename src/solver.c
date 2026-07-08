@@ -453,8 +453,64 @@ static bool ContinuousQueryCallback(int32_t shape, void* userContext)
     }
     if (world->shapeType[shape] == (uint8_t)m3_meshShape)
     {
-        // Mesh TOI arrives with 2b-9b; until then bullets rely on the
-        // speculative margin against meshes (documented staged gap).
+        // Mesh TOI (2b-9d): sweep the fast shape against every
+        // candidate triangle. Each triangle is a three-point static
+        // proxy in the mesh body's frame; the shared kernel does the
+        // rest. Ascending triangle order, bounded candidates.
+        const m3MeshData* mesh = &world->meshData[world->shapeMeshIndex[shape]];
+        m3Sweep meshSweep = MakeRelativeSweep(world, body, ctx->com0, ctx->rot0, ctx->base);
+        m3Vec3 scratchFast[2];
+        m3DistanceProxy fastProxy = m3MakeShapeProxy(world, ctx->fastShape, scratchFast);
+
+        // The swept bounds of the fast body in mesh-local space, a
+        // conservative box from the relative sweep endpoints.
+        const m3Transform* xfM = &world->transforms[body];
+        m3Vec3 c1 =
+            m3InvRotateVec3(xfM->q, (m3Vec3){(m3real)(ctx->com0[ctx->fastBody].x - xfM->p.x),
+                                             (m3real)(ctx->com0[ctx->fastBody].y - xfM->p.y),
+                                             (m3real)(ctx->com0[ctx->fastBody].z - xfM->p.z)});
+        m3Vec3 rlc =
+            m3RotateVec3(world->transforms[ctx->fastBody].q, world->localCenters[ctx->fastBody]);
+        m3Vec3 c2 = m3InvRotateVec3(
+            xfM->q,
+            (m3Vec3){(m3real)(world->transforms[ctx->fastBody].p.x + (double)rlc.x - xfM->p.x),
+                     (m3real)(world->transforms[ctx->fastBody].p.y + (double)rlc.y - xfM->p.y),
+                     (m3real)(world->transforms[ctx->fastBody].p.z + (double)rlc.z - xfM->p.z)});
+        m3real pad = world->maxExtents[ctx->fastBody] + M3_AABB_MARGIN;
+        m3Vec3 lo = {m3MinF(c1.x, c2.x) - pad, m3MinF(c1.y, c2.y) - pad, m3MinF(c1.z, c2.z) - pad};
+        m3Vec3 hi = {m3MaxF(c1.x, c2.x) + pad, m3MaxF(c1.y, c2.y) + pad, m3MaxF(c1.z, c2.z) + pad};
+
+        int32_t budget = 64;
+        for (int32_t t = 0; t < mesh->triangleCount && budget > 0; ++t)
+        {
+            m3Vec3 tv[3] = {mesh->vertices[mesh->indices[3 * t + 0]],
+                            mesh->vertices[mesh->indices[3 * t + 1]],
+                            mesh->vertices[mesh->indices[3 * t + 2]]};
+            m3real tlx = m3MinF(tv[0].x, m3MinF(tv[1].x, tv[2].x));
+            m3real thx = m3MaxF(tv[0].x, m3MaxF(tv[1].x, tv[2].x));
+            m3real tly = m3MinF(tv[0].y, m3MinF(tv[1].y, tv[2].y));
+            m3real thy = m3MaxF(tv[0].y, m3MaxF(tv[1].y, tv[2].y));
+            m3real tlz = m3MinF(tv[0].z, m3MinF(tv[1].z, tv[2].z));
+            m3real thz = m3MaxF(tv[0].z, m3MaxF(tv[1].z, tv[2].z));
+            if (thx < lo.x || tlx > hi.x || thy < lo.y || tly > hi.y || thz < lo.z || tlz > hi.z)
+            {
+                continue;
+            }
+            budget -= 1;
+            m3TOIInput input;
+            input.proxyA.points = tv;
+            input.proxyA.count = 3;
+            input.proxyA.radius = 0.0f;
+            input.proxyB = fastProxy;
+            input.sweepA = meshSweep;
+            input.sweepB = ctx->fastSweep;
+            input.maxFraction = ctx->fraction;
+            m3TOIOutput out = m3TimeOfImpact(&input);
+            if (out.state == m3_toiStateHit && 0.0f < out.fraction && out.fraction < ctx->fraction)
+            {
+                ctx->fraction = out.fraction;
+            }
+        }
         return true;
     }
     if (world->types[body] != (uint8_t)m3_staticBody && world->bulletFlags[ctx->fastBody] == 0)

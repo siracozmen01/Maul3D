@@ -22,7 +22,7 @@
 // integration order, constants). Part of the snapshot config hash, so
 // a snapshot from a different behavior revision is refused loudly
 // instead of silently diverging (the Jolt friction-model lesson).
-#define M3_SOLVER_REV 11 // rev 11: kinematic bodies, islands, sleep
+#define M3_SOLVER_REV 12 // rev 12: mesh edge flags, mesh TOI
 
 // Def cookies: a def that did not come from its m3Default*Def factory
 // is rejected loudly (the Maul2D pattern).
@@ -108,9 +108,18 @@ typedef struct m3MeshData
     int32_t triangleCount;
     m3Vec3 vertices[M3_MESH_MAX_VERTS];
     uint16_t indices[3 * M3_MESH_MAX_TRIS]; // CCW from outside
+    // Bit k set = triangle edge k (vertex k to k+1) is CONVEX or a
+    // boundary: a REAL contact feature. Clear = flat or concave: a
+    // ghost candidate the welding filter may silence. Baked at
+    // create time (2b-9d), deterministic.
+    uint8_t edgeFlags[M3_MESH_MAX_TRIS];
 } m3MeshData;
 
-_Static_assert(sizeof(m3MeshData) == 24584, "mesh data must be padding-free");
+_Static_assert(sizeof(m3MeshData) == 26632, "mesh data must be padding-free");
+
+// Bake the edge-convexity flags (a bounded pair scan; the BVH slice
+// will speed it up if profiles ever ask).
+void m3BakeMeshEdgeFlags(m3MeshData* mesh);
 
 // Geometry is one padding-free 32-byte record per shape, interpreted
 // by type: sphere {v=center, s=radius}, plane {v=normal, s=offset},

@@ -97,6 +97,16 @@ extern "C"
                                        const m3Vec3* vertices, int32_t vertexCount,
                                        const uint16_t* indices, int32_t triangleCount);
 
+    /// A heightfield chunk: an nx by nz grid of heights (row-major,
+    /// x fastest) spaced `cellSize` apart in x and z, triangulated
+    /// into a static mesh through the same welded triangle path.
+    /// Grid limits per chunk: 2..32 in each direction (the mesh caps);
+    /// larger terrain tiles as chunks, the voxel-world model. The
+    /// grid's minimum corner sits at the body origin.
+    M3_API m3ShapeId m3CreateHeightFieldShape(m3BodyId bodyId, const m3ShapeDef* def,
+                                              const float* heights, int32_t nx, int32_t nz,
+                                              m3real cellSize);
+
     M3_API bool m3Shape_IsValid(m3ShapeId shapeId);
 
     static const m3ShapeId m3_nullShapeId = {0, 0, 0};
