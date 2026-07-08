@@ -122,6 +122,22 @@ m3World_Snapshot(world, buffer, size); // save the exact world
 m3World_Restore(world, buffer, size);  // bit-exact rewind
 ```
 
+## Testbed
+
+An interactive playground lives in `testbed/`: orbit camera, every
+scene drawn through the debug-draw interface, bullets on click,
+live voxel carving with host-spawned fragments, and a held-R
+rewind that walks time backward through a snapshot ring (the
+engine's whole point, on a key). It uses raylib (fetched and
+pinned; the viewer is outside the determinism contract, the engine
+stays zero-dependency):
+
+```
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DMAUL3D_BUILD_TESTBED=ON
+cmake --build build
+./build/testbed/testbed
+```
+
 ## Build
 
 ```

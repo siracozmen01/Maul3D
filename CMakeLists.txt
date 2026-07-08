@@ -3,6 +3,7 @@ project(maul3d VERSION 1.0.0 LANGUAGES C)
 
 option(MAUL3D_SANITIZE "Build with ASAN/UBSAN" OFF)
 option(MAUL3D_BUILD_SHARED "Build maul3d as a shared library" OFF)
+option(MAUL3D_BUILD_TESTBED "Build the interactive raylib testbed" OFF)
 
 include(cmake/CompilerFlags.cmake)
 include(GNUInstallDirs)
@@ -82,6 +83,10 @@ install(FILES
 configure_file(cmake/maul3d.pc.in ${CMAKE_CURRENT_BINARY_DIR}/maul3d.pc @ONLY)
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/maul3d.pc
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig)
+
+if(MAUL3D_BUILD_TESTBED)
+    add_subdirectory(testbed)
+endif()
 
 enable_testing()
 
