@@ -294,7 +294,8 @@ void m3BakeMeshEdgeFlags(m3MeshData* mesh)
 
 int32_t m3CreateShapeInternal(m3World* world, int32_t bodyIndex, uint8_t type,
                               const m3ShapeGeom* geom, const m3ShapeDef* def,
-                              const m3HullData* prebuilt, const m3MeshData* meshPrebuilt)
+                              const m3HullData* prebuilt, const m3MeshData* meshPrebuilt,
+                              const m3VoxelChunkData* voxelPrebuilt)
 {
     int32_t index = m3IdPoolAlloc(&world->shapePool);
     if (index < 0)
@@ -353,6 +354,25 @@ int32_t m3CreateShapeInternal(m3World* world, int32_t bodyIndex, uint8_t type,
         m3MeshBvhBuild(&world->meshBvh[meshIndex], &world->meshData[meshIndex]);
         world->meshRefCounts[meshIndex] = 1;
         world->shapeMeshIndex[index] = meshIndex;
+    }
+    world->shapeVoxelIndex[index] = -1;
+    if (type == (uint8_t)m3_voxelShape)
+    {
+        // The mesh-slot pattern: fresh slot, state block copied in,
+        // the DERIVED surface built from it (the BVH law).
+        int32_t voxelIndex = m3IdPoolAlloc(&world->voxelPool);
+        if (voxelIndex < 0)
+        {
+            world->bodyShapeHead[bodyIndex] = world->shapeNext[index];
+            world->shapeNext[index] = -1;
+            world->shapeBody[index] = -1;
+            m3IdPoolFree(&world->shapePool, index);
+            return -1; // voxel slots exhausted: loud at the caller
+        }
+        world->voxelData[voxelIndex] = *voxelPrebuilt;
+        m3VoxelSurfaceBuild(&world->voxelSurface[voxelIndex], &world->voxelData[voxelIndex]);
+        world->voxelRefCounts[voxelIndex] = 1;
+        world->shapeVoxelIndex[index] = voxelIndex;
     }
     // Spheres and hulls enter the broadphase tree; infinite planes
     // stay out and take the dedicated pair pass.
@@ -424,6 +444,18 @@ void m3DestroyShapeInternal(m3World* world, int32_t index)
         }
         world->shapeMeshIndex[index] = -1;
     }
+    if (world->shapeVoxelIndex[index] >= 0)
+    {
+        int32_t voxelIndex = world->shapeVoxelIndex[index];
+        world->voxelRefCounts[voxelIndex] -= 1;
+        if (world->voxelRefCounts[voxelIndex] == 0)
+        {
+            memset(&world->voxelData[voxelIndex], 0, sizeof(m3VoxelChunkData));
+            memset(&world->voxelSurface[voxelIndex], 0, sizeof(m3VoxelSurface));
+            m3IdPoolFree(&world->voxelPool, voxelIndex);
+        }
+        world->shapeVoxelIndex[index] = -1;
+    }
     m3IdPoolFree(&world->shapePool, index);
     m3RecomputeMass(world, bodyIndex);
 }
@@ -443,7 +475,7 @@ static m3ShapeId CreateShapeCommon(m3BodyId bodyId, const m3ShapeDef* def, uint8
     {
         return m3_nullShapeId; // hostile material: refused loudly
     }
-    int32_t index = m3CreateShapeInternal(world, bodyIndex, type, geom, def, NULL, NULL);
+    int32_t index = m3CreateShapeInternal(world, bodyIndex, type, geom, def, NULL, NULL, NULL);
     if (index < 0)
     {
         return m3_nullShapeId;
@@ -553,8 +585,8 @@ m3ShapeId m3CreateHullShape(m3BodyId bodyId, const m3ShapeDef* def, const m3Vec3
     }
     m3ShapeGeom geom;
     memset(&geom, 0, sizeof(geom));
-    int32_t index =
-        m3CreateShapeInternal(world, bodyIndex, (uint8_t)m3_hullShape, &geom, def, &data, NULL);
+    int32_t index = m3CreateShapeInternal(world, bodyIndex, (uint8_t)m3_hullShape, &geom, def,
+                                          &data, NULL, NULL);
     if (index < 0)
     {
         return m3_nullShapeId;
@@ -616,8 +648,8 @@ m3ShapeId m3CreateMeshShape(m3BodyId bodyId, const m3ShapeDef* def, const m3Vec3
     memcpy(mesh->indices, indices, (size_t)(3 * triangleCount) * sizeof(uint16_t));
     m3ShapeGeom geom;
     memset(&geom, 0, sizeof(geom));
-    int32_t index =
-        m3CreateShapeInternal(world, bodyIndex, (uint8_t)m3_meshShape, &geom, def, NULL, mesh);
+    int32_t index = m3CreateShapeInternal(world, bodyIndex, (uint8_t)m3_meshShape, &geom, def, NULL,
+                                          mesh, NULL);
     m3Free(mesh);
     if (index < 0)
     {
@@ -696,6 +728,73 @@ m3ShapeId m3CreateHeightFieldShape(m3BodyId bodyId, const m3ShapeDef* def, const
         }
     }
     return m3CreateMeshShape(bodyId, def, verts, nx * nz, tris, n / 3);
+}
+
+m3ShapeId m3CreateVoxelChunkShape(m3BodyId bodyId, const m3ShapeDef* def, const uint8_t* voxels,
+                                  const uint16_t* payload, m3real cellSize)
+{
+    m3World* world = m3WorldFromIndex0(bodyId.world0);
+    int32_t bodyIndex = world != NULL ? m3BodySlot(world, bodyId) : -1;
+    if (bodyIndex < 0 || def == NULL || def->internalValue != M3_SHAPE_COOKIE || voxels == NULL ||
+        !(cellSize > 0.0f) || !m3FiniteF(cellSize))
+    {
+        return m3_nullShapeId;
+    }
+    if (world->types[bodyIndex] != (uint8_t)m3_staticBody || def->isSensor)
+    {
+        // Static level geometry only in 3-1 (dynamic voxel bodies
+        // have no consumer yet), and sensors are convex volumes by
+        // contract: both refusals are loud.
+        return m3_nullShapeId;
+    }
+    m3VoxelChunkData* chunk = (m3VoxelChunkData*)m3AllocZeroed((int32_t)sizeof(m3VoxelChunkData));
+    if (chunk == NULL)
+    {
+        return m3_nullShapeId;
+    }
+    int32_t filled = m3VoxelPack(chunk, voxels, payload, cellSize);
+    if (filled == 0)
+    {
+        m3Free(chunk);
+        return m3_nullShapeId; // an empty chunk is a request for nothing
+    }
+    m3ShapeGeom geom;
+    memset(&geom, 0, sizeof(geom));
+    geom.s = cellSize;
+    int32_t index = m3CreateShapeInternal(world, bodyIndex, (uint8_t)m3_voxelShape, &geom, def,
+                                          NULL, NULL, chunk);
+    m3Free(chunk);
+    if (index < 0)
+    {
+        return m3_nullShapeId;
+    }
+    m3ShapeId id = {index + 1, world->worldIndex0, world->shapePool.generations[index]};
+    if (world->journalActive != 0)
+    {
+        // Header + the packed grid (bitset and payload): the exact
+        // recipe, so replay rebuilds the identical chunk and surface.
+        struct
+        {
+            m3ShapeDef def;
+            m3BodyId body;
+            m3ShapeId expected;
+            m3real cellSize;
+        } record;
+        memset(&record, 0, sizeof(record));
+        record.def = *def;
+        record.body = bodyId;
+        record.expected = id;
+        record.cellSize = cellSize;
+        uint8_t payloadBuf[sizeof(record) + sizeof(((m3VoxelChunkData*)0)->occupancy) +
+                           sizeof(((m3VoxelChunkData*)0)->payload)];
+        memcpy(payloadBuf, &record, sizeof(record));
+        const m3VoxelChunkData* stored = &world->voxelData[world->shapeVoxelIndex[index]];
+        memcpy(payloadBuf + sizeof(record), stored->occupancy, sizeof(stored->occupancy));
+        memcpy(payloadBuf + sizeof(record) + sizeof(stored->occupancy), stored->payload,
+               sizeof(stored->payload));
+        m3JournalRecord(world, m3_opCreateVoxelChunkShape, payloadBuf, (int32_t)sizeof(payloadBuf));
+    }
+    return id;
 }
 
 m3ShapeId m3CreateBoxShape(m3BodyId bodyId, const m3ShapeDef* def, m3Vec3 halfExtents)

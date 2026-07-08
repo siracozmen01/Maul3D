@@ -1365,6 +1365,11 @@ static bool ContinuousQueryCallback(int32_t shape, void* userContext)
     {
         return true; // sensors never stop anything
     }
+    if (world->shapeType[shape] == (uint8_t)m3_voxelShape)
+    {
+        return true; // voxel CCD is the 3-5 slice; until then fast
+                     // bodies treat chunks as discrete-only targets
+    }
     if (world->shapeType[shape] == (uint8_t)m3_meshShape)
     {
         // Mesh TOI (2b-9d): sweep the fast shape against every

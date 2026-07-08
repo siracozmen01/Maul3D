@@ -32,8 +32,9 @@ extern "C"
         m3Vec3 gravity;
         int32_t bodyCapacity;
         int32_t shapeCapacity;
-        int32_t meshCapacity;         // static triangle-mesh slots (24 KB each)
-        int32_t jointCapacity;        // articulation slots (2c-2)
+        int32_t meshCapacity; // static triangle-mesh slots (24 KB each)
+        int32_t jointCapacity;
+        int32_t voxelCapacity;        // voxel chunk slots (3-1)        // articulation slots (2c-2)
         int32_t workerCount;          // twin worlds with different counts must hash equal
         m3EnqueueTaskFn* enqueueTask; // both null = serial (the default)
         m3FinishTaskFn* finishTask;
@@ -42,8 +43,8 @@ extern "C"
     } m3WorldDef;
 
     /// The pinned world defaults: gravity (0, -10, 0), 1024 bodies,
-    /// 2048 shapes, 64 joints, 4 meshes, one worker, no task hooks,
-    /// and the def cookie every create demands.
+    /// 2048 shapes, 64 joints, 4 meshes, 4 voxel chunks, one worker,
+    /// no task hooks, and the def cookie every create demands.
     M3_API m3WorldDef m3DefaultWorldDef(void);
 
     /// Create a world. Returns the null id on an invalid def or an

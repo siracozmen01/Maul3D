@@ -22,7 +22,7 @@
 #endif
 
 #define M3_SNAPSHOT_MAGIC   0x4D33534Eu // 'M3SN'
-#define M3_SNAPSHOT_VERSION 17u         // v17: sensor flags
+#define M3_SNAPSHOT_VERSION 18u         // v18: voxel chunks
 
 // The math types are canonical field data only because they are
 // provably padding-free; a change here is a format version bump.
@@ -65,11 +65,16 @@ typedef struct m3SnapshotHeader
     int32_t jointFreeHead;
     int32_t jointFreeCount;
     int32_t jointRetiredCount;
-    int32_t reserved[2]; // keeps the 8-byte-aligned header padding-free
+    int32_t voxelCapacity;
+    int32_t voxelMaxIndex;
+    int32_t voxelFreeHead;
+    int32_t voxelFreeCount;
+    int32_t voxelRetiredCount;
+    int32_t reserved[3]; // keeps the 8-byte-aligned header padding-free
     m3Vec3 gravity;
 } m3SnapshotHeader;
 
-_Static_assert(sizeof(m3SnapshotHeader) == 152, "snapshot header must be padding-free");
+_Static_assert(sizeof(m3SnapshotHeader) == 176, "snapshot header must be padding-free");
 
 static uint64_t ConfigHash(void)
 {
@@ -172,6 +177,12 @@ static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3Wal
     M3_BLOCK(world->shapeMeshIndex, shapeCap * (int32_t)sizeof(int32_t));
     M3_BLOCK(world->shapeSensor, shapeCap * (int32_t)sizeof(uint8_t));
     M3_BLOCK(world->meshData, world->meshCapacity * (int32_t)sizeof(m3MeshData));
+    M3_BLOCK(world->voxelData, world->voxelCapacity * (int32_t)sizeof(m3VoxelChunkData));
+    M3_BLOCK(world->voxelRefCounts, world->voxelCapacity * (int32_t)sizeof(int32_t));
+    M3_BLOCK(world->voxelPool.generations, world->voxelCapacity * (int32_t)sizeof(uint16_t));
+    M3_BLOCK(world->voxelPool.alive, world->voxelCapacity * (int32_t)sizeof(uint8_t));
+    M3_BLOCK(world->voxelPool.freeQueue, world->voxelCapacity * (int32_t)sizeof(int32_t));
+    M3_BLOCK(world->shapeVoxelIndex, world->shapeCapacity * (int32_t)sizeof(int32_t));
     M3_BLOCK(world->meshRefCounts, world->meshCapacity * (int32_t)sizeof(int32_t));
     M3_BLOCK(world->meshPool.generations, world->meshCapacity * (int32_t)sizeof(uint16_t));
     M3_BLOCK(world->meshPool.alive, world->meshCapacity * (int32_t)sizeof(uint8_t));
@@ -258,6 +269,11 @@ int32_t m3World_Snapshot(m3WorldId worldId, void* out, int32_t capacity)
     header.jointFreeHead = world->jointPool.freeHead;
     header.jointFreeCount = world->jointPool.freeCount;
     header.jointRetiredCount = world->jointPool.retiredCount;
+    header.voxelCapacity = world->voxelCapacity;
+    header.voxelMaxIndex = world->voxelPool.maxIndex;
+    header.voxelFreeHead = world->voxelPool.freeHead;
+    header.voxelFreeCount = world->voxelPool.freeCount;
+    header.voxelRetiredCount = world->voxelPool.retiredCount;
     header.meshMaxIndex = world->meshPool.maxIndex;
     header.meshFreeHead = world->meshPool.freeHead;
     header.meshFreeCount = world->meshPool.freeCount;
@@ -282,7 +298,9 @@ bool m3World_Restore(m3WorldId worldId, const void* data, int32_t size)
     if (header.magic != M3_SNAPSHOT_MAGIC || header.formatVersion != M3_SNAPSHOT_VERSION ||
         header.configHash != ConfigHash() || header.bodyCapacity != world->bodyCapacity ||
         header.shapeCapacity != world->shapeCapacity ||
-        header.meshCapacity != world->meshCapacity || header.jointCapacity != world->jointCapacity)
+        header.meshCapacity != world->meshCapacity ||
+        header.jointCapacity != world->jointCapacity ||
+        header.voxelCapacity != world->voxelCapacity)
     {
         // Wrong world shape or wrong build semantics: refuse loudly,
         // never a partial restore.
@@ -312,6 +330,10 @@ bool m3World_Restore(m3WorldId worldId, const void* data, int32_t size)
     world->jointPool.freeHead = header.jointFreeHead;
     world->jointPool.freeCount = header.jointFreeCount;
     world->jointPool.retiredCount = header.jointRetiredCount;
+    world->voxelPool.maxIndex = header.voxelMaxIndex;
+    world->voxelPool.freeHead = header.voxelFreeHead;
+    world->voxelPool.freeCount = header.voxelFreeCount;
+    world->voxelPool.retiredCount = header.voxelRetiredCount;
     world->meshPool.maxIndex = header.meshMaxIndex;
     world->meshPool.freeHead = header.meshFreeHead;
     world->meshPool.freeCount = header.meshFreeCount;
@@ -335,6 +357,13 @@ bool m3World_Restore(m3WorldId worldId, const void* data, int32_t size)
         if (world->meshPool.alive[m] != 0)
         {
             m3MeshBvhBuild(&world->meshBvh[m], &world->meshData[m]);
+        }
+    }
+    for (int32_t v = 0; v < world->voxelPool.maxIndex; ++v)
+    {
+        if (world->voxelPool.alive[v] != 0)
+        {
+            m3VoxelSurfaceBuild(&world->voxelSurface[v], &world->voxelData[v]);
         }
     }
     return true;
@@ -392,6 +421,32 @@ uint64_t m3World_Hash(m3WorldId worldId)
         h = m3Hash64(h, &world->shapeHullIndex[i], 4);
         h = m3Hash64(h, &world->shapeMeshIndex[i], 4);
         h = m3Hash64(h, &world->shapeSensor[i], 1);
+        if (world->shapeType[i] == (uint8_t)m3_voxelShape)
+        {
+            // Folded only for the new type: pre-voxel scenes keep
+            // their exact hash input set (the golden must not move
+            // for worlds that never touch voxels).
+            h = m3Hash64(h, &world->shapeVoxelIndex[i], 4);
+        }
+    }
+
+    // Voxel chunk content is simulation state (destruction edits it
+    // and rollback must cover it); live slots only, same law as
+    // everything above.
+    int32_t maxVoxel = world->voxelPool.maxIndex;
+    for (int32_t i = 0; i < maxVoxel; ++i)
+    {
+        uint8_t alive = world->voxelPool.alive[i];
+        h = m3Hash64(h, &alive, 1);
+        if (alive == 0)
+        {
+            continue;
+        }
+        h = m3Hash64(h, &world->voxelData[i].cellSize, 4);
+        h = m3Hash64(h, &world->voxelData[i].filledCount, 4);
+        h = m3Hash64(h, world->voxelData[i].occupancy,
+                     (int32_t)sizeof(world->voxelData[i].occupancy));
+        h = m3Hash64(h, world->voxelData[i].payload, (int32_t)sizeof(world->voxelData[i].payload));
     }
     int32_t maxJoint = world->jointPool.maxIndex;
     for (int32_t i = 0; i < maxJoint; ++i)

@@ -54,6 +54,7 @@ typedef enum m3Op
     m3_opCreateMeshShape = 8, // header + exact-size vertex/index payload
     m3_opCreateJoint = 9,
     m3_opDestroyJoint = 10,
+    m3_opCreateVoxelChunkShape = 11, // header + packed grid payload
 } m3Op;
 
 // Immutable interned hull data (lifetime 3): vertices, face planes,
@@ -161,6 +162,45 @@ void m3MeshBvhBuild(m3MeshBvh* bvh, const m3MeshData* mesh);
 // reject test, so behavior stays bit-identical to the full scan this
 // replaces. `out` must hold M3_MESH_MAX_TRIS entries.
 int32_t m3MeshBvhGather(const m3MeshBvh* bvh, m3Vec3 lo, m3Vec3 hi, uint16_t* out);
+
+// Generalized build: a BVH over caller-supplied bounds (the mesh
+// build wraps this with triangle boxes; the voxel surface feeds
+// merged-box bounds). Count is capped at M3_MESH_MAX_TRIS.
+void m3MeshBvhBuildBounds(m3MeshBvh* bvh, const m3Vec3* los, const m3Vec3* his, int32_t count);
+
+// Voxel chunks (3-1): dense 16^3 occupancy + payload, one
+// padding-free snapshot block per slot. STATE ends there; the
+// merged-box surface and its BVH are derived (never snapshotted,
+// never hashed, rebuilt wherever content lands).
+#define M3_VOXEL_DIM       16
+#define M3_VOXEL_COUNT     (M3_VOXEL_DIM * M3_VOXEL_DIM * M3_VOXEL_DIM)
+#define M3_VOXEL_MAX_BOXES 2048 // the isolated-voxel (checkerboard) worst case
+
+typedef struct m3VoxelChunkData
+{
+    m3real cellSize;
+    int32_t filledCount;
+    uint8_t occupancy[M3_VOXEL_COUNT / 8];
+    uint16_t payload[M3_VOXEL_COUNT];
+} m3VoxelChunkData;
+
+_Static_assert(sizeof(m3VoxelChunkData) == 8 + 512 + 8192, "voxel chunk must be padding-free");
+
+typedef struct m3VoxelSurface
+{
+    int32_t boxCount;
+    uint8_t boxLo[M3_VOXEL_MAX_BOXES][3]; // inclusive voxel coords
+    uint8_t boxHi[M3_VOXEL_MAX_BOXES][3];
+    m3MeshBvh bvh;
+} m3VoxelSurface;
+
+bool m3VoxelGet(const m3VoxelChunkData* chunk, int32_t x, int32_t y, int32_t z);
+int32_t m3VoxelPack(m3VoxelChunkData* chunk, const uint8_t* voxels, const uint16_t* payload,
+                    m3real cellSize);
+void m3VoxelSurfaceBuild(m3VoxelSurface* surface, const m3VoxelChunkData* chunk);
+void m3VoxelBoxBounds(const m3VoxelSurface* surface, m3real cellSize, int32_t box, m3Vec3* lo,
+                      m3Vec3* hi);
+void m3VoxelBoxHull(const m3VoxelSurface* surface, m3real cellSize, int32_t box, m3HullData* out);
 
 // Geometry is one padding-free 32-byte record per shape, interpreted
 // by type: sphere {v=center, s=radius}, plane {v=normal, s=offset},
@@ -296,10 +336,11 @@ typedef struct m3World
     float* shapeFriction;
     float* shapeRestitution;
     uint64_t* shapeUserData;
-    int32_t* shapeNext;      // next shape on the same body, -1 end
-    int32_t* shapeHullIndex; // interned hull slot, -1 for non-hulls
-    int32_t* shapeMeshIndex; // mesh slot, -1 for non-meshes
-    uint8_t* shapeSensor;    // 1 = overlap detector, never contact response
+    int32_t* shapeNext;       // next shape on the same body, -1 end
+    int32_t* shapeHullIndex;  // interned hull slot, -1 for non-hulls
+    int32_t* shapeMeshIndex;  // mesh slot, -1 for non-meshes
+    int32_t* shapeVoxelIndex; // voxel chunk slot, -1 otherwise
+    uint8_t* shapeSensor;     // 1 = overlap detector, never contact response
 
     // The interned hull pool (immutable content, refcounted).
     m3IdPool hullPool;
@@ -312,6 +353,14 @@ typedef struct m3World
     m3IdPool meshPool;
     m3MeshData* meshData;
     int32_t* meshRefCounts;
+    // Voxel chunk slots (3-1): the mesh-slot pattern (pool,
+    // refcounts, per-slot state block), plus the DERIVED surface.
+    int32_t voxelCapacity;
+    m3IdPool voxelPool;
+    m3VoxelChunkData* voxelData;
+    int32_t* voxelRefCounts;
+    struct m3VoxelSurface* voxelSurface; // derived, not snapshot
+
     // Per-mesh static BVH (2c-10): DERIVED data, never in the
     // snapshot or the hash. Rebuilt from mesh content on create and
     // on restore; the build is a pure function of the triangle set,
@@ -422,7 +471,8 @@ int32_t m3InternHull(m3World* world, const m3HullData* data); // -1 = pool exhau
 void m3ReleaseHull(m3World* world, int32_t hullIndex);
 int32_t m3CreateShapeInternal(m3World* world, int32_t bodyIndex, uint8_t type,
                               const m3ShapeGeom* geom, const m3ShapeDef* def,
-                              const m3HullData* prebuilt, const m3MeshData* meshPrebuilt);
+                              const m3HullData* prebuilt, const m3MeshData* meshPrebuilt,
+                              const m3VoxelChunkData* voxelPrebuilt);
 void m3DestroyShapeInternal(m3World* world, int32_t index);
 void m3RecomputeMass(m3World* world, int32_t bodyIndex);
 

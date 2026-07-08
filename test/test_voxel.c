@@ -1,0 +1,317 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Sirac Ozmen
+//
+// The voxel chunk gate (3-1): state in the grid, everything else
+// derived. Twin builds agree to the byte, the greedy merge produces
+// the analytically-known box counts, bodies rest on voxel floors at
+// analytic heights, the chunk rides snapshot and journal like every
+// other state, a rollback re-derives the identical surface, and the
+// refusals are loud.
+
+#include "world_internal.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+static int s_failures = 0;
+
+#define CHECK(cond, msg)                                                                           \
+    do                                                                                             \
+    {                                                                                              \
+        if (!(cond))                                                                               \
+        {                                                                                          \
+            printf("FAIL: %s (%s:%d)\n", msg, __FILE__, __LINE__);                                 \
+            s_failures += 1;                                                                       \
+        }                                                                                          \
+    } while (0)
+
+static m3WorldId SmallWorld(void)
+{
+    m3WorldDef def = m3DefaultWorldDef();
+    def.bodyCapacity = 16;
+    def.shapeCapacity = 16;
+    def.voxelCapacity = 2;
+    return m3CreateWorld(&def);
+}
+
+// One byte per voxel, x fastest (the create contract).
+static void FillSlab(uint8_t* voxels, int32_t yTop)
+{
+    memset(voxels, 0, M3_VOXEL_COUNT);
+    for (int32_t z = 0; z < M3_VOXEL_DIM; ++z)
+    {
+        for (int32_t y = 0; y < yTop; ++y)
+        {
+            for (int32_t x = 0; x < M3_VOXEL_DIM; ++x)
+            {
+                voxels[x + M3_VOXEL_DIM * (y + M3_VOXEL_DIM * z)] = 1;
+            }
+        }
+    }
+}
+
+static const m3VoxelSurface* SurfaceOf(m3WorldId worldId, m3ShapeId shape)
+{
+    m3World* world = m3WorldFromId(worldId);
+    return &world->voxelSurface[world->shapeVoxelIndex[shape.index1 - 1]];
+}
+
+static void TestGreedyMergeAnalytics(void)
+{
+    m3WorldId world = SmallWorld();
+    m3BodyDef gd = m3DefaultBodyDef();
+    m3BodyId ground = m3CreateBody(world, &gd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    static uint8_t voxels[M3_VOXEL_COUNT];
+
+    // A full chunk merges into exactly one box.
+    memset(voxels, 1, sizeof(voxels));
+    m3ShapeId full = m3CreateVoxelChunkShape(ground, &sd, voxels, NULL, 1.0f);
+    CHECK(m3Shape_IsValid(full), "the full chunk creates");
+    CHECK(SurfaceOf(world, full)->boxCount == 1, "a full chunk is one box");
+
+    // A one-voxel-thick floor merges into one slab box.
+    m3BodyDef gd2 = m3DefaultBodyDef();
+    gd2.position = (m3Pos3){100.0, 0.0, 0.0};
+    m3BodyId ground2 = m3CreateBody(world, &gd2);
+    FillSlab(voxels, 1);
+    m3ShapeId slab = m3CreateVoxelChunkShape(ground2, &sd, voxels, NULL, 1.0f);
+    CHECK(m3Shape_IsValid(slab), "the slab creates");
+    CHECK(SurfaceOf(world, slab)->boxCount == 1, "a flat floor is one box");
+    m3DestroyWorld(world);
+
+    // Two disjoint voxels are two boxes; payload rides along.
+    m3WorldId w2 = SmallWorld();
+    m3BodyId g3 = m3CreateBody(w2, &gd);
+    memset(voxels, 0, sizeof(voxels));
+    static uint16_t payload[M3_VOXEL_COUNT];
+    memset(payload, 0, sizeof(payload));
+    voxels[0] = 1;
+    payload[0] = 7;
+    int32_t far = 15 + M3_VOXEL_DIM * (15 + M3_VOXEL_DIM * 15);
+    voxels[far] = 1;
+    payload[far] = 9;
+    m3ShapeId two = m3CreateVoxelChunkShape(g3, &sd, voxels, payload, 0.5f);
+    CHECK(m3Shape_IsValid(two), "the two-voxel chunk creates");
+    CHECK(SurfaceOf(w2, two)->boxCount == 2, "two isolated voxels are two boxes");
+    m3World* wp = m3WorldFromId(w2);
+    const m3VoxelChunkData* chunk = &wp->voxelData[wp->shapeVoxelIndex[two.index1 - 1]];
+    CHECK(chunk->payload[0] == 7 && chunk->payload[far] == 9, "payload is carried as state");
+    CHECK(chunk->filledCount == 2, "the filled count is exact");
+    m3DestroyWorld(w2);
+}
+
+static void TestRestingOnVoxelFloor(void)
+{
+    // A 3-voxel-high floor with cell 0.5: the top face sits at
+    // y = 1.5 in the chunk frame. A ball of radius 0.4 rests at
+    // 1.9, a unit box rests with its center at 2.0, a lying capsule
+    // of radius 0.2 rests at 1.7. Analytic, all three families.
+    uint64_t hashes[2];
+    for (int32_t run = 0; run < 2; ++run)
+    {
+        m3WorldId world = SmallWorld();
+        m3BodyDef gd = m3DefaultBodyDef();
+        gd.position = (m3Pos3){-4.0, 0.0, -4.0};
+        m3BodyId ground = m3CreateBody(world, &gd);
+        m3ShapeDef sd = m3DefaultShapeDef();
+        static uint8_t voxels[M3_VOXEL_COUNT];
+        FillSlab(voxels, 3);
+        CHECK(m3Shape_IsValid(m3CreateVoxelChunkShape(ground, &sd, voxels, NULL, 0.5f)),
+              "the floor chunk creates");
+
+        m3BodyDef bd = m3DefaultBodyDef();
+        bd.type = m3_dynamicBody;
+        bd.position = (m3Pos3){0.0, 2.6, 0.0};
+        m3BodyId ball = m3CreateBody(world, &bd);
+        m3Sphere sphere = {{0.0f, 0.0f, 0.0f}, 0.4f};
+        m3CreateSphereShape(ball, &sd, &sphere);
+
+        bd.position = (m3Pos3){-2.0, 2.8, -2.0};
+        m3BodyId crate = m3CreateBody(world, &bd);
+        m3CreateBoxShape(crate, &sd, (m3Vec3){0.5f, 0.5f, 0.5f});
+
+        bd.position = (m3Pos3){2.0, 2.4, 2.0};
+        m3BodyId pill = m3CreateBody(world, &bd);
+        m3Capsule capsule = {{-0.3f, 0.0f, 0.0f}, {0.3f, 0.0f, 0.0f}, 0.2f};
+        m3CreateCapsuleShape(pill, &sd, &capsule);
+
+        for (int32_t i = 0; i < 240; ++i)
+        {
+            m3World_Step(world, 1.0f / 60.0f, 4);
+        }
+        m3Pos3 pBall = m3Body_GetPosition(ball);
+        m3Pos3 pCrate = m3Body_GetPosition(crate);
+        m3Pos3 pPill = m3Body_GetPosition(pill);
+        CHECK(pBall.y > 1.85 && pBall.y < 1.95, "the ball rests at the analytic height");
+        CHECK(pCrate.y > 1.95 && pCrate.y < 2.05, "the crate rests flat at the analytic height");
+        CHECK(pPill.y > 1.65 && pPill.y < 1.75, "the capsule rests at the analytic height");
+        hashes[run] = m3World_Hash(world);
+        m3DestroyWorld(world);
+    }
+    CHECK(hashes[0] == hashes[1], "voxel resting scenes are bit-deterministic twins");
+}
+
+static void TestSnapshotJournalAndDerivedRebuild(void)
+{
+    static uint8_t journal[262144];
+    m3WorldId world = SmallWorld();
+    CHECK(m3World_JournalBegin(world, journal, (int32_t)sizeof(journal)), "the journal arms");
+
+    m3BodyDef gd = m3DefaultBodyDef();
+    m3BodyId ground = m3CreateBody(world, &gd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    static uint8_t voxels[M3_VOXEL_COUNT];
+    FillSlab(voxels, 2);
+    // A tower in one corner makes the surface non-trivial.
+    for (int32_t y = 2; y < 10; ++y)
+    {
+        voxels[3 + M3_VOXEL_DIM * (y + M3_VOXEL_DIM * 3)] = 1;
+    }
+    m3ShapeId chunkShape = m3CreateVoxelChunkShape(ground, &sd, voxels, NULL, 0.5f);
+    CHECK(m3Shape_IsValid(chunkShape), "the tower chunk creates");
+
+    m3BodyDef bd = m3DefaultBodyDef();
+    bd.type = m3_dynamicBody;
+    bd.position = (m3Pos3){1.5, 3.0, 1.5};
+    m3BodyId ball = m3CreateBody(world, &bd);
+    m3Sphere sphere = {{0.0f, 0.0f, 0.0f}, 0.3f};
+    m3CreateSphereShape(ball, &sd, &sphere);
+    for (int32_t i = 0; i < 90; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+    }
+    int32_t bytes = m3World_JournalEnd(world);
+    CHECK(bytes > 0, "the voxel session records");
+
+    // Journal replay re-mints the chunk and rebuilds the surface.
+    m3WorldId replayed = SmallWorld();
+    CHECK(m3World_JournalReplay(replayed, journal, bytes), "the voxel session replays");
+    CHECK(m3World_Hash(replayed) == m3World_Hash(world), "the replay is bit-identical");
+    CHECK(memcmp(SurfaceOf(replayed, chunkShape), SurfaceOf(world, chunkShape),
+                 sizeof(m3VoxelSurface)) == 0,
+          "the replayed surface is byte-identical");
+    m3DestroyWorld(replayed);
+
+    // Snapshot, scrub the derived surface, restore: bit-identical
+    // state AND a byte-identical rebuilt surface (the derived law).
+    int32_t snapBytes = m3World_SnapshotSize(world);
+    uint8_t* snap = (uint8_t*)malloc((size_t)snapBytes);
+    CHECK(m3World_Snapshot(world, snap, snapBytes) == snapBytes, "the voxel snapshot writes");
+    m3VoxelSurface* before = (m3VoxelSurface*)malloc(sizeof(m3VoxelSurface));
+    memcpy(before, SurfaceOf(world, chunkShape), sizeof(m3VoxelSurface));
+    uint64_t hashBefore = m3World_Hash(world);
+
+    m3World* wp = m3WorldFromId(world);
+    memset(&wp->voxelSurface[wp->shapeVoxelIndex[chunkShape.index1 - 1]], 0,
+           sizeof(m3VoxelSurface));
+    for (int32_t i = 0; i < 30; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+    }
+    CHECK(m3World_Restore(world, snap, snapBytes), "the voxel snapshot restores");
+    CHECK(m3World_Hash(world) == hashBefore, "the restore is bit-identical");
+    CHECK(memcmp(SurfaceOf(world, chunkShape), before, sizeof(m3VoxelSurface)) == 0,
+          "the restore re-derives a byte-identical surface");
+    free(before);
+    free(snap);
+    m3DestroyWorld(world);
+}
+
+static void TestQueriesAgainstVoxels(void)
+{
+    m3WorldId world = SmallWorld();
+    m3BodyDef gd = m3DefaultBodyDef();
+    m3BodyId ground = m3CreateBody(world, &gd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    static uint8_t voxels[M3_VOXEL_COUNT];
+    FillSlab(voxels, 4);
+    m3ShapeId chunkShape = m3CreateVoxelChunkShape(ground, &sd, voxels, NULL, 1.0f);
+    CHECK(m3Shape_IsValid(chunkShape), "the query chunk creates");
+
+    // A downward ray hits the top face at the analytic fraction.
+    m3RayHit hit =
+        m3World_CastRayClosest(world, (m3Pos3){8.0, 10.0, 8.0}, (m3Vec3){0.0f, -10.0f, 0.0f});
+    CHECK(hit.hit && hit.shape.index1 == chunkShape.index1, "the ray hits the chunk");
+    CHECK(hit.fraction > 0.599f && hit.fraction < 0.601f, "the ray fraction is analytic");
+    CHECK(hit.normal.y > 0.99f, "the entry normal is the top face");
+
+    // A ray born inside the slab misses (the ray contract).
+    hit = m3World_CastRayClosest(world, (m3Pos3){8.0, 2.0, 8.0}, (m3Vec3){0.0f, -5.0f, 0.0f});
+    CHECK(!hit.hit, "a ray born inside reports a miss");
+
+    // Containment: inside a filled voxel, above the slab, outside.
+    CHECK(m3World_PointInside(world, (m3Pos3){8.0, 3.5, 8.0}).index1 == chunkShape.index1,
+          "a point in a filled voxel is inside");
+    CHECK(m3World_PointInside(world, (m3Pos3){8.0, 4.5, 8.0}).index1 == 0,
+          "a point above the slab is outside");
+    CHECK(m3World_PointInside(world, (m3Pos3){-1.0, 1.0, 8.0}).index1 == 0,
+          "a point before the chunk origin is outside");
+
+    // Overlaps: the sphere reach and the AABB both see the chunk.
+    m3ShapeId found[4];
+    int32_t n = m3World_OverlapSphere(world, (m3Pos3){8.0, 4.3, 8.0}, 0.5f, found, 4);
+    CHECK(n == 1 && found[0].index1 == chunkShape.index1, "the sphere reach finds the chunk");
+    n = m3World_OverlapSphere(world, (m3Pos3){8.0, 5.5, 8.0}, 0.5f, found, 4);
+    CHECK(n == 0, "out of reach finds nothing");
+    m3DestroyWorld(world);
+}
+
+static void TestVoxelRefusals(void)
+{
+    m3WorldId world = SmallWorld();
+    m3BodyDef gd = m3DefaultBodyDef();
+    m3BodyId ground = m3CreateBody(world, &gd);
+    m3BodyDef dd = m3DefaultBodyDef();
+    dd.type = m3_dynamicBody;
+    m3BodyId mover = m3CreateBody(world, &dd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    static uint8_t voxels[M3_VOXEL_COUNT];
+    memset(voxels, 1, sizeof(voxels));
+
+    CHECK(!m3Shape_IsValid(m3CreateVoxelChunkShape(mover, &sd, voxels, NULL, 1.0f)),
+          "a dynamic body refuses a chunk (3-1 is static level geometry)");
+    m3ShapeDef sensor = m3DefaultShapeDef();
+    sensor.isSensor = true;
+    CHECK(!m3Shape_IsValid(m3CreateVoxelChunkShape(ground, &sensor, voxels, NULL, 1.0f)),
+          "a sensor chunk refuses (sensor volumes are convex)");
+    CHECK(!m3Shape_IsValid(m3CreateVoxelChunkShape(ground, &sd, voxels, NULL, 0.0f)),
+          "zero cell size refuses");
+    CHECK(!m3Shape_IsValid(m3CreateVoxelChunkShape(ground, &sd, NULL, NULL, 1.0f)),
+          "a null grid refuses");
+    memset(voxels, 0, sizeof(voxels));
+    CHECK(!m3Shape_IsValid(m3CreateVoxelChunkShape(ground, &sd, voxels, NULL, 1.0f)),
+          "an empty grid refuses");
+
+    // Pool exhaustion: capacity 2 fills, the third refuses.
+    memset(voxels, 1, sizeof(voxels));
+    m3BodyDef g2 = m3DefaultBodyDef();
+    g2.position = (m3Pos3){40.0, 0.0, 0.0};
+    m3BodyId ground2 = m3CreateBody(world, &g2);
+    CHECK(m3Shape_IsValid(m3CreateVoxelChunkShape(ground, &sd, voxels, NULL, 1.0f)),
+          "chunk one fills");
+    CHECK(m3Shape_IsValid(m3CreateVoxelChunkShape(ground2, &sd, voxels, NULL, 1.0f)),
+          "chunk two fills");
+    CHECK(!m3Shape_IsValid(m3CreateVoxelChunkShape(ground, &sd, voxels, NULL, 1.0f)),
+          "the voxel pool refuses past capacity");
+    m3World_Step(world, 1.0f / 60.0f, 4);
+    CHECK(m3World_Hash(world) != 0, "the refused world still steps");
+    m3DestroyWorld(world);
+}
+
+int main(void)
+{
+    TestGreedyMergeAnalytics();
+    TestRestingOnVoxelFloor();
+    TestSnapshotJournalAndDerivedRebuild();
+    TestQueriesAgainstVoxels();
+    TestVoxelRefusals();
+    if (s_failures == 0)
+    {
+        printf("test_voxel: all green\n");
+        return 0;
+    }
+    printf("test_voxel: %d failure(s)\n", s_failures);
+    return 1;
+}

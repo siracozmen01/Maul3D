@@ -48,6 +48,32 @@ static m3Aabb3d SphereAabb(const m3World* world, int32_t shape)
         return box;
     }
 
+    if (world->shapeType[shape] == (uint8_t)m3_voxelShape)
+    {
+        // Voxel chunk bounds: the eight corners of the chunk box
+        // [0, dim * cell]^3 in the body frame, rotated out.
+        m3real extent = (m3real)M3_VOXEL_DIM * world->shapeGeom[shape].s;
+        m3Aabb3d box = {{1.0e30, 1.0e30, 1.0e30}, {-1.0e30, -1.0e30, -1.0e30}};
+        for (int32_t c = 0; c < 8; ++c)
+        {
+            m3Vec3 corner = {(c & 1) != 0 ? extent : 0.0f, (c & 2) != 0 ? extent : 0.0f,
+                             (c & 4) != 0 ? extent : 0.0f};
+            m3Vec3 r = m3RotateVec3(xf->q, corner);
+            double p[3] = {xf->p.x + (double)r.x, xf->p.y + (double)r.y, xf->p.z + (double)r.z};
+            for (int32_t k = 0; k < 3; ++k)
+            {
+                box.lo[k] = p[k] < box.lo[k] ? p[k] : box.lo[k];
+                box.hi[k] = p[k] > box.hi[k] ? p[k] : box.hi[k];
+            }
+        }
+        for (int32_t k = 0; k < 3; ++k)
+        {
+            box.lo[k] -= (double)M3_AABB_MARGIN;
+            box.hi[k] += (double)M3_AABB_MARGIN;
+        }
+        return box;
+    }
+
     if (world->shapeType[shape] == (uint8_t)m3_meshShape)
     {
         // Mesh bounds: min and max over all vertices in double.

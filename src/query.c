@@ -130,6 +130,11 @@ typedef struct m3ShapeCastContext
 static void ShapeCastTestShape(m3ShapeCastContext* ctx, int32_t shape)
 {
     m3World* world = ctx->world;
+    if (world->shapeType[shape] == (uint8_t)m3_voxelShape)
+    {
+        return; // voxel casts arrive with voxel CCD (3-5); the
+                // header documents the gap loudly
+    }
     int32_t body = world->shapeBody[shape];
     if (world->shapeType[shape] == (uint8_t)m3_meshShape)
     {
@@ -427,6 +432,8 @@ m3RayHit m3World_CastCapsuleClosest(m3WorldId worldId, m3Pos3 center, m3Vec3 poi
 // Point containment and overlaps.
 // ------------------------------------------------------------------
 
+static int PointInVoxel(const m3World* world, int32_t shape, m3Pos3 point);
+
 static int PointInShape(const m3World* world, int32_t shape, m3Pos3 point)
 {
     int32_t body = world->shapeBody[shape];
@@ -470,7 +477,32 @@ static int PointInShape(const m3World* world, int32_t shape, m3Pos3 point)
         // Solid half space: at or below the surface.
         return m3Dot3(world->shapeGeom[shape].v, local) - world->shapeGeom[shape].s <= 0.0f;
     }
+    if (type == (uint8_t)m3_voxelShape)
+    {
+        return PointInVoxel(world, shape, point);
+    }
     return 0; // meshes are open surfaces: no interior
+}
+
+// Solid voxels are CLOSED volumes: containment is a grid lookup.
+static int PointInVoxel(const m3World* world, int32_t shape, m3Pos3 point)
+{
+    int32_t body = world->shapeBody[shape];
+    const m3Transform* xf = &world->transforms[body];
+    m3Vec3 local =
+        m3InvRotateVec3(xf->q, (m3Vec3){(m3real)(point.x - xf->p.x), (m3real)(point.y - xf->p.y),
+                                        (m3real)(point.z - xf->p.z)});
+    int32_t slot = world->shapeVoxelIndex[shape];
+    m3real cell = world->voxelData[slot].cellSize;
+    int32_t x = (int32_t)(local.x / cell);
+    int32_t y = (int32_t)(local.y / cell);
+    int32_t z = (int32_t)(local.z / cell);
+    if (local.x < 0.0f || local.y < 0.0f || local.z < 0.0f || x >= M3_VOXEL_DIM ||
+        y >= M3_VOXEL_DIM || z >= M3_VOXEL_DIM)
+    {
+        return 0;
+    }
+    return m3VoxelGet(&world->voxelData[slot], x, y, z) ? 1 : 0;
 }
 
 m3ShapeId m3World_PointInside(m3WorldId worldId, m3Pos3 point)
@@ -514,6 +546,37 @@ static int SphereReachesShape(m3World* world, int32_t shape, m3Pos3 center, m3re
                                                        (m3real)(center.z - xf->p.z)});
         m3real d = m3Dot3(world->shapeGeom[shape].v, local) - world->shapeGeom[shape].s;
         return d <= radius;
+    }
+    if (type == (uint8_t)m3_voxelShape)
+    {
+        // Reach against the merged boxes: exact clamp per candidate
+        // (boxes are axis-aligned in the chunk frame).
+        int32_t body = world->shapeBody[shape];
+        const m3Transform* xf = &world->transforms[body];
+        m3Vec3 local = m3InvRotateVec3(xf->q, (m3Vec3){(m3real)(center.x - xf->p.x),
+                                                       (m3real)(center.y - xf->p.y),
+                                                       (m3real)(center.z - xf->p.z)});
+        int32_t slot = world->shapeVoxelIndex[shape];
+        const m3VoxelSurface* surface = &world->voxelSurface[slot];
+        m3real cell = world->voxelData[slot].cellSize;
+        uint16_t gather[M3_MESH_MAX_TRIS];
+        m3Vec3 blo = {local.x - radius, local.y - radius, local.z - radius};
+        m3Vec3 bhi = {local.x + radius, local.y + radius, local.z + radius};
+        int32_t gatherCount = m3MeshBvhGather(&surface->bvh, blo, bhi, gather);
+        for (int32_t g = 0; g < gatherCount; ++g)
+        {
+            m3Vec3 lo;
+            m3Vec3 hi;
+            m3VoxelBoxBounds(surface, cell, gather[g], &lo, &hi);
+            m3Vec3 closest = {m3ClampF(local.x, lo.x, hi.x), m3ClampF(local.y, lo.y, hi.y),
+                              m3ClampF(local.z, lo.z, hi.z)};
+            m3Vec3 d = m3Sub3(local, closest);
+            if (m3Dot3(d, d) <= radius * radius)
+            {
+                return 1;
+            }
+        }
+        return 0;
     }
     if (type == (uint8_t)m3_meshShape)
     {

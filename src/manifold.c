@@ -1880,6 +1880,204 @@ static void CollideMeshConvex(m3World* world, m3Manifold* fresh, int32_t meshSha
     }
 }
 
+// Voxel chunk versus convex (3-1): the surface BVH gathers merged
+// boxes in ascending order; each candidate runs the family's exact
+// kernel in the CHUNK frame (boxes are axis-aligned there by
+// construction, so the sphere case is an exact clamp); the deepest
+// candidate wins the manifold (ties to the lower box index via the
+// ascending scan). Cross-box point merging and seam welding are the
+// 3-4 slice; a flat floor merges into ONE box, so resting contacts
+// get full manifolds today. Feature ids mix the box index so warm
+// starts follow their box across rebuilds.
+static void CollideVoxelConvex(m3World* world, m3Manifold* fresh, int32_t voxelShape,
+                               int32_t otherShape, int voxelIsA)
+{
+    int32_t slot = world->shapeVoxelIndex[voxelShape];
+    const m3VoxelChunkData* chunk = &world->voxelData[slot];
+    const m3VoxelSurface* surface = &world->voxelSurface[slot];
+    m3real cell = chunk->cellSize;
+    int32_t voxelBody = world->shapeBody[voxelShape];
+    int32_t otherBody = world->shapeBody[otherShape];
+    const m3Transform* xfV = &world->transforms[voxelBody];
+    const m3Transform* xfO = &world->transforms[otherBody];
+    uint8_t otherType = world->shapeType[otherShape];
+
+    m3Quat conjV = {-xfV->q.x, -xfV->q.y, -xfV->q.z, xfV->q.w};
+    m3Quat qRel = m3MulQuat(conjV, xfO->q);
+    m3Vec3 dp = {(m3real)(xfO->p.x - xfV->p.x), (m3real)(xfO->p.y - xfV->p.y),
+                 (m3real)(xfO->p.z - xfV->p.z)};
+    m3Vec3 pRel = m3InvRotateVec3(xfV->q, dp);
+
+    m3real radius = world->shapeGeom[otherShape].s;
+    m3Vec3 s1 = {0.0f, 0.0f, 0.0f};
+    m3Vec3 s2 = {0.0f, 0.0f, 0.0f};
+    m3Vec3 boundLo;
+    m3Vec3 boundHi;
+    m3HullData otherHullLocal;
+    const m3HullData* otherHull = NULL;
+    if (otherType == (uint8_t)m3_hullShape)
+    {
+        otherHull = &world->hullData[world->shapeHullIndex[otherShape]];
+        boundLo = (m3Vec3){3.4e38f, 3.4e38f, 3.4e38f};
+        boundHi = (m3Vec3){-3.4e38f, -3.4e38f, -3.4e38f};
+        for (int32_t v = 0; v < otherHull->vertexCount; ++v)
+        {
+            m3Vec3 p = m3Add3(m3RotateVec3(qRel, otherHull->vertices[v]), pRel);
+            boundLo.x = m3MinF(boundLo.x, p.x);
+            boundLo.y = m3MinF(boundLo.y, p.y);
+            boundLo.z = m3MinF(boundLo.z, p.z);
+            boundHi.x = m3MaxF(boundHi.x, p.x);
+            boundHi.y = m3MaxF(boundHi.y, p.y);
+            boundHi.z = m3MaxF(boundHi.z, p.z);
+        }
+        radius = 0.0f;
+        (void)otherHullLocal;
+    }
+    else if (otherType == (uint8_t)m3_sphereShape)
+    {
+        s1 = m3Add3(m3RotateVec3(qRel, world->shapeGeom[otherShape].v), pRel);
+        boundLo = s1;
+        boundHi = s1;
+    }
+    else
+    {
+        s1 = m3Add3(m3RotateVec3(qRel, world->shapeGeom[otherShape].v), pRel);
+        s2 = m3Add3(m3RotateVec3(qRel, world->shapeGeom[otherShape].v2), pRel);
+        boundLo.x = m3MinF(s1.x, s2.x);
+        boundLo.y = m3MinF(s1.y, s2.y);
+        boundLo.z = m3MinF(s1.z, s2.z);
+        boundHi.x = m3MaxF(s1.x, s2.x);
+        boundHi.y = m3MaxF(s1.y, s2.y);
+        boundHi.z = m3MaxF(s1.z, s2.z);
+    }
+    m3real reach = radius + M3_SPECULATIVE_DISTANCE;
+
+    uint16_t gather[M3_MESH_MAX_TRIS];
+    int32_t gatherCount = m3MeshBvhGather(
+        &surface->bvh, (m3Vec3){boundLo.x - reach, boundLo.y - reach, boundLo.z - reach},
+        (m3Vec3){boundHi.x + reach, boundHi.y + reach, boundHi.z + reach}, gather);
+
+    m3Manifold best;
+    memset(&best, 0, sizeof(best));
+    m3real bestScore = 3.4e38f;
+    for (int32_t g = 0; g < gatherCount; ++g)
+    {
+        int32_t box = gather[g];
+        m3Manifold local;
+        memset(&local, 0, sizeof(local));
+        if (otherType == (uint8_t)m3_sphereShape)
+        {
+            m3Vec3 lo;
+            m3Vec3 hi;
+            m3VoxelBoxBounds(surface, cell, box, &lo, &hi);
+            m3Vec3 closest = {m3ClampF(s1.x, lo.x, hi.x), m3ClampF(s1.y, lo.y, hi.y),
+                              m3ClampF(s1.z, lo.z, hi.z)};
+            m3Vec3 d = m3Sub3(s1, closest);
+            m3real d2 = m3Dot3(d, d);
+            if (d2 > 0.0f)
+            {
+                m3real dist = sqrtf(d2);
+                m3real sep = dist - radius;
+                if (sep <= M3_SPECULATIVE_DISTANCE)
+                {
+                    m3Vec3 n = m3MulSV3(1.0f / dist, d);
+                    local.normal = n;
+                    local.pointCount = 1;
+                    local.points[0].anchorA = closest;
+                    local.points[0].anchorB = m3Sub3(s1, m3MulSV3(radius, n));
+                    local.points[0].separation = sep;
+                    local.points[0].id = 0;
+                }
+            }
+            else
+            {
+                // Center inside the box: the least-deep face is the
+                // exact minimum translation (axis-aligned, so it is
+                // a six-way comparison, not an iteration).
+                m3real depth[6] = {s1.x - lo.x, hi.x - s1.x, s1.y - lo.y,
+                                   hi.y - s1.y, s1.z - lo.z, hi.z - s1.z};
+                int32_t face = 0;
+                for (int32_t k = 1; k < 6; ++k)
+                {
+                    if (depth[k] < depth[face])
+                    {
+                        face = k;
+                    }
+                }
+                static const m3Vec3 outward[6] = {{-1.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f},
+                                                  {0.0f, -1.0f, 0.0f}, {0.0f, 1.0f, 0.0f},
+                                                  {0.0f, 0.0f, -1.0f}, {0.0f, 0.0f, 1.0f}};
+                m3Vec3 n = outward[face];
+                local.normal = n;
+                local.pointCount = 1;
+                local.points[0].anchorA = m3Add3(s1, m3MulSV3(depth[face], n));
+                local.points[0].anchorB = m3Sub3(s1, m3MulSV3(radius, n));
+                local.points[0].separation = -depth[face] - radius;
+                local.points[0].id = 0;
+            }
+        }
+        else
+        {
+            m3HullData boxHull;
+            m3VoxelBoxHull(surface, cell, box, &boxHull);
+            if (otherType == (uint8_t)m3_capsuleShape)
+            {
+                local = CollideSegmentHull(&boxHull, s1, s2, radius);
+            }
+            else
+            {
+                local = m3CollideHulls(&boxHull, otherHull, qRel, pRel);
+            }
+        }
+        if (local.pointCount == 0)
+        {
+            continue;
+        }
+        m3real score = 3.4e38f;
+        for (int32_t k = 0; k < local.pointCount; ++k)
+        {
+            score = m3MinF(score, local.points[k].separation);
+            // Mix the box index into the feature id so a warm start
+            // follows its box, never a neighbor's.
+            local.points[k].id = (uint16_t)(local.points[k].id ^ (uint16_t)(box * 0x9E3u));
+        }
+        if (score < bestScore)
+        {
+            bestScore = score;
+            best = local;
+        }
+    }
+
+    if (best.pointCount == 0)
+    {
+        return;
+    }
+    // Rebase from the chunk frame to world COM anchors (the hull-hull
+    // convention: anchors arrive as chunk-frame positions).
+    fresh->normal = m3RotateVec3(xfV->q, best.normal);
+    fresh->pointCount = best.pointCount;
+    for (int32_t k = 0; k < best.pointCount; ++k)
+    {
+        m3Vec3 rA = m3RotateVec3(xfV->q, best.points[k].anchorA);
+        m3Vec3 rB = m3RotateVec3(xfV->q, best.points[k].anchorB);
+        fresh->points[k] = best.points[k];
+        fresh->points[k].anchorA = FromCom(world, voxelBody, xfV->p.x + (double)rA.x,
+                                           xfV->p.y + (double)rA.y, xfV->p.z + (double)rA.z);
+        fresh->points[k].anchorB = FromCom(world, otherBody, xfV->p.x + (double)rB.x,
+                                           xfV->p.y + (double)rB.y, xfV->p.z + (double)rB.z);
+    }
+    if (!voxelIsA)
+    {
+        fresh->normal = m3Neg3(fresh->normal);
+        for (int32_t k = 0; k < fresh->pointCount; ++k)
+        {
+            m3Vec3 tmp = fresh->points[k].anchorA;
+            fresh->points[k].anchorA = fresh->points[k].anchorB;
+            fresh->points[k].anchorB = tmp;
+        }
+    }
+}
+
 void m3UpdateContactsRange(m3World* world, int32_t start, int32_t end, const uint64_t* oldKeys,
                            const m3Manifold* oldManifolds, int32_t oldCount)
 {
@@ -1896,11 +2094,24 @@ void m3UpdateContactsRange(m3World* world, int32_t start, int32_t end, const uin
         uint8_t typeB = world->shapeType[shapeB];
 
         m3Manifold fresh;
+        int voxelPair = typeA == (uint8_t)m3_voxelShape || typeB == (uint8_t)m3_voxelShape;
         int meshPair = typeA == (uint8_t)m3_meshShape || typeB == (uint8_t)m3_meshShape;
         int planePair = typeA == (uint8_t)m3_planeShape || typeB == (uint8_t)m3_planeShape;
         int hullPair = typeA == (uint8_t)m3_hullShape || typeB == (uint8_t)m3_hullShape;
         int capsulePair = typeA == (uint8_t)m3_capsuleShape || typeB == (uint8_t)m3_capsuleShape;
-        if (meshPair)
+        if (voxelPair)
+        {
+            memset(&fresh, 0, sizeof(fresh));
+            int32_t voxelShape = typeA == (uint8_t)m3_voxelShape ? shapeA : shapeB;
+            int32_t otherShape = voxelShape == shapeA ? shapeB : shapeA;
+            uint8_t ot = world->shapeType[otherShape];
+            if (ot == (uint8_t)m3_sphereShape || ot == (uint8_t)m3_capsuleShape ||
+                ot == (uint8_t)m3_hullShape)
+            {
+                CollideVoxelConvex(world, &fresh, voxelShape, otherShape, voxelShape == shapeA);
+            }
+        }
+        else if (meshPair)
         {
             memset(&fresh, 0, sizeof(fresh));
             int32_t meshShape = typeA == (uint8_t)m3_meshShape ? shapeA : shapeB;

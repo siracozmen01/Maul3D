@@ -18,6 +18,7 @@ extern "C"
         m3_hullShape = 2,    // convex hull (boxes in 2b-3; point clouds later)
         m3_capsuleShape = 3, // a segment with a radius
         m3_meshShape = 4,    // static triangle soup (2b-9)
+        m3_voxelShape = 5,   // dense 16^3 voxel chunk (3-1)
     } m3ShapeType;
 
     typedef struct m3Sphere
@@ -117,6 +118,20 @@ extern "C"
 
     /// True while the id names a live shape in a live world; false
     /// for the null id, stale generations, and destroyed worlds.
+    /// A voxel chunk: a dense 16x16x16 grid anchored at the body
+    /// origin, cells of `cellSize` meters. `voxels` is one byte per
+    /// voxel (zero = empty), x fastest then y then z; `payload` is
+    /// an optional uint16 per voxel (material, health, type),
+    /// carried as state and hashed. Static bodies only; sensors
+    /// refused (sensor volumes are convex by contract); an empty
+    /// grid refused. Solid voxels are CLOSED volumes: point-inside
+    /// answers true inside filled cells. Shape casts and continuous
+    /// collision do not see voxel chunks until the voxel CCD slice
+    /// (3-5); rays and contacts do.
+    M3_API m3ShapeId m3CreateVoxelChunkShape(m3BodyId bodyId, const m3ShapeDef* def,
+                                             const uint8_t* voxels, const uint16_t* payload,
+                                             m3real cellSize);
+
     M3_API bool m3Shape_IsValid(m3ShapeId shapeId);
 
     static const m3ShapeId m3_nullShapeId = {0, 0, 0};

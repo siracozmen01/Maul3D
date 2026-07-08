@@ -153,6 +153,31 @@ static void DrawShape(const m3DrawContext* ctx, int32_t shape)
         }
         return;
     }
+    if (type == (uint8_t)m3_voxelShape)
+    {
+        // Merged-box wireframe: what the collision actually sees.
+        const m3VoxelSurface* surface = &world->voxelSurface[world->shapeVoxelIndex[shape]];
+        m3real cell = world->voxelData[world->shapeVoxelIndex[shape]].cellSize;
+        static const int32_t boxEdges[12][2] = {{0, 1}, {2, 3}, {4, 5}, {6, 7}, {0, 2}, {1, 3},
+                                                {4, 6}, {5, 7}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
+        for (int32_t b = 0; b < surface->boxCount; ++b)
+        {
+            m3Vec3 lo;
+            m3Vec3 hi;
+            m3VoxelBoxBounds(surface, cell, b, &lo, &hi);
+            m3Vec3 c[8];
+            for (int32_t k = 0; k < 8; ++k)
+            {
+                c[k] = (m3Vec3){(k & 1) != 0 ? hi.x : lo.x, (k & 2) != 0 ? hi.y : lo.y,
+                                (k & 4) != 0 ? hi.z : lo.z};
+            }
+            for (int32_t k = 0; k < 12; ++k)
+            {
+                Segment(ctx, ToWorld(xf, c[boxEdges[k][0]]), ToWorld(xf, c[boxEdges[k][1]]), color);
+            }
+        }
+        return;
+    }
     if (type == (uint8_t)m3_planeShape)
     {
         // An infinite plane draws as a cross patch and a normal

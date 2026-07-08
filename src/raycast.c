@@ -161,6 +161,89 @@ static m3RayLocalHit RayHull(m3Vec3 o, m3Vec3 d, const m3HullData* hull)
 }
 
 // Mesh: bounded per-triangle scan, front faces only.
+// Ray versus the merged-box surface: slab clip per candidate box,
+// front faces only, a ray starting inside reports a miss (the ray
+// contract; ask point-inside for containment). Ascending candidates
+// keep tie winners at the lowest box index.
+static m3RayLocalHit RayVoxel(m3Vec3 o, m3Vec3 d, const m3VoxelSurface* surface, m3real cellSize)
+{
+    m3RayLocalHit best = {0.0f, {0.0f, 0.0f, 0.0f}, 0};
+    m3Vec3 end = m3Add3(o, d);
+    m3Vec3 blo = {m3MinF(o.x, end.x), m3MinF(o.y, end.y), m3MinF(o.z, end.z)};
+    m3Vec3 bhi = {m3MaxF(o.x, end.x), m3MaxF(o.y, end.y), m3MaxF(o.z, end.z)};
+    uint16_t gather[M3_MESH_MAX_TRIS];
+    int32_t gatherCount = m3MeshBvhGather(&surface->bvh, blo, bhi, gather);
+    for (int32_t g = 0; g < gatherCount; ++g)
+    {
+        m3Vec3 lo;
+        m3Vec3 hi;
+        m3VoxelBoxBounds(surface, cellSize, gather[g], &lo, &hi);
+        m3real tEnter = 0.0f;
+        m3real tExit = 1.0f;
+        int32_t enterAxis = -1;
+        m3real enterSign = 0.0f;
+        bool miss = false;
+        for (int32_t k = 0; k < 3 && !miss; ++k)
+        {
+            m3real ok = k == 0 ? o.x : (k == 1 ? o.y : o.z);
+            m3real dk = k == 0 ? d.x : (k == 1 ? d.y : d.z);
+            m3real lok = k == 0 ? lo.x : (k == 1 ? lo.y : lo.z);
+            m3real hik = k == 0 ? hi.x : (k == 1 ? hi.y : hi.z);
+            if (dk == 0.0f)
+            {
+                if (ok < lok || ok > hik)
+                {
+                    miss = true;
+                }
+                continue;
+            }
+            m3real t1 = (lok - ok) / dk;
+            m3real t2 = (hik - ok) / dk;
+            m3real sign = -1.0f;
+            if (t1 > t2)
+            {
+                m3real tmp = t1;
+                t1 = t2;
+                t2 = tmp;
+                sign = 1.0f;
+            }
+            if (t1 > tEnter)
+            {
+                tEnter = t1;
+                enterAxis = k;
+                enterSign = sign;
+            }
+            tExit = m3MinF(tExit, t2);
+        }
+        if (miss || tEnter > tExit || enterAxis < 0)
+        {
+            continue; // no entry face inside [0, 1]: a ray born
+                      // inside the box has no front face to hit
+        }
+        if (best.hit && tEnter >= best.fraction)
+        {
+            continue;
+        }
+        m3Vec3 n = {0.0f, 0.0f, 0.0f};
+        if (enterAxis == 0)
+        {
+            n.x = enterSign;
+        }
+        else if (enterAxis == 1)
+        {
+            n.y = enterSign;
+        }
+        else
+        {
+            n.z = enterSign;
+        }
+        best.hit = 1;
+        best.fraction = tEnter;
+        best.normal = n;
+    }
+    return best;
+}
+
 static m3RayLocalHit RayMesh(m3Vec3 o, m3Vec3 d, const m3MeshData* mesh, const m3MeshBvh* bvh)
 {
     m3RayLocalHit best = {0.0f, {0.0f, 0.0f, 0.0f}, 0};
@@ -253,6 +336,11 @@ static void RayTestShape(m3RayCastContext* ctx, int32_t shape)
     {
         local = RayMesh(o, d, &world->meshData[world->shapeMeshIndex[shape]],
                         &world->meshBvh[world->shapeMeshIndex[shape]]);
+    }
+    else if (type == (uint8_t)m3_voxelShape)
+    {
+        local = RayVoxel(o, d, &world->voxelSurface[world->shapeVoxelIndex[shape]],
+                         world->voxelData[world->shapeVoxelIndex[shape]].cellSize);
     }
     else if (type == (uint8_t)m3_planeShape)
     {

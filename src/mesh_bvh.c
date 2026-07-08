@@ -131,11 +131,10 @@ static int32_t BuildRange(m3MeshBvh* bvh, BvhScratch* scratch, int32_t s, int32_
     return nodeIndex;
 }
 
-void m3MeshBvhBuild(m3MeshBvh* bvh, const m3MeshData* mesh)
+void m3MeshBvhBuildBounds(m3MeshBvh* bvh, const m3Vec3* los, const m3Vec3* his, int32_t count)
 {
     memset(bvh, 0, sizeof(*bvh));
-    int32_t triCount = mesh->triangleCount;
-    if (triCount <= 0)
+    if (count <= 0 || count > M3_MESH_MAX_TRIS)
     {
         return;
     }
@@ -145,15 +144,10 @@ void m3MeshBvhBuild(m3MeshBvh* bvh, const m3MeshData* mesh)
         return; // loud enough: nodeCount 0 makes every gather empty,
                 // and creation paths never run out in tests
     }
-    for (int32_t t = 0; t < triCount; ++t)
+    for (int32_t t = 0; t < count; ++t)
     {
-        m3Vec3 a = mesh->vertices[mesh->indices[3 * t + 0]];
-        m3Vec3 b = mesh->vertices[mesh->indices[3 * t + 1]];
-        m3Vec3 c = mesh->vertices[mesh->indices[3 * t + 2]];
-        m3Vec3 lo = {m3MinF(a.x, m3MinF(b.x, c.x)), m3MinF(a.y, m3MinF(b.y, c.y)),
-                     m3MinF(a.z, m3MinF(b.z, c.z))};
-        m3Vec3 hi = {m3MaxF(a.x, m3MaxF(b.x, c.x)), m3MaxF(a.y, m3MaxF(b.y, c.y)),
-                     m3MaxF(a.z, m3MaxF(b.z, c.z))};
+        m3Vec3 lo = los[t];
+        m3Vec3 hi = his[t];
         scratch->triLo[t] = lo;
         scratch->triHi[t] = hi;
         // The arithmetic mean of the box corners: cheap, deterministic,
@@ -162,8 +156,31 @@ void m3MeshBvhBuild(m3MeshBvh* bvh, const m3MeshData* mesh)
             (m3Vec3){0.5f * (lo.x + hi.x), 0.5f * (lo.y + hi.y), 0.5f * (lo.z + hi.z)};
         bvh->order[t] = (uint16_t)t;
     }
-    BuildRange(bvh, scratch, 0, triCount);
+    BuildRange(bvh, scratch, 0, count);
     m3Free(scratch);
+}
+
+void m3MeshBvhBuild(m3MeshBvh* bvh, const m3MeshData* mesh)
+{
+    m3Vec3 los[M3_MESH_MAX_TRIS];
+    m3Vec3 his[M3_MESH_MAX_TRIS];
+    int32_t triCount = mesh->triangleCount;
+    if (triCount < 0 || triCount > M3_MESH_MAX_TRIS)
+    {
+        memset(bvh, 0, sizeof(*bvh));
+        return;
+    }
+    for (int32_t t = 0; t < triCount; ++t)
+    {
+        m3Vec3 a = mesh->vertices[mesh->indices[3 * t + 0]];
+        m3Vec3 b = mesh->vertices[mesh->indices[3 * t + 1]];
+        m3Vec3 c = mesh->vertices[mesh->indices[3 * t + 2]];
+        los[t] = (m3Vec3){m3MinF(a.x, m3MinF(b.x, c.x)), m3MinF(a.y, m3MinF(b.y, c.y)),
+                          m3MinF(a.z, m3MinF(b.z, c.z))};
+        his[t] = (m3Vec3){m3MaxF(a.x, m3MaxF(b.x, c.x)), m3MaxF(a.y, m3MaxF(b.y, c.y)),
+                          m3MaxF(a.z, m3MaxF(b.z, c.z))};
+    }
+    m3MeshBvhBuildBounds(bvh, los, his, triCount);
 }
 
 // Ascending insertion of gathered leaves would cost per-element

@@ -39,6 +39,7 @@ m3WorldDef m3DefaultWorldDef(void)
     def.shapeCapacity = 2048;
     def.meshCapacity = 4;
     def.jointCapacity = 64;
+    def.voxelCapacity = 4;
     def.workerCount = 1;
     def.internalValue = M3_WORLD_COOKIE;
     return def;
@@ -49,8 +50,8 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     m3WorldId nullId = {0, 0};
     if (def == NULL || def->internalValue != M3_WORLD_COOKIE || def->bodyCapacity <= 0 ||
         def->shapeCapacity <= 0 || def->meshCapacity <= 0 || def->jointCapacity <= 0 ||
-        def->workerCount <= 0 || (def->enqueueTask == NULL) != (def->finishTask == NULL) ||
-        !m3FiniteV3(def->gravity))
+        def->voxelCapacity <= 0 || def->workerCount <= 0 ||
+        (def->enqueueTask == NULL) != (def->finishTask == NULL) || !m3FiniteV3(def->gravity))
     {
         // User-input validation is contract, not invariant: the API
         // promises a null id for a bad def (tests exercise this), so
@@ -79,6 +80,7 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     world->bodyCapacity = cap;
     world->shapeCapacity = def->shapeCapacity;
     world->meshCapacity = def->meshCapacity;
+    world->voxelCapacity = def->voxelCapacity;
     world->jointCapacity = def->jointCapacity;
     world->workerCount = def->workerCount;
     world->enqueueTask = def->enqueueTask;
@@ -169,6 +171,15 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     M3_ALLOC(world->meshData, def->meshCapacity, m3MeshData);
     M3_ALLOC(world->meshRefCounts, def->meshCapacity, int32_t);
     M3_ALLOC(world->meshBvh, def->meshCapacity, m3MeshBvh);
+    world->voxelPool = m3IdPoolCreate(def->voxelCapacity);
+    M3_ALLOC(world->voxelData, def->voxelCapacity, m3VoxelChunkData);
+    M3_ALLOC(world->voxelRefCounts, def->voxelCapacity, int32_t);
+    M3_ALLOC(world->voxelSurface, def->voxelCapacity, m3VoxelSurface);
+    M3_ALLOC(world->shapeVoxelIndex, shapeCap, int32_t);
+    for (int32_t i = 0; i < shapeCap; ++i)
+    {
+        world->shapeVoxelIndex[i] = -1;
+    }
     M3_ALLOC(world->shapeMeshIndex, shapeCap, int32_t);
     M3_ALLOC(world->shapeSensor, shapeCap, uint8_t);
     for (int32_t i = 0; i < shapeCap; ++i)
@@ -267,6 +278,11 @@ void m3DestroyWorld(m3WorldId worldId)
     m3Free(world->meshData);
     m3Free(world->meshRefCounts);
     m3Free(world->meshBvh);
+    m3IdPoolDestroy(&world->voxelPool);
+    m3Free(world->voxelData);
+    m3Free(world->voxelRefCounts);
+    m3Free(world->voxelSurface);
+    m3Free(world->shapeVoxelIndex);
     m3Free(world->shapeMeshIndex);
     m3Free(world->shapeSensor);
     m3Free(world->beginEvents);
@@ -547,7 +563,7 @@ static bool JournalReplayApply(m3World* world, const void* data, int32_t size)
                 return false;
             }
             int32_t index = m3CreateShapeInternal(world, bodyIndex, record.type, &record.geom,
-                                                  &record.def, NULL, NULL);
+                                                  &record.def, NULL, NULL, NULL);
             if (index < 0 || index + 1 != record.expected.index1 ||
                 world->shapePool.generations[index] != record.expected.generation)
             {
@@ -593,7 +609,7 @@ static bool JournalReplayApply(m3World* world, const void* data, int32_t size)
             m3ShapeGeom geom;
             memset(&geom, 0, sizeof(geom));
             int32_t index = m3CreateShapeInternal(world, bodyIndex, (uint8_t)m3_meshShape, &geom,
-                                                  &record.def, NULL, mesh);
+                                                  &record.def, NULL, mesh, NULL);
             m3Free(mesh);
             if (index < 0 || index + 1 != record.expected.index1 ||
                 world->shapePool.generations[index] != record.expected.generation)
@@ -665,11 +681,62 @@ static bool JournalReplayApply(m3World* world, const void* data, int32_t size)
             m3ShapeGeom geom;
             memset(&geom, 0, sizeof(geom));
             int32_t index = m3CreateShapeInternal(world, bodyIndex, (uint8_t)m3_hullShape, &geom,
-                                                  &record.def, &rebuilt, NULL);
+                                                  &record.def, &rebuilt, NULL, NULL);
             if (index < 0 || index + 1 != record.expected.index1 ||
                 world->shapePool.generations[index] != record.expected.generation)
             {
                 return false; // id determinism holds for hull shapes too
+            }
+            break;
+        }
+        case m3_opCreateVoxelChunkShape:
+        {
+            struct
+            {
+                m3ShapeDef def;
+                m3BodyId body;
+                m3ShapeId expected;
+                m3real cellSize;
+            } record;
+            int32_t occBytes = (int32_t)(M3_VOXEL_COUNT / 8);
+            int32_t payBytes = (int32_t)(M3_VOXEL_COUNT * sizeof(uint16_t));
+            if (bytes != (int32_t)sizeof(record) + occBytes + payBytes)
+            {
+                return false;
+            }
+            memcpy(&record, payload, sizeof(record));
+            record.body.world0 = world->worldIndex0;
+            int32_t bodyIndex = m3BodySlot(world, record.body);
+            if (bodyIndex < 0 || !(record.cellSize > 0.0f))
+            {
+                return false;
+            }
+            m3VoxelChunkData* chunk =
+                (m3VoxelChunkData*)m3AllocZeroed((int32_t)sizeof(m3VoxelChunkData));
+            if (chunk == NULL)
+            {
+                return false;
+            }
+            chunk->cellSize = record.cellSize;
+            memcpy(chunk->occupancy, (const uint8_t*)payload + sizeof(record), (size_t)occBytes);
+            memcpy(chunk->payload, (const uint8_t*)payload + sizeof(record) + occBytes,
+                   (size_t)payBytes);
+            int32_t filled = 0;
+            for (int32_t v = 0; v < M3_VOXEL_COUNT; ++v)
+            {
+                filled += (chunk->occupancy[v >> 3] >> (v & 7)) & 1;
+            }
+            chunk->filledCount = filled;
+            m3ShapeGeom geom;
+            memset(&geom, 0, sizeof(geom));
+            geom.s = record.cellSize;
+            int32_t index = m3CreateShapeInternal(world, bodyIndex, (uint8_t)m3_voxelShape, &geom,
+                                                  &record.def, NULL, NULL, chunk);
+            m3Free(chunk);
+            if (index < 0 || index + 1 != record.expected.index1 ||
+                world->shapePool.generations[index] != record.expected.generation)
+            {
+                return false; // id determinism holds for voxels too
             }
             break;
         }

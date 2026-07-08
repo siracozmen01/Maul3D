@@ -32,6 +32,7 @@ add_library(maul3d ${MAUL3D_LIB_KIND}
     src/shape.c
     src/snapshot.c
     src/solver.c
+    src/voxel.c
     src/world.c
 )
 target_include_directories(maul3d PUBLIC
@@ -192,6 +193,15 @@ add_executable(test_draw test/test_draw.c)
 target_link_libraries(test_draw PRIVATE maul3d)
 maul3d_apply_flags(test_draw)
 add_test(NAME draw COMMAND test_draw)
+
+# White-box suites: static builds only (internal symbols).
+if(NOT MAUL3D_BUILD_SHARED)
+    add_executable(test_voxel test/test_voxel.c)
+    target_link_libraries(test_voxel PRIVATE maul3d)
+    target_include_directories(test_voxel PRIVATE src)
+    maul3d_apply_flags(test_voxel)
+    add_test(NAME voxel COMMAND test_voxel)
+endif()
 
 # White-box suite (allocator counters): static builds only, like
 # the other internal-symbol suites.
