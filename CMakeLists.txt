@@ -241,6 +241,11 @@ target_link_libraries(test_vehicle PRIVATE maul3d)
 maul3d_apply_flags(test_vehicle)
 add_test(NAME vehicle COMMAND test_vehicle)
 
+add_executable(test_scale test/test_scale.c)
+target_link_libraries(test_scale PRIVATE maul3d Threads::Threads)
+maul3d_apply_flags(test_scale)
+add_test(NAME scale COMMAND test_scale)
+
 add_executable(test_fuzz test/test_fuzz.c)
 target_link_libraries(test_fuzz PRIVATE maul3d)
 maul3d_apply_flags(test_fuzz)

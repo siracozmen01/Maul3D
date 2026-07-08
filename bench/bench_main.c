@@ -501,6 +501,107 @@ static uint64_t RunCityblockOnce(int32_t totalSteps, double phaseMs[3], int32_t 
     return hash;
 }
 
+// The scale gauntlet (6-4): the full-size numbers the suite proves
+// at CI size. Rollback cost at five thousand bodies, measured
+// mid-storm; then the ten-thousand-body smoke run: integrity only
+// (finite, twin-stable), wall time reported, no pass band.
+static void RunScaleGauntlet(int32_t steps)
+{
+    // Rollback cost at 5k: run the city block to mid-storm, then
+    // price the full snapshot, restore, and a re-fought tail.
+    m3ShapeId towerIds[18];
+    int32_t towerCount = 0;
+    m3WorldId world = SceneCityblock(towerIds, &towerCount);
+    int32_t mid = steps; // one phase's worth of settling
+    for (int32_t i = 0; i < mid; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+    }
+    int32_t snapBytes = m3World_SnapshotSize(world);
+    uint8_t* snap = (uint8_t*)malloc((size_t)snapBytes);
+    double t0 = NowMs();
+    int32_t written = m3World_Snapshot(world, snap, snapBytes);
+    double t1 = NowMs();
+    uint64_t before = m3World_Hash(world);
+    for (int32_t i = 0; i < 30; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+    }
+    uint64_t after = m3World_Hash(world);
+    double t2 = NowMs();
+    m3World_Restore(world, snap, written);
+    double t3 = NowMs();
+    uint64_t restored = m3World_Hash(world);
+    for (int32_t i = 0; i < 30; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+    }
+    uint64_t refought = m3World_Hash(world);
+    printf("M3_BENCH scale5k.rollback bytes=%d snapshotMs=%.2f restoreMs=%.2f restore=%s "
+           "refight=%s\n",
+           written, t1 - t0, t3 - t2, restored == before ? "EXACT" : "BROKEN",
+           refought == after ? "EXACT" : "BROKEN");
+    free(snap);
+    m3DestroyWorld(world);
+
+    // The 10k smoke: twice the rain, integrity only.
+    uint64_t hashes[2];
+    double smokeMs = 0.0;
+    for (int32_t run = 0; run < 2; ++run)
+    {
+        m3WorldDef def = m3DefaultWorldDef();
+        def.bodyCapacity = 16384;
+        def.shapeCapacity = 16384;
+        def.voxelCapacity = 20;
+        m3WorldId sea = m3CreateWorld(&def);
+        AddPlane(sea);
+        m3ShapeDef sd = m3DefaultShapeDef();
+        sd.friction = 0.6f;
+        sd.rollingResistance = 0.05f;
+        m3BodyDef bd = m3DefaultBodyDef();
+        bd.type = m3_dynamicBody;
+        uint64_t rng = 0x10A11ull;
+        for (int32_t k = 0; k < 10000; ++k)
+        {
+            bd.position = (m3Pos3){RandRange(&rng, -46.0, 46.0), RandRange(&rng, 8.0, 60.0),
+                                   RandRange(&rng, -46.0, 46.0)};
+            m3BodyId body = m3CreateBody(sea, &bd);
+            if (k % 3 == 0)
+            {
+                m3Sphere ball = {{0.0f, 0.0f, 0.0f}, (m3real)RandRange(&rng, 0.2, 0.4)};
+                m3CreateSphereShape(body, &sd, &ball);
+            }
+            else if (k % 3 == 1)
+            {
+                m3CreateBoxShape(body, &sd,
+                                 (m3Vec3){(m3real)RandRange(&rng, 0.15, 0.35),
+                                          (m3real)RandRange(&rng, 0.15, 0.35),
+                                          (m3real)RandRange(&rng, 0.15, 0.35)});
+            }
+            else
+            {
+                m3Capsule c = {
+                    {-0.2f, 0.0f, 0.0f}, {0.2f, 0.0f, 0.0f}, (m3real)RandRange(&rng, 0.12, 0.2)};
+                m3CreateCapsuleShape(body, &sd, &c);
+            }
+        }
+        double s0 = NowMs();
+        for (int32_t i = 0; i < steps / 2; ++i)
+        {
+            m3World_Step(sea, 1.0f / 60.0f, 4);
+        }
+        if (run == 0)
+        {
+            smokeMs = NowMs() - s0;
+        }
+        hashes[run] = m3World_Hash(sea);
+        m3DestroyWorld(sea);
+    }
+    printf("M3_BENCH smoke10k   steps=%d totalMs=%9.2f perStepMs=%7.4f hash=%016llx twin=%s\n",
+           steps / 2, smokeMs, smokeMs / (double)(steps / 2), (unsigned long long)hashes[0],
+           hashes[0] == hashes[1] ? "MATCH" : "MISMATCH");
+}
+
 static void RunCityblock(int32_t steps)
 {
     // Twice the base step count: the block needs its three phases.
@@ -546,5 +647,6 @@ int main(int argc, char** argv)
     RunScene("meshfield", SceneMeshField, steps);
     RunVoxfort(steps);
     RunCityblock(steps);
+    RunScaleGauntlet(steps);
     return 0;
 }

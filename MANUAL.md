@@ -411,6 +411,36 @@ the move each tick, netcode style.
 - Hostile moves (non-finite, or any component beyond the caster's
   1e18 float budget) are documented no-ops that never journal.
 
+## Scale
+
+The engine's scale posture is measured, not promised: the bench
+binary's cityblock scene (nine welded voxel tower stacks, five
+thousand mixed bodies, a mid-run fracture wave) and the scale
+gauntlet behind it are the ledger; the scale suite proves the same
+contracts at CI size with a real four-thread host pool.
+
+- Worker counts are performance knobs, never state inputs: serial
+  and threaded runs of the same ops land on identical bits, at
+  every population.
+- Rollback at scale is priced, not feared: at five thousand bodies
+  a full snapshot runs tens of milliseconds and tens of megabytes,
+  restore the same, both bit-exact (the gauntlet prints the
+  numbers on your machine).
+- The step scratch pre-flights its size from pinned per-item
+  budgets (bytes per body, shape, pair, joint), so growth happens
+  BEFORE a step on every platform at the same tick; a scene can
+  never stall differently on different compilers.
+- Sleep is the sandbox's economy. Give ground-contact debris a
+  small rollingResistance (0.01 to 0.1): a frictionless-rolling
+  sphere never stops on its own, and one eternal roller keeps its
+  whole contact island awake.
+- Capacities are hard books, not hints: worlds create up to
+  exactly their capacity and refuse the next, at 256 and at 8192
+  alike. Size the def for the scene, plus fragments.
+- Large levels tile as chunks (voxel chunks, mesh chunks,
+  heightfield chunks) under one static body each; welding makes
+  grid-aligned voxel seams contact-seamless.
+
 ## Units and conventions
 
 SI units: meters, kilograms, seconds, radians. Gravity defaults to

@@ -4,6 +4,40 @@ All notable changes to Maul3D. Versions are tags on green CI SHAs;
 every entry's determinism gates were verified across all CI cells at
 tag time.
 
+## v1.3 (2026-07-08)
+
+The scale release: the 5k-body proof, the profile-convicted
+fixes, and the honest ledger corrections they forced.
+
+- The cityblock bench (5000 mixed bodies, welded tower stacks, a
+  fracture wave, per-phase timing, in-process twin check) and the
+  scale gauntlet (5k rollback cost measured and bit-exact, 10k
+  smoke with twin-stable hash).
+- The scale suite (22nd): worker-count twins at a thousand bodies
+  against a real four-thread pool, full-session journal replay,
+  mid-storm rollback, capacity sweeps to 8192.
+- Solver rev 20: the eternal-skater defect closed (the plane CCD
+  arm accepted fraction-zero hits and froze sliding bodies at the
+  slop gap frictionless forever; the friction cap now reads the
+  reference's step-long normal-impulse sum; friction no longer
+  solves during the bias pass). The golden hash moved, argued, to
+  243acb1ac705c303.
+- Rolling resistance on the shape def (reference recipe): sphere
+  piles can finally stop rolling and sleep. Folds into the hash
+  only where nonzero, so pre-existing scenes keep their bits.
+- Broadphase fat reinsertion (the refresh had been reinserting
+  tight boxes: a remove, insert, and rebalance per moving shape
+  per step, about forty percent of the 5k profile).
+- Pre-flight scratch sizing from pinned per-item byte budgets:
+  the documented scratch growth finally implemented, the
+  cross-compiler stall hazard closed, and the bench ledger's
+  stalled-step fictions (pyramid froze mid-pileup since 2c-1)
+  cured and re-pinned.
+- The mover list: substep loops iterate awake dynamics and
+  kinematics instead of walking the whole body array nine times a
+  step.
+- MANUAL chapter: scale.
+
 ## v1.2 (2026-07-08)
 
 The vehicle release: deterministic raycast vehicles on the full
