@@ -130,12 +130,88 @@ typedef struct m3ShapeCastContext
 static void ShapeCastTestShape(m3ShapeCastContext* ctx, int32_t shape)
 {
     m3World* world = ctx->world;
+    int32_t body = world->shapeBody[shape];
     if (world->shapeType[shape] == (uint8_t)m3_voxelShape)
     {
-        return; // voxel casts arrive with voxel CCD (3-5); the
-                // header documents the gap loudly
+        // Voxel targets (3-5): per-box TOI against the merged
+        // surface, unextended (queries report true geometry; the
+        // seam extension is a contact-only device).
+        int32_t slot = world->shapeVoxelIndex[shape];
+        const m3VoxelSurface* surface = &world->voxelSurface[slot];
+        m3real cell = world->voxelData[slot].cellSize;
+        const m3Transform* xfV = &world->transforms[body];
+        m3Sweep chunkSweep;
+        chunkSweep.localCenter = (m3Vec3){0.0f, 0.0f, 0.0f};
+        chunkSweep.c1 = (m3Vec3){(m3real)(xfV->p.x - ctx->base.x), (m3real)(xfV->p.y - ctx->base.y),
+                                 (m3real)(xfV->p.z - ctx->base.z)};
+        chunkSweep.c2 = chunkSweep.c1;
+        chunkSweep.q1 = xfV->q;
+        chunkSweep.q2 = xfV->q;
+
+        m3Sweep castSweep;
+        castSweep.localCenter = (m3Vec3){0.0f, 0.0f, 0.0f};
+        castSweep.c1 = (m3Vec3){0.0f, 0.0f, 0.0f};
+        castSweep.c2 = ctx->translation;
+        castSweep.q1 = m3MakeIdentityQuat();
+        castSweep.q2 = m3MakeIdentityQuat();
+
+        m3Vec3 c1 = m3InvRotateVec3(xfV->q, m3Neg3(chunkSweep.c1));
+        m3Vec3 c2 = m3InvRotateVec3(xfV->q, m3Sub3(ctx->translation, chunkSweep.c1));
+        m3real pad = ctx->castRadius + 0.6f + M3_AABB_MARGIN;
+        m3Vec3 blo = {m3MinF(c1.x, c2.x) - pad, m3MinF(c1.y, c2.y) - pad, m3MinF(c1.z, c2.z) - pad};
+        m3Vec3 bhi = {m3MaxF(c1.x, c2.x) + pad, m3MaxF(c1.y, c2.y) + pad, m3MaxF(c1.z, c2.z) + pad};
+
+        uint16_t gather[M3_MESH_MAX_TRIS];
+        int32_t gatherCount = m3MeshBvhGather(&surface->bvh, blo, bhi, gather);
+        int32_t budget = 64;
+        for (int32_t g = 0; g < gatherCount && budget > 0; ++g)
+        {
+            budget -= 1;
+            m3Vec3 lo;
+            m3Vec3 hi;
+            m3VoxelBoxBounds(surface, cell, gather[g], &lo, &hi);
+            m3Vec3 corners[8];
+            for (int32_t k = 0; k < 8; ++k)
+            {
+                corners[k] = (m3Vec3){(k & 1) != 0 ? hi.x : lo.x, (k & 2) != 0 ? hi.y : lo.y,
+                                      (k & 4) != 0 ? hi.z : lo.z};
+            }
+            m3TOIInput input;
+            input.proxyA.points = corners;
+            input.proxyA.count = 8;
+            input.proxyA.radius = 0.0f;
+            input.proxyB.points = ctx->castPoints;
+            input.proxyB.count = ctx->castPointCount;
+            input.proxyB.radius = ctx->castRadius;
+            input.sweepA = chunkSweep;
+            input.sweepB = castSweep;
+            input.maxFraction = ctx->best.hit ? ctx->best.fraction : 1.0f;
+            m3TOIOutput out = m3TimeOfImpact(&input);
+            if (out.state == m3_toiStateHit &&
+                (!ctx->best.hit || out.fraction < ctx->best.fraction ||
+                 (out.fraction == ctx->best.fraction && shape < ctx->bestShape)))
+            {
+                ctx->best.hit = true;
+                ctx->best.fraction = out.fraction;
+                ctx->best.normal = out.normal;
+                ctx->best.shape =
+                    (m3ShapeId){shape + 1, world->worldIndex0, world->shapePool.generations[shape]};
+                ctx->bestShape = shape;
+            }
+            else if (out.state == m3_toiStateOverlapped &&
+                     (!ctx->best.hit || 0.0f < ctx->best.fraction ||
+                      (0.0f == ctx->best.fraction && shape < ctx->bestShape)))
+            {
+                ctx->best.hit = true;
+                ctx->best.fraction = 0.0f; // the start-overlapped contract
+                ctx->best.normal = (m3Vec3){0.0f, 0.0f, 0.0f};
+                ctx->best.shape =
+                    (m3ShapeId){shape + 1, world->worldIndex0, world->shapePool.generations[shape]};
+                ctx->bestShape = shape;
+            }
+        }
+        return;
     }
-    int32_t body = world->shapeBody[shape];
     if (world->shapeType[shape] == (uint8_t)m3_meshShape)
     {
         // Mesh targets: per-triangle TOI, ascending, bounded (the

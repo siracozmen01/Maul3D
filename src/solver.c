@@ -1367,8 +1367,68 @@ static bool ContinuousQueryCallback(int32_t shape, void* userContext)
     }
     if (world->shapeType[shape] == (uint8_t)m3_voxelShape)
     {
-        return true; // voxel CCD is the 3-5 slice; until then fast
-                     // bodies treat chunks as discrete-only targets
+        // Voxel TOI (3-5): sweep the fast shape against candidate
+        // merged boxes in the CHUNK frame (the correct-frame
+        // witnesses the architecture demands). Boxes are UNEXTENDED
+        // here on purpose: the seam extension is a contact-only
+        // device (coverage guarantees exactly one flush layer, and
+        // a bullet must not stop against phantom solid a chunk
+        // length behind a thin welded wall). A seam-grazing sweep
+        // at worst stops a hair early and hands the rest of the
+        // step to the welded contact solver.
+        int32_t slot = world->shapeVoxelIndex[shape];
+        const m3VoxelSurface* surface = &world->voxelSurface[slot];
+        m3real cell = world->voxelData[slot].cellSize;
+        m3Sweep chunkSweep = MakeRelativeSweep(world, body, ctx->com0, ctx->rot0, ctx->base);
+        m3Vec3 scratchFast[2];
+        m3DistanceProxy fastProxy = m3MakeShapeProxy(world, ctx->fastShape, scratchFast);
+
+        const m3Transform* xfV = &world->transforms[body];
+        m3Vec3 c1 =
+            m3InvRotateVec3(xfV->q, (m3Vec3){(m3real)(ctx->com0[ctx->fastBody].x - xfV->p.x),
+                                             (m3real)(ctx->com0[ctx->fastBody].y - xfV->p.y),
+                                             (m3real)(ctx->com0[ctx->fastBody].z - xfV->p.z)});
+        m3Vec3 rlc =
+            m3RotateVec3(world->transforms[ctx->fastBody].q, world->localCenters[ctx->fastBody]);
+        m3Vec3 c2 = m3InvRotateVec3(
+            xfV->q,
+            (m3Vec3){(m3real)(world->transforms[ctx->fastBody].p.x + (double)rlc.x - xfV->p.x),
+                     (m3real)(world->transforms[ctx->fastBody].p.y + (double)rlc.y - xfV->p.y),
+                     (m3real)(world->transforms[ctx->fastBody].p.z + (double)rlc.z - xfV->p.z)});
+        m3real pad = world->maxExtents[ctx->fastBody] + M3_AABB_MARGIN;
+        m3Vec3 lo = {m3MinF(c1.x, c2.x) - pad, m3MinF(c1.y, c2.y) - pad, m3MinF(c1.z, c2.z) - pad};
+        m3Vec3 hi = {m3MaxF(c1.x, c2.x) + pad, m3MaxF(c1.y, c2.y) + pad, m3MaxF(c1.z, c2.z) + pad};
+
+        uint16_t gather[M3_MESH_MAX_TRIS];
+        int32_t gatherCount = m3MeshBvhGather(&surface->bvh, lo, hi, gather);
+        int32_t budget = 64;
+        for (int32_t g = 0; g < gatherCount && budget > 0; ++g)
+        {
+            budget -= 1;
+            m3Vec3 blo;
+            m3Vec3 bhi;
+            m3VoxelBoxBounds(surface, cell, gather[g], &blo, &bhi);
+            m3Vec3 corners[8];
+            for (int32_t k = 0; k < 8; ++k)
+            {
+                corners[k] = (m3Vec3){(k & 1) != 0 ? bhi.x : blo.x, (k & 2) != 0 ? bhi.y : blo.y,
+                                      (k & 4) != 0 ? bhi.z : blo.z};
+            }
+            m3TOIInput input;
+            input.proxyA.points = corners;
+            input.proxyA.count = 8;
+            input.proxyA.radius = 0.0f;
+            input.proxyB = fastProxy;
+            input.sweepA = chunkSweep;
+            input.sweepB = ctx->fastSweep;
+            input.maxFraction = ctx->fraction;
+            m3TOIOutput out = m3TimeOfImpact(&input);
+            if (out.state == m3_toiStateHit && 0.0f < out.fraction && out.fraction < ctx->fraction)
+            {
+                ctx->fraction = out.fraction;
+            }
+        }
+        return true;
     }
     if (world->shapeType[shape] == (uint8_t)m3_meshShape)
     {

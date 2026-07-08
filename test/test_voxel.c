@@ -786,6 +786,115 @@ static void TestVoxelMeetsHeightfield(void)
     CHECK(hashes[0] == hashes[1], "the junction scene is bit-deterministic");
 }
 
+static void TestBulletVsVoxelWall(void)
+{
+    // The two-sided promise of voxel CCD: a one-voxel wall stops a
+    // two-hundred-per-second bullet, and the SAME wall with its
+    // voxel cleared the step before is a real hole. Twins.
+    uint64_t hashes[2];
+    for (int32_t run = 0; run < 2; ++run)
+    {
+        for (int32_t withHole = 0; withHole < 2; ++withHole)
+        {
+            m3WorldDef def = m3DefaultWorldDef();
+            def.gravity = (m3Vec3){0.0f, 0.0f, 0.0f}; // pure flight
+            def.bodyCapacity = 8;
+            def.shapeCapacity = 8;
+            def.voxelCapacity = 1;
+            m3WorldId world = m3CreateWorld(&def);
+            m3ShapeDef sd = m3DefaultShapeDef();
+            static uint8_t voxels[M3_VOXEL_COUNT];
+            memset(voxels, 0, sizeof(voxels));
+            // A one-voxel-thick wall at x = 8 spanning the chunk,
+            // anchored through the base layer (a floor column under
+            // it keeps fracture out of this test's way).
+            for (int32_t z = 0; z < M3_VOXEL_DIM; ++z)
+            {
+                for (int32_t y = 0; y < M3_VOXEL_DIM; ++y)
+                {
+                    voxels[8 + M3_VOXEL_DIM * (y + M3_VOXEL_DIM * z)] = 1;
+                }
+            }
+            m3BodyDef gd = m3DefaultBodyDef();
+            m3BodyId ground = m3CreateBody(world, &gd);
+            m3ShapeId wall = m3CreateVoxelChunkShape(ground, &sd, voxels, NULL, 1.0f);
+            CHECK(m3Shape_IsValid(wall), "the wall creates");
+
+            if (withHole != 0)
+            {
+                // Open the hole on the bullet's exact path, THEN
+                // fire: destruction opens real holes. The clear is
+                // a 3x3 window so the bullet's radius fits.
+                int32_t lo[3] = {8, 7, 7};
+                int32_t hi[3] = {8, 9, 9};
+                CHECK(m3VoxelChunk_ClearBox(wall, lo, hi) == 9, "the window opens");
+            }
+
+            m3BodyDef bd = m3DefaultBodyDef();
+            bd.type = m3_dynamicBody;
+            bd.isBullet = true;
+            bd.position = (m3Pos3){2.0, 8.5, 8.5};
+            bd.linearVelocity = (m3Vec3){200.0f, 0.0f, 0.0f};
+            m3BodyId bullet = m3CreateBody(world, &bd);
+            m3Sphere slug = {{0.0f, 0.0f, 0.0f}, 0.2f};
+            m3CreateSphereShape(bullet, &sd, &slug);
+
+            for (int32_t i = 0; i < 30; ++i)
+            {
+                m3World_Step(world, 1.0f / 60.0f, 4);
+            }
+            m3Pos3 p = m3Body_GetPosition(bullet);
+            if (withHole != 0)
+            {
+                CHECK(p.x > 20.0, "the bullet flies through the opened window");
+            }
+            else
+            {
+                CHECK(p.x < 8.6, "the one-voxel wall stops the bullet");
+            }
+            if (withHole != 0)
+            {
+                hashes[run] = m3World_Hash(world);
+            }
+            m3DestroyWorld(world);
+        }
+    }
+    CHECK(hashes[0] == hashes[1], "the shot through the window is bit-deterministic");
+}
+
+static void TestShapeCastsAgainstVoxels(void)
+{
+    m3WorldId world = SmallWorld();
+    m3BodyDef gd = m3DefaultBodyDef();
+    m3BodyId ground = m3CreateBody(world, &gd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    static uint8_t voxels[M3_VOXEL_COUNT];
+    FillSlab(voxels, 4); // top face at y = 4
+    m3ShapeId chunkShape = m3CreateVoxelChunkShape(ground, &sd, voxels, NULL, 1.0f);
+
+    // A sphere cast straight down: center stops at 4 + r, so the
+    // fraction is (10 - 4.3 - slop band) / 8 within the TOI band.
+    m3RayHit hit = m3World_CastSphereClosest(world, (m3Pos3){8.0, 10.0, 8.0}, 0.3f,
+                                             (m3Vec3){0.0f, -8.0f, 0.0f});
+    CHECK(hit.hit && hit.shape.index1 == chunkShape.index1, "the sphere cast hits the chunk");
+    CHECK(hit.fraction > 0.70f && hit.fraction < 0.72f, "the voxel cast fraction is analytic");
+
+    // A capsule cast onto the top face, and a start-overlapped cast.
+    hit = m3World_CastCapsuleClosest(world, (m3Pos3){8.0, 6.0, 8.0}, (m3Vec3){-0.4f, 0.0f, 0.0f},
+                                     (m3Vec3){0.4f, 0.0f, 0.0f}, 0.2f, (m3Vec3){0.0f, -4.0f, 0.0f});
+    CHECK(hit.hit && hit.fraction > 0.44f && hit.fraction < 0.46f,
+          "the capsule cast fraction is analytic");
+    hit = m3World_CastSphereClosest(world, (m3Pos3){8.0, 3.9, 8.0}, 0.3f,
+                                    (m3Vec3){0.0f, -2.0f, 0.0f});
+    CHECK(hit.hit && hit.fraction == 0.0f, "a cast born inside the chunk reports zero");
+
+    // A cast that misses the chunk entirely.
+    hit = m3World_CastSphereClosest(world, (m3Pos3){40.0, 10.0, 8.0}, 0.3f,
+                                    (m3Vec3){0.0f, -8.0f, 0.0f});
+    CHECK(!hit.hit, "a cast beside the chunk misses");
+    m3DestroyWorld(world);
+}
+
 int main(void)
 {
     TestGreedyMergeAnalytics();
@@ -801,6 +910,8 @@ int main(void)
     TestSeamWeldingCoverage();
     TestRollingAcrossSeams();
     TestVoxelMeetsHeightfield();
+    TestBulletVsVoxelWall();
+    TestShapeCastsAgainstVoxels();
     if (s_failures == 0)
     {
         printf("test_voxel: all green\n");

@@ -125,9 +125,11 @@ extern "C"
     /// carried as state and hashed. Static bodies only; sensors
     /// refused (sensor volumes are convex by contract); an empty
     /// grid refused. Solid voxels are CLOSED volumes: point-inside
-    /// answers true inside filled cells. Shape casts and continuous
-    /// collision do not see voxel chunks until the voxel CCD slice
-    /// (3-5); rays and contacts do.
+    /// answers true inside filled cells. Rays, contacts, shape
+    /// casts, and continuous collision all see voxel chunks; fast
+    /// bodies and bullets sweep the merged surface, so a
+    /// one-voxel-thick wall stops a bullet, and a wall whose voxel
+    /// was cleared last step is a REAL hole.
     ///
     /// Seam welding: chunks weld automatically when both bodies
     /// carry the exact identity rotation, cell sizes match, and
