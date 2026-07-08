@@ -42,6 +42,7 @@ m3WorldDef m3DefaultWorldDef(void)
     def.voxelCapacity = 4;
     def.characterCapacity = 4;
     def.vehicleCapacity = 2;
+    def.softBodyCapacity = 2;
     def.workerCount = 1;
     def.internalValue = M3_WORLD_COOKIE;
     return def;
@@ -53,8 +54,8 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     if (def == NULL || def->internalValue != M3_WORLD_COOKIE || def->bodyCapacity <= 0 ||
         def->shapeCapacity <= 0 || def->meshCapacity <= 0 || def->jointCapacity <= 0 ||
         def->voxelCapacity <= 0 || def->characterCapacity <= 0 || def->vehicleCapacity <= 0 ||
-        def->workerCount <= 0 || (def->enqueueTask == NULL) != (def->finishTask == NULL) ||
-        !m3FiniteV3(def->gravity))
+        def->softBodyCapacity <= 0 || def->workerCount <= 0 ||
+        (def->enqueueTask == NULL) != (def->finishTask == NULL) || !m3FiniteV3(def->gravity))
     {
         // User-input validation is contract, not invariant: the API
         // promises a null id for a bad def (tests exercise this), so
@@ -86,6 +87,7 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     world->voxelCapacity = def->voxelCapacity;
     world->characterCapacity = def->characterCapacity;
     world->vehicleCapacity = def->vehicleCapacity;
+    world->softBodyCapacity = def->softBodyCapacity;
     world->jointCapacity = def->jointCapacity;
     world->workerCount = def->workerCount;
     world->enqueueTask = def->enqueueTask;
@@ -200,6 +202,19 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     M3_ALLOC(world->vehSteer, def->vehicleCapacity, m3real);
     M3_ALLOC(world->vehBrake, def->vehicleCapacity, m3real);
     M3_ALLOC(world->vehWheelSpin, def->vehicleCapacity * M3_VEHICLE_MAX_WHEELS, m3real);
+    world->softPool = m3IdPoolCreate(def->softBodyCapacity);
+    M3_ALLOC(world->softParticleCount, def->softBodyCapacity, int32_t);
+    M3_ALLOC(world->softEdgeCount, def->softBodyCapacity, int32_t);
+    M3_ALLOC(world->softCompliance, def->softBodyCapacity, m3real);
+    M3_ALLOC(world->softRadius, def->softBodyCapacity, m3real);
+    M3_ALLOC(world->softGravityScale, def->softBodyCapacity, m3real);
+    M3_ALLOC(world->softUserData, def->softBodyCapacity, uint64_t);
+    M3_ALLOC(world->softPos, def->softBodyCapacity * M3_SOFTBODY_MAX_PARTICLES, m3Pos3);
+    M3_ALLOC(world->softPrev, def->softBodyCapacity * M3_SOFTBODY_MAX_PARTICLES, m3Pos3);
+    M3_ALLOC(world->softInvMass, def->softBodyCapacity * M3_SOFTBODY_MAX_PARTICLES, m3real);
+    M3_ALLOC(world->softEdgeA, def->softBodyCapacity * M3_SOFTBODY_MAX_EDGES, uint16_t);
+    M3_ALLOC(world->softEdgeB, def->softBodyCapacity * M3_SOFTBODY_MAX_EDGES, uint16_t);
+    M3_ALLOC(world->softEdgeRest, def->softBodyCapacity * M3_SOFTBODY_MAX_EDGES, m3real);
     for (int32_t v = 0; v < def->vehicleCapacity; ++v)
     {
         world->vehChassis[v] = -1;
@@ -382,6 +397,19 @@ void m3DestroyWorld(m3WorldId worldId)
     m3Free(world->vehSteer);
     m3Free(world->vehBrake);
     m3Free(world->vehWheelSpin);
+    m3IdPoolDestroy(&world->softPool);
+    m3Free(world->softParticleCount);
+    m3Free(world->softEdgeCount);
+    m3Free(world->softCompliance);
+    m3Free(world->softRadius);
+    m3Free(world->softGravityScale);
+    m3Free(world->softUserData);
+    m3Free(world->softPos);
+    m3Free(world->softPrev);
+    m3Free(world->softInvMass);
+    m3Free(world->softEdgeA);
+    m3Free(world->softEdgeB);
+    m3Free(world->softEdgeRest);
     m3Free(world->charGrounded);
     m3Free(world->charGroundNormal);
     m3Free(world->jointNextA);
@@ -1115,6 +1143,65 @@ static bool JournalReplayApply(m3World* world, const void* data, int32_t size)
                 return false;
             }
             m3VehicleCommandsInternal(world, slot, record.throttle, record.steer, record.brake);
+            break;
+        }
+        case m3_opCreateSoftBody:
+        {
+            struct
+            {
+                m3SoftBodyDef def;
+                m3SoftBodyId expected;
+            } record;
+            if (bytes != (int32_t)sizeof(record))
+            {
+                return false;
+            }
+            memcpy(&record, payload, sizeof(record));
+            int32_t slot = m3CreateSoftBodyInternal(world, &record.def);
+            if (slot < 0 || slot + 1 != record.expected.index1 ||
+                world->softPool.generations[slot] != record.expected.generation)
+            {
+                return false; // id determinism holds for soft bodies too
+            }
+            break;
+        }
+        case m3_opDestroySoftBody:
+        {
+            m3SoftBodyId id;
+            if (bytes != (int32_t)sizeof(id))
+            {
+                return false;
+            }
+            memcpy(&id, payload, sizeof(id));
+            id.world0 = world->worldIndex0;
+            int32_t slot = m3SoftBodySlot(world, id);
+            if (slot < 0)
+            {
+                return false;
+            }
+            m3DestroySoftBodyInternal(world, slot);
+            break;
+        }
+        case m3_opSoftBodyPin:
+        {
+            struct
+            {
+                m3SoftBodyId id;
+                int32_t particle;
+            } record;
+            if (bytes != (int32_t)sizeof(record))
+            {
+                return false;
+            }
+            memcpy(&record, payload, sizeof(record));
+            record.id.world0 = world->worldIndex0;
+            int32_t slot = m3SoftBodySlot(world, record.id);
+            if (slot < 0 || record.particle < 0 ||
+                record.particle >= world->softParticleCount[slot])
+            {
+                return false;
+            }
+            m3SoftBodyPinInternal(world, slot, record.particle);
             break;
         }
         default:

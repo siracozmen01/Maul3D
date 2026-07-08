@@ -454,7 +454,7 @@ static void TestFractureStorm(void)
     // grounding refresh answers every edit, and twin worlds plus a
     // mid-storm rollback agree to the bit. This is the destruction
     // interplay no other engine can even pose, under red-team load.
-    static uint8_t snap[262144];
+    static uint8_t snap[786432];
     uint64_t hashes[2];
     for (int32_t run = 0; run < 2; ++run)
     {

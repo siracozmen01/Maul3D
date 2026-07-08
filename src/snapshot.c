@@ -22,7 +22,8 @@
 #endif
 
 #define M3_SNAPSHOT_MAGIC   0x4D33534Eu // 'M3SN'
-#define M3_SNAPSHOT_VERSION 26u
+#define M3_SNAPSHOT_VERSION 27u
+// v27: the soft body pool (7-1 XPBD lattices).
 // v26: shape rolling resistance (6-3).
 // v25: tire grip, drive commands, and wheel spin (5-2).
 // v24: the vehicle pool and wheel arrays (5-1 raycast vehicles).
@@ -257,6 +258,27 @@ static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3Wal
     M3_BLOCK(world->vehPool.generations, world->vehicleCapacity * (int32_t)sizeof(uint16_t));
     M3_BLOCK(world->vehPool.alive, world->vehicleCapacity * (int32_t)sizeof(uint8_t));
     M3_BLOCK(world->vehPool.freeQueue, world->vehicleCapacity * (int32_t)sizeof(int32_t));
+    M3_BLOCK(world->softParticleCount, world->softBodyCapacity * (int32_t)sizeof(int32_t));
+    M3_BLOCK(world->softEdgeCount, world->softBodyCapacity * (int32_t)sizeof(int32_t));
+    M3_BLOCK(world->softCompliance, world->softBodyCapacity * (int32_t)sizeof(m3real));
+    M3_BLOCK(world->softRadius, world->softBodyCapacity * (int32_t)sizeof(m3real));
+    M3_BLOCK(world->softGravityScale, world->softBodyCapacity * (int32_t)sizeof(m3real));
+    M3_BLOCK(world->softUserData, world->softBodyCapacity * (int32_t)sizeof(uint64_t));
+    M3_BLOCK(world->softPos,
+             world->softBodyCapacity * M3_SOFTBODY_MAX_PARTICLES * (int32_t)sizeof(m3Pos3));
+    M3_BLOCK(world->softPrev,
+             world->softBodyCapacity * M3_SOFTBODY_MAX_PARTICLES * (int32_t)sizeof(m3Pos3));
+    M3_BLOCK(world->softInvMass,
+             world->softBodyCapacity * M3_SOFTBODY_MAX_PARTICLES * (int32_t)sizeof(m3real));
+    M3_BLOCK(world->softEdgeA,
+             world->softBodyCapacity * M3_SOFTBODY_MAX_EDGES * (int32_t)sizeof(uint16_t));
+    M3_BLOCK(world->softEdgeB,
+             world->softBodyCapacity * M3_SOFTBODY_MAX_EDGES * (int32_t)sizeof(uint16_t));
+    M3_BLOCK(world->softEdgeRest,
+             world->softBodyCapacity * M3_SOFTBODY_MAX_EDGES * (int32_t)sizeof(m3real));
+    M3_BLOCK(world->softPool.generations, world->softBodyCapacity * (int32_t)sizeof(uint16_t));
+    M3_BLOCK(world->softPool.alive, world->softBodyCapacity * (int32_t)sizeof(uint8_t));
+    M3_BLOCK(world->softPool.freeQueue, world->softBodyCapacity * (int32_t)sizeof(int32_t));
     M3_BLOCK(world->meshRefCounts, world->meshCapacity * (int32_t)sizeof(int32_t));
     M3_BLOCK(world->meshPool.generations, world->meshCapacity * (int32_t)sizeof(uint16_t));
     M3_BLOCK(world->meshPool.alive, world->meshCapacity * (int32_t)sizeof(uint8_t));
@@ -568,6 +590,33 @@ uint64_t m3World_Hash(m3WorldId worldId)
         h = m3Hash64(h, &world->charPushMax[i], 4);
         h = m3Hash64(h, &world->charGroundBody[i], 4);
         h = m3Hash64(h, &world->charGroundGen[i], 2);
+    }
+    for (int32_t i = 0; i < world->softPool.maxIndex; ++i)
+    {
+        if (world->softPool.alive[i] == 0)
+        {
+            continue; // the additive-state golden rule: live slots only
+        }
+        h = m3Hash64(h, &world->softParticleCount[i], 4);
+        h = m3Hash64(h, &world->softCompliance[i], 4);
+        h = m3Hash64(h, &world->softRadius[i], 4);
+        h = m3Hash64(h, &world->softGravityScale[i], 4);
+        int32_t pc = world->softParticleCount[i];
+        for (int32_t p = 0; p < pc; ++p)
+        {
+            int32_t k = i * M3_SOFTBODY_MAX_PARTICLES + p;
+            h = m3Hash64(h, &world->softPos[k], (int32_t)sizeof(m3Pos3));
+            h = m3Hash64(h, &world->softPrev[k], (int32_t)sizeof(m3Pos3));
+            h = m3Hash64(h, &world->softInvMass[k], 4);
+        }
+        int32_t ec = world->softEdgeCount[i];
+        for (int32_t e = 0; e < ec; ++e)
+        {
+            int32_t k = i * M3_SOFTBODY_MAX_EDGES + e;
+            h = m3Hash64(h, &world->softEdgeA[k], 2);
+            h = m3Hash64(h, &world->softEdgeB[k], 2);
+            h = m3Hash64(h, &world->softEdgeRest[k], 4);
+        }
     }
     for (int32_t i = 0; i < world->vehPool.maxIndex; ++i)
     {

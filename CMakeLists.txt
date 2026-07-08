@@ -20,6 +20,7 @@ add_library(maul3d ${MAUL3D_LIB_KIND}
     src/broad_phase.c
     src/character.c
     src/vehicle.c
+    src/softbody.c
     src/core.c
     src/distance.c
     src/draw.c
@@ -245,6 +246,11 @@ add_executable(test_scale test/test_scale.c)
 target_link_libraries(test_scale PRIVATE maul3d Threads::Threads)
 maul3d_apply_flags(test_scale)
 add_test(NAME scale COMMAND test_scale)
+
+add_executable(test_softbody test/test_softbody.c)
+target_link_libraries(test_softbody PRIVATE maul3d)
+maul3d_apply_flags(test_softbody)
+add_test(NAME softbody COMMAND test_softbody)
 
 add_executable(test_fuzz test/test_fuzz.c)
 target_link_libraries(test_fuzz PRIVATE maul3d)

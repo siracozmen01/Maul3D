@@ -2820,6 +2820,7 @@ void m3StepInternal(m3World* world, float dt, int32_t substeps)
     SolveContinuousPhase(world, com0, rot0);
     IslandSleepPass(world, islandParent, com0, rot0, dt);
     m3CharacterCarryRiders(world, com0, rot0);
+    m3SoftBodyPass(world, dt, substeps);
 
     world->stepCount += 1;
 }

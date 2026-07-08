@@ -16,6 +16,7 @@
 #include "maul3d/character.h"
 #include "maul3d/joint.h"
 #include "maul3d/shape.h"
+#include "maul3d/softbody.h"
 #include "maul3d/vehicle.h"
 #include "maul3d/world.h"
 
@@ -88,6 +89,9 @@ typedef enum m3Op
     m3_opCreateVehicle = 19,         // def + expected id (5-1)
     m3_opDestroyVehicle = 20,        // id
     m3_opVehicleCommands = 21,       // id + throttle, steer, brake (5-2)
+    m3_opCreateSoftBody = 22,        // def + expected id (7-1)
+    m3_opDestroySoftBody = 23,       // id
+    m3_opSoftBodyPin = 24,           // id + particle index
 } m3Op;
 
 // Immutable interned hull data (lifetime 3): vertices, face planes,
@@ -485,6 +489,25 @@ typedef struct m3World
     m3real* vehBrake;
     m3real* vehWheelSpin; // accumulated spin angle, render state
 
+    // Soft bodies (7-1): XPBD particle lattices, fixed-size blocks
+    // per slot (the snapshot walker's simplest shape). Positions
+    // and previous positions in double like every body; all of it
+    // persistent state, hashed for live slots only.
+    int32_t softBodyCapacity;
+    m3IdPool softPool;
+    int32_t* softParticleCount;
+    int32_t* softEdgeCount;
+    m3real* softCompliance;
+    m3real* softRadius;
+    m3real* softGravityScale;
+    uint64_t* softUserData;
+    m3Pos3* softPos;     // cap * M3_SOFTBODY_MAX_PARTICLES
+    m3Pos3* softPrev;    // cap * M3_SOFTBODY_MAX_PARTICLES
+    m3real* softInvMass; // cap * M3_SOFTBODY_MAX_PARTICLES
+    uint16_t* softEdgeA; // cap * M3_SOFTBODY_MAX_EDGES
+    uint16_t* softEdgeB;
+    m3real* softEdgeRest;
+
     // Generic 6-DOF state (4-3): packed modes (2 bits per axis,
     // linear 0..5, angular 6..11, motor axis 12..15) and per-axis
     // limit vectors. Folded into the hash only for generic-typed
@@ -818,6 +841,11 @@ void m3DestroyVehicleInternal(m3World* world, int32_t slot);
 void m3VehicleApplySuspension(m3World* world, float dt);
 void m3VehicleCommandsInternal(m3World* world, int32_t slot, m3real throttle, m3real steer,
                                m3real brake);
+int32_t m3SoftBodySlot(const m3World* world, m3SoftBodyId softId);
+int32_t m3CreateSoftBodyInternal(m3World* world, const m3SoftBodyDef* def);
+void m3DestroySoftBodyInternal(m3World* world, int32_t slot);
+void m3SoftBodyPinInternal(m3World* world, int32_t slot, int32_t particle);
+void m3SoftBodyPass(m3World* world, float dt, int32_t substeps);
 m3RayHit m3RayClosestInternalEx(m3World* world, m3Pos3 origin, m3Vec3 translation,
                                 int32_t ignoreBody);
 
