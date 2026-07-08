@@ -66,8 +66,13 @@ static void DrawSegmentCb(m3Pos3 p1, m3Pos3 p2, uint32_t color, void* context)
 
 static void DrawPointCb(m3Pos3 p, m3real size, uint32_t color, void* context)
 {
+    // A cube, not a sphere: raylib's DrawSphere tessellates on the
+    // CPU per call, and a resting pile emits hundreds of contact
+    // points per frame (the first Windows build was a slideshow in
+    // the rain scene for exactly this reason).
     (void)context;
-    DrawSphere(FromPos(p), 0.01f * size, FromHex(color));
+    float s = 0.02f * size;
+    DrawCubeV(FromPos(p), (Vector3){s, s, s}, FromHex(color));
 }
 
 // -------------------------------------------------------------- scenes
@@ -358,7 +363,7 @@ int main(void)
     tbScene scene = s_builders[sceneIndex]();
     bool paused = false;
     bool showAabbs = false;
-    bool showContacts = true;
+    bool showContacts = false; // F2: hundreds of markers in a pile
 
     // The rewind ring: a snapshot every four steps, four seconds of
     // rewindable history. Holding R walks time backward; releasing
@@ -517,6 +522,47 @@ int main(void)
         {
             showContacts = !showContacts;
         }
+        // The rain never stops: scene two drips a fresh body every
+        // half second so there is always motion to watch (and to
+        // rewind), budgeted so the pool never runs dry.
+        static int32_t dripCounter = 0;
+        static int32_t dripped = 0;
+        if (rebuild)
+        {
+            dripped = 0;
+        }
+        if (sceneIndex == 1 && !paused)
+        {
+            dripCounter += 1;
+            if (dripCounter >= 30 && dripped < 600)
+            {
+                dripCounter = 0;
+                dripped += 1;
+                m3BodyDef bd = m3DefaultBodyDef();
+                bd.type = m3_dynamicBody;
+                double a = (double)dripped * 0.61803;
+                bd.position = (m3Pos3){8.0 * sin(a * 6.2831), 20.0 + 2.0 * sin(a * 2.7),
+                                       8.0 * cos(a * 6.2831)};
+                m3BodyId body = m3CreateBody(scene.world, &bd);
+                m3ShapeDef sd = m3DefaultShapeDef();
+                sd.friction = 0.5f;
+                if (dripped % 3 == 0)
+                {
+                    m3Sphere ball = {{0.0f, 0.0f, 0.0f}, 0.35f};
+                    m3CreateSphereShape(body, &sd, &ball);
+                }
+                else if (dripped % 3 == 1)
+                {
+                    m3CreateBoxShape(body, &sd, (m3Vec3){0.3f, 0.3f, 0.3f});
+                }
+                else
+                {
+                    m3Capsule capsule = {{-0.3f, 0.0f, 0.0f}, {0.3f, 0.0f, 0.0f}, 0.2f};
+                    m3CreateCapsuleShape(body, &sd, &capsule);
+                }
+            }
+        }
+
         bool rewinding = IsKeyDown(KEY_R) && ringCount > 0;
         if (rewinding)
         {
