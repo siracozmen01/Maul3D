@@ -220,6 +220,289 @@ static int Verify(const char* path)
     return hash == view.finalHash ? 0 : 2;
 }
 
+// --- The step scrubber (9-2) ------------------------------------------------
+//
+// A journal prefix cut at record boundaries is itself a valid
+// journal, so the scrubber needs no engine additions: it slices
+// the stream into per-step segments (the ops leading up to a step
+// record, plus that step record), replays segments forward, and
+// keyframes a snapshot every M3_SCRUB_INTERVAL steps. Seek =
+// restore the nearest keyframe at or before the target, re-step
+// forward. Bit-exact by the rollback contract, and the selftest
+// PROVES it against straight-run prefix hashes.
+
+#define M3_SCRUB_INTERVAL 30
+
+typedef struct Scrub
+{
+    const uint8_t* journal;
+    int32_t journalBytes;
+    int32_t stepCount;
+    int32_t* stepEnds; // byte offset just PAST step i's record
+    uint8_t** keys;    // keyframe snapshots, one per interval mark
+    int32_t keyBytes;
+    int32_t keyCount;
+    m3WorldId world;
+} Scrub;
+
+// Walk the framing once, recording where each step's segment ends.
+static bool ScrubIndex(Scrub* s)
+{
+    s->stepEnds = (int32_t*)malloc(sizeof(int32_t) * (size_t)(s->stepCount + 1));
+    int32_t cursor = 0;
+    int32_t step = 0;
+    while (cursor < s->journalBytes)
+    {
+        int32_t op;
+        int32_t payload;
+        memcpy(&op, s->journal + cursor, 4);
+        memcpy(&payload, s->journal + cursor + 4, 4);
+        cursor += 8 + payload;
+        if (op == 1)
+        {
+            s->stepEnds[step] = cursor;
+            step += 1;
+        }
+    }
+    return step == s->stepCount;
+}
+
+static bool ScrubBuild(Scrub* s, const m3ReplayView* view)
+{
+    s->journal = (const uint8_t*)view->journal;
+    s->journalBytes = view->journalBytes;
+    s->stepCount = view->info.stepCount;
+    if (!ScrubIndex(s))
+    {
+        return false;
+    }
+    m3WorldDef def = DemoDef();
+    s->world = m3CreateWorld(&def);
+    if (!m3World_Restore(s->world, view->snapshot, view->snapshotBytes))
+    {
+        return false;
+    }
+    s->keyBytes = m3World_SnapshotSize(s->world);
+    s->keyCount = s->stepCount / M3_SCRUB_INTERVAL + 1;
+    s->keys = (uint8_t**)malloc(sizeof(uint8_t*) * (size_t)s->keyCount);
+    for (int32_t k = 0; k < s->keyCount; ++k)
+    {
+        s->keys[k] = (uint8_t*)malloc((size_t)s->keyBytes);
+    }
+    // Key 0 is the pre-step world (creates land inside segment 0).
+    if (m3World_Snapshot(s->world, s->keys[0], s->keyBytes) != s->keyBytes)
+    {
+        return false;
+    }
+    for (int32_t i = 0; i < s->stepCount; ++i)
+    {
+        int32_t from = i == 0 ? 0 : s->stepEnds[i - 1];
+        int32_t to = s->stepEnds[i];
+        if (!m3World_JournalReplay(s->world, s->journal + from, to - from))
+        {
+            return false;
+        }
+        if ((i + 1) % M3_SCRUB_INTERVAL == 0 && (i + 1) / M3_SCRUB_INTERVAL < s->keyCount)
+        {
+            if (m3World_Snapshot(s->world, s->keys[(i + 1) / M3_SCRUB_INTERVAL], s->keyBytes) !=
+                s->keyBytes)
+            {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+// Land the scrub world exactly on the state AFTER step N (N = 0
+// means the pre-step world).
+static bool ScrubSeek(Scrub* s, int32_t stepN)
+{
+    if (stepN < 0 || stepN > s->stepCount)
+    {
+        return false;
+    }
+    int32_t key = stepN / M3_SCRUB_INTERVAL;
+    if (key >= s->keyCount)
+    {
+        key = s->keyCount - 1;
+    }
+    if (!m3World_Restore(s->world, s->keys[key], s->keyBytes))
+    {
+        return false;
+    }
+    for (int32_t i = key * M3_SCRUB_INTERVAL; i < stepN; ++i)
+    {
+        int32_t from = i == 0 ? 0 : s->stepEnds[i - 1];
+        int32_t to = s->stepEnds[i];
+        if (!m3World_JournalReplay(s->world, s->journal + from, to - from))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Straight-run prefix hash: a fresh world replays records 0..the
+// end of step N in ONE call. The scrubber must always agree.
+static bool PrefixHash(const m3ReplayView* view, const Scrub* s, int32_t stepN, uint64_t* out)
+{
+    m3WorldDef def = DemoDef();
+    m3WorldId world = m3CreateWorld(&def);
+    if (!m3World_Restore(world, view->snapshot, view->snapshotBytes))
+    {
+        return false;
+    }
+    int32_t bytes = stepN == 0 ? 0 : s->stepEnds[stepN - 1];
+    if (bytes > 0 && !m3World_JournalReplay(world, view->journal, bytes))
+    {
+        return false;
+    }
+    *out = m3World_Hash(world);
+    m3DestroyWorld(world);
+    return true;
+}
+
+static void ScrubFree(Scrub* s)
+{
+    for (int32_t k = 0; k < s->keyCount; ++k)
+    {
+        free(s->keys[k]);
+    }
+    free(s->keys);
+    free(s->stepEnds);
+    m3DestroyWorld(s->world);
+}
+
+static int Seek(const char* path, int32_t stepN)
+{
+    int32_t bytes = 0;
+    uint8_t* data = ReadAll(path, &bytes);
+    m3ReplayView view;
+    if (data == NULL || !m3ReplayDecode(data, bytes, &view))
+    {
+        fprintf(stderr, "m3replay: %s is not a valid M3J1 container\n", path);
+        return 1;
+    }
+    Scrub s;
+    memset(&s, 0, sizeof(s));
+    if (!ScrubBuild(&s, &view) || !ScrubSeek(&s, stepN))
+    {
+        fprintf(stderr, "m3replay: seek failed (step out of range or corrupt stream)\n");
+        return 1;
+    }
+    uint64_t scrubbed = m3World_Hash(s.world);
+    uint64_t straight = 0;
+    if (!PrefixHash(&view, &s, stepN, &straight))
+    {
+        fprintf(stderr, "m3replay: straight-run check failed\n");
+        return 1;
+    }
+    printf("m3replay: step %d scrub %016llx straight %016llx: %s\n", stepN,
+           (unsigned long long)scrubbed, (unsigned long long)straight,
+           scrubbed == straight ? "MATCH" : "DIVERGED");
+    ScrubFree(&s);
+    free(data);
+    return scrubbed == straight ? 0 : 2;
+}
+
+static int Play(const char* path, int32_t fromStep, int32_t toStep)
+{
+    int32_t bytes = 0;
+    uint8_t* data = ReadAll(path, &bytes);
+    m3ReplayView view;
+    if (data == NULL || !m3ReplayDecode(data, bytes, &view))
+    {
+        fprintf(stderr, "m3replay: %s is not a valid M3J1 container\n", path);
+        return 1;
+    }
+    Scrub s;
+    memset(&s, 0, sizeof(s));
+    if (!ScrubBuild(&s, &view) || fromStep > toStep || !ScrubSeek(&s, fromStep))
+    {
+        fprintf(stderr, "m3replay: play range failed\n");
+        return 1;
+    }
+    for (int32_t i = fromStep; i <= toStep && i <= s.stepCount; ++i)
+    {
+        printf("step %4d hash %016llx\n", i, (unsigned long long)m3World_Hash(s.world));
+        if (i < s.stepCount)
+        {
+            int32_t from = i == 0 ? 0 : s.stepEnds[i - 1];
+            m3World_JournalReplay(s.world, s.journal + from, s.stepEnds[i] - from);
+        }
+    }
+    ScrubFree(&s);
+    free(data);
+    return 0;
+}
+
+// The CI gate: record the demo in memory, scrub-thrash it with a
+// deterministic LCG, compare every landing against the straight
+// run. No files, runs everywhere.
+static int SelfTest(void)
+{
+    m3WorldDef def = DemoDef();
+    m3WorldId world = m3CreateWorld(&def);
+    int32_t snapBytes = m3World_SnapshotSize(world);
+    uint8_t* snap = (uint8_t*)malloc((size_t)snapBytes);
+    m3World_Snapshot(world, snap, snapBytes);
+    int32_t journalCap = 4 * 1024 * 1024;
+    uint8_t* journal = (uint8_t*)malloc((size_t)journalCap);
+    m3World_JournalBegin(world, journal, journalCap);
+    DemoSession(world, 300);
+    int32_t journalBytes = m3World_JournalEnd(world);
+    uint64_t finalHash = m3World_Hash(world);
+    int32_t need = m3ReplayEncodeSize(snapBytes, journalBytes);
+    uint8_t* blob = (uint8_t*)malloc((size_t)need);
+    m3ReplayEncode(snap, snapBytes, journal, journalBytes, finalHash, blob, need);
+    m3DestroyWorld(world);
+
+    m3ReplayView view;
+    if (!m3ReplayDecode(blob, need, &view))
+    {
+        fprintf(stderr, "selftest: decode failed\n");
+        return 1;
+    }
+    Scrub s;
+    memset(&s, 0, sizeof(s));
+    if (!ScrubBuild(&s, &view))
+    {
+        fprintf(stderr, "selftest: scrub build failed\n");
+        return 1;
+    }
+    // The forward build must end on the recorder's hash.
+    if (m3World_Hash(s.world) != finalHash)
+    {
+        fprintf(stderr, "selftest: the forward pass diverged\n");
+        return 1;
+    }
+    uint32_t rng = 20260708u;
+    int32_t failures = 0;
+    for (int32_t t = 0; t < 40; ++t)
+    {
+        rng = rng * 1664525u + 1013904223u;
+        int32_t stepN = (int32_t)(rng % (uint32_t)(s.stepCount + 1));
+        uint64_t straight;
+        if (!ScrubSeek(&s, stepN) || !PrefixHash(&view, &s, stepN, &straight) ||
+            m3World_Hash(s.world) != straight)
+        {
+            fprintf(stderr, "selftest: seek %d DIVERGED\n", stepN);
+            failures += 1;
+        }
+    }
+    ScrubFree(&s);
+    free(blob);
+    free(journal);
+    free(snap);
+    if (failures == 0)
+    {
+        printf("m3replay selftest: 40 random seeks, all on the straight-run hash\n");
+        return 0;
+    }
+    return 1;
+}
+
 int main(int argc, char** argv)
 {
     if (argc == 3 && strcmp(argv[1], "record") == 0)
@@ -234,6 +517,19 @@ int main(int argc, char** argv)
     {
         return Verify(argv[2]);
     }
-    fprintf(stderr, "usage: m3replay record|info|verify <file.m3j>\n");
+    if (argc == 4 && strcmp(argv[1], "seek") == 0)
+    {
+        return Seek(argv[2], atoi(argv[3]));
+    }
+    if (argc == 5 && strcmp(argv[1], "play") == 0)
+    {
+        return Play(argv[2], atoi(argv[3]), atoi(argv[4]));
+    }
+    if (argc == 2 && strcmp(argv[1], "selftest") == 0)
+    {
+        return SelfTest();
+    }
+    fprintf(stderr, "usage: m3replay record|info|verify <file.m3j> | seek <file> <N> | play "
+                    "<file> <A> <B> | selftest\n");
     return 1;
 }
