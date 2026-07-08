@@ -614,6 +614,10 @@ void m3SoftBodyPass(m3World* world, float dt, int32_t substeps)
                 }
                 uint8_t stype = world->shapeType[sShape];
                 int32_t body = world->shapeBody[sShape];
+                if (world->bodyEnabled[body] == 0)
+                {
+                    continue; // disabled bodies are ghosts to lattices too (8-3)
+                }
                 for (int32_t i = 0; i < count; ++i)
                 {
                     int32_t k = base + i;

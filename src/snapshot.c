@@ -22,7 +22,8 @@
 #endif
 
 #define M3_SNAPSHOT_MAGIC   0x4D33534Eu // 'M3SN'
-#define M3_SNAPSHOT_VERSION 30u
+#define M3_SNAPSHOT_VERSION 31u
+// v31: runtime body control state (8-3).
 // v30: host force and torque accumulators (8-2).
 // v29: collision filters (8-1).
 // v28: soft body anchors (7-3 coupling).
@@ -168,6 +169,12 @@ static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3Wal
     M3_BLOCK(world->userData, cap * (int32_t)sizeof(uint64_t));
     M3_BLOCK(world->bodyForce, cap * (int32_t)sizeof(m3Vec3));
     M3_BLOCK(world->bodyTorque, cap * (int32_t)sizeof(m3Vec3));
+    M3_BLOCK(world->bodyEnabled, cap * (int32_t)sizeof(uint8_t));
+    M3_BLOCK(world->bodyLocks, cap * (int32_t)sizeof(uint8_t));
+    M3_BLOCK(world->bodySleepThreshold, cap * (int32_t)sizeof(float));
+    M3_BLOCK(world->bodyCanSleep, cap * (int32_t)sizeof(uint8_t));
+    M3_BLOCK(world->bodyHasTarget, cap * (int32_t)sizeof(uint8_t));
+    M3_BLOCK(world->bodyTarget, cap * (int32_t)sizeof(m3Transform));
     // Identity is state: generations, liveness, and the FIFO queue
     // restore exactly, so post-rollback id minting cannot diverge.
     M3_BLOCK(world->bodyPool.generations, cap * (int32_t)sizeof(uint16_t));
@@ -550,6 +557,19 @@ uint64_t m3World_Hash(m3WorldId worldId)
             // them; every force-free scene keeps its hash).
             h = m3Hash64(h, &world->bodyForce[i], (int32_t)sizeof(m3Vec3));
             h = m3Hash64(h, &world->bodyTorque[i], (int32_t)sizeof(m3Vec3));
+        }
+        if (world->bodyEnabled[i] == 0 || world->bodyLocks[i] != 0 ||
+            world->bodySleepThreshold[i] != M3_SLEEP_VELOCITY_DEFAULT ||
+            world->bodyCanSleep[i] == 0 || world->bodyHasTarget[i] != 0)
+        {
+            // Additive-state golden rule, fifth use: control state
+            // folds only off its defaults.
+            h = m3Hash64(h, &world->bodyEnabled[i], 1);
+            h = m3Hash64(h, &world->bodyLocks[i], 1);
+            h = m3Hash64(h, &world->bodySleepThreshold[i], 4);
+            h = m3Hash64(h, &world->bodyCanSleep[i], 1);
+            h = m3Hash64(h, &world->bodyHasTarget[i], 1);
+            h = m3Hash64(h, &world->bodyTarget[i], (int32_t)sizeof(m3Transform));
         }
         h = m3Hash64(h, &world->angularVelocities[i], (int32_t)sizeof(m3Vec3));
         h = m3Hash64(h, &world->invMass[i], (int32_t)sizeof(m3real));

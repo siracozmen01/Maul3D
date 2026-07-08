@@ -67,6 +67,10 @@ static void RayAllInsert(m3RayAllContext* ctx, const m3RayHit* hit, int32_t shap
 static bool RayAllCallback(int32_t shape, void* userContext)
 {
     m3RayAllContext* ctx = (m3RayAllContext*)userContext;
+    if (ctx->world->bodyEnabled[ctx->world->shapeBody[shape]] == 0)
+    {
+        return true; // disabled bodies vanish from queries (8-3)
+    }
     if (!m3FilterPass(ctx->filter.categoryBits, ctx->filter.maskBits,
                       ctx->world->shapeCategory[shape], ctx->world->shapeMask[shape]))
     {
@@ -159,6 +163,10 @@ static void ShapeCastTestShape(m3ShapeCastContext* ctx, int32_t shape)
     if (body == ctx->ignoreBody)
     {
         return; // the caster's own body never blocks its cast
+    }
+    if (world->bodyEnabled[body] == 0)
+    {
+        return; // disabled bodies vanish from queries (8-3)
     }
     if (!m3FilterPass(ctx->filter.categoryBits, ctx->filter.maskBits,
                       ctx->world->shapeCategory[shape], ctx->world->shapeMask[shape]))
@@ -393,6 +401,10 @@ static void ShapeCastTestPlane(m3ShapeCastContext* ctx, int32_t shape)
     if (world->shapeBody[shape] == ctx->ignoreBody)
     {
         return;
+    }
+    if (world->bodyEnabled[world->shapeBody[shape]] == 0)
+    {
+        return; // disabled bodies vanish from queries (8-3)
     }
     if (!m3FilterPass(ctx->filter.categoryBits, ctx->filter.maskBits, world->shapeCategory[shape],
                       world->shapeMask[shape]))
@@ -879,6 +891,10 @@ static bool OverlapCallback(int32_t shape, void* userContext)
 {
     {
         m3OverlapContext* fctx = (m3OverlapContext*)userContext;
+        if (fctx->world->bodyEnabled[fctx->world->shapeBody[shape]] == 0)
+        {
+            return true; // disabled bodies vanish from queries (8-3)
+        }
         if (!m3FilterPass(fctx->filter.categoryBits, fctx->filter.maskBits,
                           fctx->world->shapeCategory[shape], fctx->world->shapeMask[shape]))
         {

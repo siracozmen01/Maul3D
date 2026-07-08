@@ -151,6 +151,10 @@ static int PairAllowed(const m3World* world, int32_t i, int32_t j)
     {
         return 0;
     }
+    if (world->bodyEnabled[bodyI] == 0 || world->bodyEnabled[bodyJ] == 0)
+    {
+        return 0; // disabled bodies vanish (8-3)
+    }
     if (world->types[bodyI] == (uint8_t)m3_staticBody &&
         world->types[bodyJ] == (uint8_t)m3_staticBody)
     {

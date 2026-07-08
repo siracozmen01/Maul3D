@@ -1965,6 +1965,10 @@ static bool ContinuousQueryCallback(int32_t shape, void* userContext)
     {
         return true;
     }
+    if (world->bodyEnabled[body] == 0)
+    {
+        return true; // disabled bodies never block the fast mover (8-3)
+    }
     if (world->bulletFlags[body] != 0)
     {
         return true; // bullet versus bullet: skip (documented)
@@ -2476,7 +2480,11 @@ static void IslandSleepPass(m3World* world, int32_t* parent, const m3Pos3* com0,
                                                     sqrtf(dq.x * dq.x + dq.y * dq.y + dq.z * dq.z) *
                                                     world->maxExtents[i];
         m3real sleepVelocity = m3MaxF(velocity, 0.5f * invDt * motion);
-        if (sleepVelocity < 0.05f)
+        if (world->bodyCanSleep[i] == 0)
+        {
+            sleepVelocity = 3.4e38f; // never below any threshold (8-3)
+        }
+        if (sleepVelocity < world->bodySleepThreshold[i])
         {
             world->sleepTimes[i] += dt;
         }
@@ -2764,9 +2772,9 @@ void m3StepInternal(m3World* world, float dt, int32_t substeps)
     }
     for (int32_t i = 0; i < maxBody; ++i)
     {
-        if (world->bodyPool.alive[i] == 0)
+        if (world->bodyPool.alive[i] == 0 || world->bodyEnabled[i] == 0)
         {
-            continue;
+            continue; // disabled bodies vanish from the step (8-3)
         }
         uint8_t type = world->types[i];
         if (type == (uint8_t)m3_kinematicBody ||
@@ -2774,6 +2782,24 @@ void m3StepInternal(m3World* world, float dt, int32_t substeps)
         {
             movers[moverCount] = i;
             moverCount += 1;
+        }
+        // The kinematic servo (8-3): choose velocities so this
+        // step lands the body ON its target, then clear the order.
+        if (type == (uint8_t)m3_kinematicBody && world->bodyHasTarget[i] != 0)
+        {
+            m3real servoInvDt = 1.0f / dt;
+            const m3Transform* now = &world->transforms[i];
+            const m3Transform* want = &world->bodyTarget[i];
+            world->linearVelocities[i] = (m3Vec3){(m3real)(want->p.x - now->p.x) * servoInvDt,
+                                                  (m3real)(want->p.y - now->p.y) * servoInvDt,
+                                                  (m3real)(want->p.z - now->p.z) * servoInvDt};
+            m3Quat dq = m3MulQuat(want->q, (m3Quat){-now->q.x, -now->q.y, -now->q.z, now->q.w});
+            if (dq.w < 0.0f)
+            {
+                dq = (m3Quat){-dq.x, -dq.y, -dq.z, -dq.w};
+            }
+            world->angularVelocities[i] = m3MulSV3(2.0f * servoInvDt, (m3Vec3){dq.x, dq.y, dq.z});
+            world->bodyHasTarget[i] = 0;
         }
     }
 
@@ -2819,6 +2845,27 @@ void m3StepInternal(m3World* world, float dt, int32_t substeps)
             int32_t i = movers[m];
             m3Vec3 v = world->linearVelocities[i];
             m3Vec3 w = world->angularVelocities[i];
+            uint8_t locks = world->bodyLocks[i];
+            if (locks != 0)
+            {
+                // Motion locks (8-3): locked components re-zero
+                // every substep, in the STORED velocity too, so
+                // contacts cannot bank motion on a frozen axis.
+                if (locks & 1u)
+                    v.x = 0.0f;
+                if (locks & 2u)
+                    v.y = 0.0f;
+                if (locks & 4u)
+                    v.z = 0.0f;
+                if (locks & 8u)
+                    w.x = 0.0f;
+                if (locks & 16u)
+                    w.y = 0.0f;
+                if (locks & 32u)
+                    w.z = 0.0f;
+                world->linearVelocities[i] = v;
+                world->angularVelocities[i] = w;
+            }
             // Rigid bodies rotate about the center of mass: advance
             // the COM, spin, then place the origin back. A centered
             // body (lc zero) reduces to the plain origin update.

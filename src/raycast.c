@@ -316,6 +316,10 @@ static void RayTestShape(m3RayCastContext* ctx, int32_t shape)
         return; // the caller's own body never blocks its ray (4-4's
                 // cast hook, extended to rays for the vehicle arc)
     }
+    if (world->bodyEnabled[body] == 0)
+    {
+        return; // disabled bodies are invisible to rays (8-3)
+    }
     if (!m3FilterPass(ctx->filter.categoryBits, ctx->filter.maskBits, world->shapeCategory[shape],
                       world->shapeMask[shape]))
     {

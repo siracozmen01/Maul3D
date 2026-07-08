@@ -116,6 +116,12 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     M3_ALLOC(world->userData, cap, uint64_t);
     M3_ALLOC(world->bodyForce, cap, m3Vec3);
     M3_ALLOC(world->bodyTorque, cap, m3Vec3);
+    M3_ALLOC(world->bodyEnabled, cap, uint8_t);
+    M3_ALLOC(world->bodyLocks, cap, uint8_t);
+    M3_ALLOC(world->bodySleepThreshold, cap, float);
+    M3_ALLOC(world->bodyCanSleep, cap, uint8_t);
+    M3_ALLOC(world->bodyHasTarget, cap, uint8_t);
+    M3_ALLOC(world->bodyTarget, cap, m3Transform);
     M3_ALLOC(world->bodyShapeHead, cap, int32_t);
     for (int32_t i = 0; i < cap; ++i)
     {
@@ -337,6 +343,12 @@ void m3DestroyWorld(m3WorldId worldId)
     m3Free(world->userData);
     m3Free(world->bodyForce);
     m3Free(world->bodyTorque);
+    m3Free(world->bodyEnabled);
+    m3Free(world->bodyLocks);
+    m3Free(world->bodySleepThreshold);
+    m3Free(world->bodyCanSleep);
+    m3Free(world->bodyHasTarget);
+    m3Free(world->bodyTarget);
     m3Free(world->bodyShapeHead);
     m3IdPoolDestroy(&world->shapePool);
     m3Free(world->shapeBody);
@@ -1317,6 +1329,112 @@ static bool JournalReplayApply(m3World* world, const void* data, int32_t size)
             {
                 m3ApplyImpulseAtPointInternal(world, index, record.v, record.p);
             }
+            break;
+        }
+        case m3_opSetTransform:
+        case m3_opSetTargetTransform:
+        {
+            struct
+            {
+                m3BodyId id;
+                m3Transform pose;
+            } record;
+            if (bytes != (int32_t)sizeof(record))
+            {
+                return false;
+            }
+            memcpy(&record, payload, sizeof(record));
+            record.id.world0 = world->worldIndex0;
+            int32_t index = m3BodySlot(world, record.id);
+            if (index < 0)
+            {
+                return false;
+            }
+            if (op == m3_opSetTransform)
+            {
+                m3SetTransformInternal(world, index, record.pose);
+            }
+            else
+            {
+                m3SetTargetTransformInternal(world, index, record.pose);
+            }
+            break;
+        }
+        case m3_opSetType:
+        case m3_opSetEnabled:
+        case m3_opSetAwake:
+        {
+            struct
+            {
+                m3BodyId id;
+                int32_t value;
+            } record;
+            if (bytes != (int32_t)sizeof(record))
+            {
+                return false;
+            }
+            memcpy(&record, payload, sizeof(record));
+            record.id.world0 = world->worldIndex0;
+            int32_t index = m3BodySlot(world, record.id);
+            if (index < 0)
+            {
+                return false;
+            }
+            if (op == m3_opSetType)
+            {
+                m3SetTypeInternal(world, index, (uint8_t)record.value);
+            }
+            else if (op == m3_opSetEnabled)
+            {
+                m3SetEnabledInternal(world, index, record.value);
+            }
+            else
+            {
+                m3SetAwakeInternal(world, index, record.value);
+            }
+            break;
+        }
+        case m3_opSetMotionLocks:
+        {
+            struct
+            {
+                m3BodyId id;
+                uint32_t locks;
+            } record;
+            if (bytes != (int32_t)sizeof(record))
+            {
+                return false;
+            }
+            memcpy(&record, payload, sizeof(record));
+            record.id.world0 = world->worldIndex0;
+            int32_t index = m3BodySlot(world, record.id);
+            if (index < 0)
+            {
+                return false;
+            }
+            m3SetMotionLocksInternal(world, index, (uint8_t)record.locks);
+            break;
+        }
+        case m3_opSetSleepControls:
+        {
+            struct
+            {
+                m3BodyId id;
+                float threshold;
+                int32_t canSleep;
+            } record;
+            if (bytes != (int32_t)sizeof(record))
+            {
+                return false;
+            }
+            memcpy(&record, payload, sizeof(record));
+            record.id.world0 = world->worldIndex0;
+            int32_t index = m3BodySlot(world, record.id);
+            if (index < 0)
+            {
+                return false;
+            }
+            m3SetSleepControlsInternal(world, index, record.threshold, record.canSleep);
             break;
         }
         default:

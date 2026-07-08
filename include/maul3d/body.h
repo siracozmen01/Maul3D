@@ -61,6 +61,37 @@ extern "C"
     M3_API m3BodyType m3Body_GetType(m3BodyId bodyId);
 
     /// Journaled setters: every mutation is a discrete op.
+    /// Runtime control (8-3), all journaled. SetTransform is the
+    /// teleport: the pose lands instantly, velocities stay, and
+    /// bodies around BOTH the old and new locations wake so
+    /// nothing keeps sleeping under or inside a teleported crate.
+    M3_API void m3Body_SetTransform(m3BodyId bodyId, m3Pos3 position, m3Quat rotation);
+    /// Kinematic servo: velocities are chosen at the next step so
+    /// the body lands ON the target pose after that step, then the
+    /// target clears. Kinematic bodies only (the correct way to
+    /// drive elevators and doors).
+    M3_API void m3Body_SetTargetTransform(m3BodyId bodyId, m3Pos3 position, m3Quat rotation);
+    /// Switch dynamic, kinematic, static at runtime. Mass rebuilds
+    /// from shapes when turning dynamic; velocities zero when
+    /// turning static; the neighborhood wakes.
+    M3_API void m3Body_SetType(m3BodyId bodyId, m3BodyType type);
+    /// A disabled body vanishes from simulation AND queries without
+    /// being destroyed; enabling wakes its neighborhood.
+    M3_API void m3Body_SetEnabled(m3BodyId bodyId, bool enabled);
+    M3_API bool m3Body_IsEnabled(m3BodyId bodyId);
+    /// Motion locks: bits 0..2 freeze linear x, y, z; bits 3..5
+    /// freeze angular x, y, z. Locked components re-zero every
+    /// substep, so 2.5D scenes and upright enemies stay exact.
+    M3_API void m3Body_SetMotionLocks(m3BodyId bodyId, uint32_t locks);
+    M3_API uint32_t m3Body_GetMotionLocks(m3BodyId bodyId);
+    /// Sleep controls: a per-body velocity threshold (zero restores
+    /// the world default) and a can-sleep switch.
+    M3_API void m3Body_SetSleepControls(m3BodyId bodyId, float threshold, bool canSleep);
+    M3_API bool m3Body_IsAwake(m3BodyId bodyId);
+    /// SetAwake(true) wakes; SetAwake(false) puts the single body
+    /// to sleep and zeroes its velocities.
+    M3_API void m3Body_SetAwake(m3BodyId bodyId, bool awake);
+
     /// Forces and impulses (8-2), journaled like every mutation.
     /// Forces and torques ACCUMULATE and act over the next step,
     /// then clear; impulses change velocity immediately. Only

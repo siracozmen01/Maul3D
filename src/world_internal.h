@@ -99,6 +99,13 @@ typedef enum m3Op
     m3_opApplyAngularImpulse = 29,   // body + angular impulse
     m3_opApplyForceAtPoint = 30,     // body + force + world point
     m3_opApplyImpulseAtPoint = 31,   // body + impulse + world point
+    m3_opSetTransform = 32,          // body + pose: the teleport (8-3)
+    m3_opSetTargetTransform = 33,    // body + pose: kinematic servo
+    m3_opSetType = 34,               // body + new type
+    m3_opSetEnabled = 35,            // body + on/off
+    m3_opSetMotionLocks = 36,        // body + lock bits
+    m3_opSetSleepControls = 37,      // body + threshold + canSleep
+    m3_opSetAwake = 38,              // body + awake flag
 } m3Op;
 
 // Immutable interned hull data (lifetime 3): vertices, face planes,
@@ -381,10 +388,16 @@ typedef struct m3World
     float* minExtents;    // per body: thinnest shape measure (CCD trigger)
     float* maxExtents;    // per body: farthest point from the COM (CCD arc bound)
     uint64_t* userData;
-    m3Vec3* bodyForce;      // host force accumulator (8-2): integrated
-    m3Vec3* bodyTorque;     // each substep, cleared after the step,
-                            // hashed only when nonzero (additive rule)
-    int32_t* bodyShapeHead; // head of each body's shape list, -1 none
+    m3Vec3* bodyForce;         // host force accumulator (8-2): integrated
+    m3Vec3* bodyTorque;        // each substep, cleared after the step,
+                               // hashed only when nonzero (additive rule)
+    uint8_t* bodyEnabled;      // 8-3: disabled = invisible everywhere
+    uint8_t* bodyLocks;        // bits 0-2 linear xyz, 3-5 angular xyz
+    float* bodySleepThreshold; // per-body; default the world constant
+    uint8_t* bodyCanSleep;     // 0 = never sleeps
+    uint8_t* bodyHasTarget;    // kinematic servo pending (one step)
+    m3Transform* bodyTarget;   // the servo pose
+    int32_t* bodyShapeHead;    // head of each body's shape list, -1 none
 
     // Shape identity and SoA shape state (persistent, walked).
     m3IdPool shapePool;
@@ -596,6 +609,15 @@ m3World* m3WorldFromIndex0(uint16_t index0);
 // Slot lookup with generation check: -1 for a stale or foreign id.
 int32_t m3BodySlot(const m3World* world, m3BodyId bodyId);
 void m3ApplyForceInternal(m3World* world, int32_t index, m3Vec3 force);
+void m3SetTransformInternal(m3World* world, int32_t index, m3Transform pose);
+void m3SetTargetTransformInternal(m3World* world, int32_t index, m3Transform pose);
+void m3SetTypeInternal(m3World* world, int32_t index, uint8_t type);
+void m3SetEnabledInternal(m3World* world, int32_t index, int enabled);
+void m3SetMotionLocksInternal(m3World* world, int32_t index, uint8_t locks);
+void m3SetSleepControlsInternal(m3World* world, int32_t index, float threshold, int canSleep);
+void m3SetAwakeInternal(m3World* world, int32_t index, int awake);
+void m3WakeRegionAabb(m3World* world, const double lo[3], const double hi[3]);
+#define M3_SLEEP_VELOCITY_DEFAULT 0.05f
 void m3ApplyTorqueInternal(m3World* world, int32_t index, m3Vec3 torque);
 void m3ApplyLinearImpulseInternal(m3World* world, int32_t index, m3Vec3 impulse);
 void m3ApplyAngularImpulseInternal(m3World* world, int32_t index, m3Vec3 impulse);
