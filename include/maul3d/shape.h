@@ -196,6 +196,22 @@ extern "C"
 
     M3_API bool m3Shape_IsValid(m3ShapeId shapeId);
 
+    /// Runtime material setters (8-4). Journaled; contacts read
+    /// materials at prepare, so changes bind from the next step. A
+    /// sleeping stack keeps its old mix until something wakes it
+    /// (the reference behavior, documented).
+    M3_API void m3Shape_SetFriction(m3ShapeId shapeId, float friction);
+    M3_API float m3Shape_GetFriction(m3ShapeId shapeId);
+    M3_API void m3Shape_SetRestitution(m3ShapeId shapeId, float restitution);
+    M3_API float m3Shape_GetRestitution(m3ShapeId shapeId);
+    M3_API void m3Shape_SetRollingResistance(m3ShapeId shapeId, float value);
+    M3_API float m3Shape_GetRollingResistance(m3ShapeId shapeId);
+
+    /// Set the density and optionally rebuild the owning body's
+    /// mass, center and inertia from all its shapes. Journaled.
+    M3_API void m3Shape_SetDensity(m3ShapeId shapeId, float density, bool updateBodyMass);
+    M3_API float m3Shape_GetDensity(m3ShapeId shapeId);
+
     static const m3ShapeId m3_nullShapeId = {0, 0, 0};
 
 #ifdef __cplusplus

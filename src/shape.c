@@ -852,3 +852,160 @@ bool m3Shape_IsValid(m3ShapeId shapeId)
     m3World* world = m3WorldFromIndex0(shapeId.world0);
     return world != NULL && m3ShapeSlot(world, shapeId) >= 0;
 }
+
+// --- Runtime materials (8-4) ------------------------------------------------
+
+void m3SetShapeFrictionInternal(m3World* world, int32_t slot, float value)
+{
+    world->shapeFriction[slot] = value;
+}
+
+void m3SetShapeRestitutionInternal(m3World* world, int32_t slot, float value)
+{
+    world->shapeRestitution[slot] = value;
+}
+
+void m3SetShapeRollingInternal(m3World* world, int32_t slot, float value)
+{
+    world->shapeRollingResistance[slot] = value;
+}
+
+void m3SetShapeDensityInternal(m3World* world, int32_t slot, float value, int32_t updateMass)
+{
+    world->shapeDensity[slot] = value;
+    if (updateMass != 0)
+    {
+        m3RecomputeMass(world, world->shapeBody[slot]);
+    }
+}
+
+// One resolve + one journal + one internal, the body.c pattern.
+static m3World* ResolveShape(m3ShapeId shapeId, int32_t* outSlot)
+{
+    m3World* world = m3WorldFromIndex0(shapeId.world0);
+    if (world == NULL)
+    {
+        return NULL;
+    }
+    int32_t slot = m3ShapeSlot(world, shapeId);
+    if (slot < 0)
+    {
+        return NULL;
+    }
+    *outSlot = slot;
+    return world;
+}
+
+static void ShapeScalarOp(m3ShapeId shapeId, int32_t op, float value)
+{
+    int32_t slot;
+    m3World* world = ResolveShape(shapeId, &slot);
+    if (world == NULL)
+    {
+        return;
+    }
+    if (world->journalActive != 0)
+    {
+        struct
+        {
+            m3ShapeId id;
+            float value;
+        } record;
+        memset(&record, 0, sizeof(record));
+        record.id = shapeId;
+        record.value = value;
+        m3JournalRecord(world, op, &record, (int32_t)sizeof(record));
+    }
+    if (op == m3_opSetShapeFriction)
+    {
+        m3SetShapeFrictionInternal(world, slot, value);
+    }
+    else if (op == m3_opSetShapeRestitution)
+    {
+        m3SetShapeRestitutionInternal(world, slot, value);
+    }
+    else
+    {
+        m3SetShapeRollingInternal(world, slot, value);
+    }
+}
+
+void m3Shape_SetFriction(m3ShapeId shapeId, float friction)
+{
+    if (!m3FiniteF(friction) || friction < 0.0f)
+    {
+        return;
+    }
+    ShapeScalarOp(shapeId, m3_opSetShapeFriction, friction);
+}
+
+float m3Shape_GetFriction(m3ShapeId shapeId)
+{
+    int32_t slot;
+    m3World* world = ResolveShape(shapeId, &slot);
+    return world != NULL ? world->shapeFriction[slot] : 0.0f;
+}
+
+void m3Shape_SetRestitution(m3ShapeId shapeId, float restitution)
+{
+    if (!m3FiniteF(restitution) || restitution < 0.0f)
+    {
+        return;
+    }
+    ShapeScalarOp(shapeId, m3_opSetShapeRestitution, restitution);
+}
+
+float m3Shape_GetRestitution(m3ShapeId shapeId)
+{
+    int32_t slot;
+    m3World* world = ResolveShape(shapeId, &slot);
+    return world != NULL ? world->shapeRestitution[slot] : 0.0f;
+}
+
+void m3Shape_SetRollingResistance(m3ShapeId shapeId, float value)
+{
+    if (!m3FiniteF(value) || value < 0.0f)
+    {
+        return;
+    }
+    ShapeScalarOp(shapeId, m3_opSetShapeRolling, value);
+}
+
+float m3Shape_GetRollingResistance(m3ShapeId shapeId)
+{
+    int32_t slot;
+    m3World* world = ResolveShape(shapeId, &slot);
+    return world != NULL ? world->shapeRollingResistance[slot] : 0.0f;
+}
+
+void m3Shape_SetDensity(m3ShapeId shapeId, float density, bool updateBodyMass)
+{
+    int32_t slot;
+    m3World* world = ResolveShape(shapeId, &slot);
+    if (world == NULL || !m3FiniteF(density) || density <= 0.0f)
+    {
+        return;
+    }
+    if (world->journalActive != 0)
+    {
+        struct
+        {
+            m3ShapeId id;
+            float value;
+            int32_t updateMass;
+        } record;
+        memset(&record, 0, sizeof(record));
+        record.id = shapeId;
+        record.value = density;
+        record.updateMass = updateBodyMass ? 1 : 0;
+        m3JournalRecord(world, m3_opSetShapeDensity, &record, (int32_t)sizeof(record));
+    }
+    m3SetShapeDensityInternal(world, slot, density, updateBodyMass ? 1 : 0);
+}
+
+float m3Shape_GetDensity(m3ShapeId shapeId)
+{
+    int32_t slot;
+    m3World* world = ResolveShape(shapeId, &slot);
+    return world != NULL ? world->shapeDensity[slot] : 0.0f;
+}

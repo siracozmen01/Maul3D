@@ -96,34 +96,44 @@ typedef enum m3Op
     m3_opCreateMeshShape = 8, // header + exact-size vertex/index payload
     m3_opCreateJoint = 9,
     m3_opDestroyJoint = 10,
-    m3_opCreateVoxelChunkShape = 11, // header + packed grid payload
-    m3_opVoxelSet = 12,              // shape id + coords + payload
-    m3_opVoxelClear = 13,            // shape id + coords
-    m3_opVoxelClearBox = 14,         // shape id + inclusive region
-    m3_opVoxelSetFill = 15,          // shape id + coords + fill byte
-    m3_opCreateCharacter = 16,       // def + expected id
-    m3_opDestroyCharacter = 17,      // id
-    m3_opCharacterMove = 18,         // id + translation
-    m3_opCreateVehicle = 19,         // def + expected id (5-1)
-    m3_opDestroyVehicle = 20,        // id
-    m3_opVehicleCommands = 21,       // id + throttle, steer, brake (5-2)
-    m3_opCreateSoftBody = 22,        // def + expected id (7-1)
-    m3_opDestroySoftBody = 23,       // id
-    m3_opSoftBodyPin = 24,           // id + particle index
-    m3_opSoftBodyAnchor = 25,        // id + particle + body id (7-3)
-    m3_opApplyForce = 26,            // body + force at center (8-2)
-    m3_opApplyTorque = 27,           // body + torque
-    m3_opApplyLinearImpulse = 28,    // body + impulse at center
-    m3_opApplyAngularImpulse = 29,   // body + angular impulse
-    m3_opApplyForceAtPoint = 30,     // body + force + world point
-    m3_opApplyImpulseAtPoint = 31,   // body + impulse + world point
-    m3_opSetTransform = 32,          // body + pose: the teleport (8-3)
-    m3_opSetTargetTransform = 33,    // body + pose: kinematic servo
-    m3_opSetType = 34,               // body + new type
-    m3_opSetEnabled = 35,            // body + on/off
-    m3_opSetMotionLocks = 36,        // body + lock bits
-    m3_opSetSleepControls = 37,      // body + threshold + canSleep
-    m3_opSetAwake = 38,              // body + awake flag
+    m3_opCreateVoxelChunkShape = 11,   // header + packed grid payload
+    m3_opVoxelSet = 12,                // shape id + coords + payload
+    m3_opVoxelClear = 13,              // shape id + coords
+    m3_opVoxelClearBox = 14,           // shape id + inclusive region
+    m3_opVoxelSetFill = 15,            // shape id + coords + fill byte
+    m3_opCreateCharacter = 16,         // def + expected id
+    m3_opDestroyCharacter = 17,        // id
+    m3_opCharacterMove = 18,           // id + translation
+    m3_opCreateVehicle = 19,           // def + expected id (5-1)
+    m3_opDestroyVehicle = 20,          // id
+    m3_opVehicleCommands = 21,         // id + throttle, steer, brake (5-2)
+    m3_opCreateSoftBody = 22,          // def + expected id (7-1)
+    m3_opDestroySoftBody = 23,         // id
+    m3_opSoftBodyPin = 24,             // id + particle index
+    m3_opSoftBodyAnchor = 25,          // id + particle + body id (7-3)
+    m3_opApplyForce = 26,              // body + force at center (8-2)
+    m3_opApplyTorque = 27,             // body + torque
+    m3_opApplyLinearImpulse = 28,      // body + impulse at center
+    m3_opApplyAngularImpulse = 29,     // body + angular impulse
+    m3_opApplyForceAtPoint = 30,       // body + force + world point
+    m3_opApplyImpulseAtPoint = 31,     // body + impulse + world point
+    m3_opSetTransform = 32,            // body + pose: the teleport (8-3)
+    m3_opSetTargetTransform = 33,      // body + pose: kinematic servo
+    m3_opSetType = 34,                 // body + new type
+    m3_opSetEnabled = 35,              // body + on/off
+    m3_opSetMotionLocks = 36,          // body + lock bits
+    m3_opSetSleepControls = 37,        // body + threshold + canSleep
+    m3_opSetAwake = 38,                // body + awake flag
+    m3_opSetGravity = 39,              // world gravity vector (8-4)
+    m3_opSetShapeFriction = 40,        // shape + coefficient
+    m3_opSetShapeRestitution = 41,     // shape + coefficient
+    m3_opSetShapeRolling = 42,         // shape + rolling resistance
+    m3_opSetShapeDensity = 43,         // shape + density + mass rebuild flag
+    m3_opSetContactTuning = 44,        // hertz + damping ratio + push speed
+    m3_opSetRestitutionThreshold = 45, // world threshold
+    m3_opSetMaximumLinearSpeed = 46,   // world speed cap
+    m3_opEnableSleeping = 47,          // world toggle (off wakes everyone)
+    m3_opEnableContinuous = 48,        // world toggle
 } m3Op;
 
 // Immutable interned hull data (lifetime 3): vertices, face planes,
@@ -381,6 +391,19 @@ typedef struct m3World
 {
     // World-global state (snapshot header material, task 6).
     m3Vec3 gravity;
+    // Tuning knobs (8-4): STATE, not config. They journal, they
+    // snapshot (v33), and they fold into the hash only off their
+    // defaults, so two worlds that only ever used defaults keep
+    // their old hashes. The config hash stays version + solver rev
+    // + precision + FP policy: knobs must be REPLAYABLE, and a
+    // config-hash knob would refuse the journal instead.
+    float contactHertz;
+    float contactDampingRatio;
+    float contactPushMaxSpeed;
+    float restitutionThreshold;
+    float maximumLinearSpeed;
+    uint8_t sleepEnabled;
+    uint8_t continuousEnabled;
     uint64_t stepCount;
     int32_t bodyCapacity;
     int32_t shapeCapacity;
@@ -642,6 +665,25 @@ void m3SetMotionLocksInternal(m3World* world, int32_t index, uint8_t locks);
 void m3SetSleepControlsInternal(m3World* world, int32_t index, float threshold, int canSleep);
 void m3SetAwakeInternal(m3World* world, int32_t index, int awake);
 void m3WakeRegionAabb(m3World* world, const double lo[3], const double hi[3]);
+
+// Tuning defaults (8-4): the reference values, shared by the def,
+// the solver reads, and the off-default hash folds.
+#define M3_CONTACT_HERTZ_DEFAULT          30.0f
+#define M3_CONTACT_DAMPING_RATIO_DEFAULT  10.0f
+#define M3_CONTACT_PUSH_MAX_SPEED_DEFAULT 3.0f
+#define M3_RESTITUTION_THRESHOLD_DEFAULT  1.0f
+#define M3_MAX_LINEAR_SPEED_DEFAULT       400.0f
+
+void m3SetGravityInternal(m3World* world, m3Vec3 gravity);
+void m3SetShapeFrictionInternal(m3World* world, int32_t slot, float value);
+void m3SetShapeRestitutionInternal(m3World* world, int32_t slot, float value);
+void m3SetShapeRollingInternal(m3World* world, int32_t slot, float value);
+void m3SetShapeDensityInternal(m3World* world, int32_t slot, float value, int32_t updateMass);
+void m3SetContactTuningInternal(m3World* world, float hertz, float dampingRatio, float pushSpeed);
+void m3SetRestitutionThresholdInternal(m3World* world, float value);
+void m3SetMaximumLinearSpeedInternal(m3World* world, float value);
+void m3EnableSleepingInternal(m3World* world, int32_t on);
+void m3EnableContinuousInternal(m3World* world, int32_t on);
 #define M3_SLEEP_VELOCITY_DEFAULT 0.05f
 void m3ApplyTorqueInternal(m3World* world, int32_t index, m3Vec3 torque);
 void m3ApplyLinearImpulseInternal(m3World* world, int32_t index, m3Vec3 impulse);

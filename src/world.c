@@ -44,6 +44,13 @@ m3WorldDef m3DefaultWorldDef(void)
     def.vehicleCapacity = 2;
     def.softBodyCapacity = 2;
     def.workerCount = 1;
+    def.contactHertz = M3_CONTACT_HERTZ_DEFAULT;
+    def.contactDampingRatio = M3_CONTACT_DAMPING_RATIO_DEFAULT;
+    def.contactPushMaxSpeed = M3_CONTACT_PUSH_MAX_SPEED_DEFAULT;
+    def.restitutionThreshold = M3_RESTITUTION_THRESHOLD_DEFAULT;
+    def.maximumLinearSpeed = M3_MAX_LINEAR_SPEED_DEFAULT;
+    def.enableSleeping = 1;
+    def.enableContinuous = 1;
     def.internalValue = M3_WORLD_COOKIE;
     return def;
 }
@@ -55,7 +62,12 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
         def->shapeCapacity <= 0 || def->meshCapacity <= 0 || def->jointCapacity <= 0 ||
         def->voxelCapacity <= 0 || def->characterCapacity <= 0 || def->vehicleCapacity <= 0 ||
         def->softBodyCapacity <= 0 || def->workerCount <= 0 ||
-        (def->enqueueTask == NULL) != (def->finishTask == NULL) || !m3FiniteV3(def->gravity))
+        (def->enqueueTask == NULL) != (def->finishTask == NULL) || !m3FiniteV3(def->gravity) ||
+        !m3FiniteF(def->contactHertz) || def->contactHertz <= 0.0f ||
+        !m3FiniteF(def->contactDampingRatio) || def->contactDampingRatio <= 0.0f ||
+        !m3FiniteF(def->contactPushMaxSpeed) || def->contactPushMaxSpeed <= 0.0f ||
+        !m3FiniteF(def->restitutionThreshold) || def->restitutionThreshold < 0.0f ||
+        !m3FiniteF(def->maximumLinearSpeed) || def->maximumLinearSpeed <= 0.0f)
     {
         // User-input validation is contract, not invariant: the API
         // promises a null id for a bad def (tests exercise this), so
@@ -81,6 +93,13 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     m3World* world = (m3World*)m3AllocZeroed((int32_t)sizeof(m3World));
     int32_t cap = def->bodyCapacity;
     world->gravity = def->gravity;
+    world->contactHertz = def->contactHertz;
+    world->contactDampingRatio = def->contactDampingRatio;
+    world->contactPushMaxSpeed = def->contactPushMaxSpeed;
+    world->restitutionThreshold = def->restitutionThreshold;
+    world->maximumLinearSpeed = def->maximumLinearSpeed;
+    world->sleepEnabled = def->enableSleeping != 0 ? 1 : 0;
+    world->continuousEnabled = def->enableContinuous != 0 ? 1 : 0;
     world->bodyCapacity = cap;
     world->shapeCapacity = def->shapeCapacity;
     world->meshCapacity = def->meshCapacity;
@@ -480,6 +499,171 @@ void m3DestroyWorld(m3WorldId worldId)
 bool m3World_IsValid(m3WorldId worldId)
 {
     return m3WorldFromId(worldId) != NULL;
+}
+
+// --- Tuning knobs (8-4) -----------------------------------------------------
+
+void m3SetGravityInternal(m3World* world, m3Vec3 gravity)
+{
+    world->gravity = gravity;
+}
+
+void m3SetContactTuningInternal(m3World* world, float hertz, float dampingRatio, float pushSpeed)
+{
+    world->contactHertz = hertz;
+    world->contactDampingRatio = dampingRatio;
+    world->contactPushMaxSpeed = pushSpeed;
+}
+
+void m3SetRestitutionThresholdInternal(m3World* world, float value)
+{
+    world->restitutionThreshold = value;
+}
+
+void m3SetMaximumLinearSpeedInternal(m3World* world, float value)
+{
+    world->maximumLinearSpeed = value;
+}
+
+void m3EnableSleepingInternal(m3World* world, int32_t on)
+{
+    world->sleepEnabled = on != 0 ? 1 : 0;
+    if (on == 0)
+    {
+        // The reference wakes every sleeping set when sleeping turns
+        // off; nothing may keep napping through the new regime.
+        int32_t maxBody = world->bodyPool.maxIndex;
+        for (int32_t i = 0; i < maxBody; ++i)
+        {
+            if (world->bodyPool.alive[i] != 0 && world->awake[i] == 0 &&
+                world->types[i] == (uint8_t)m3_dynamicBody)
+            {
+                m3SetAwakeInternal(world, i, 1);
+            }
+        }
+    }
+}
+
+void m3EnableContinuousInternal(m3World* world, int32_t on)
+{
+    world->continuousEnabled = on != 0 ? 1 : 0;
+}
+
+void m3World_SetGravity(m3WorldId worldId, m3Vec3 gravity)
+{
+    m3World* world = m3WorldFromId(worldId);
+    if (world == NULL || !m3FiniteV3(gravity))
+    {
+        return;
+    }
+    if (world->journalActive != 0)
+    {
+        m3JournalRecord(world, m3_opSetGravity, &gravity, (int32_t)sizeof(gravity));
+    }
+    m3SetGravityInternal(world, gravity);
+}
+
+m3Vec3 m3World_GetGravity(m3WorldId worldId)
+{
+    m3World* world = m3WorldFromId(worldId);
+    m3Vec3 zero = {0.0f, 0.0f, 0.0f};
+    return world != NULL ? world->gravity : zero;
+}
+
+void m3World_SetContactTuning(m3WorldId worldId, float hertz, float dampingRatio,
+                              float pushMaxSpeed)
+{
+    m3World* world = m3WorldFromId(worldId);
+    if (world == NULL || !m3FiniteF(hertz) || hertz <= 0.0f || !m3FiniteF(dampingRatio) ||
+        dampingRatio <= 0.0f || !m3FiniteF(pushMaxSpeed) || pushMaxSpeed <= 0.0f)
+    {
+        return;
+    }
+    if (world->journalActive != 0)
+    {
+        struct
+        {
+            float hertz;
+            float dampingRatio;
+            float pushSpeed;
+        } record;
+        memset(&record, 0, sizeof(record));
+        record.hertz = hertz;
+        record.dampingRatio = dampingRatio;
+        record.pushSpeed = pushMaxSpeed;
+        m3JournalRecord(world, m3_opSetContactTuning, &record, (int32_t)sizeof(record));
+    }
+    m3SetContactTuningInternal(world, hertz, dampingRatio, pushMaxSpeed);
+}
+
+void m3World_SetRestitutionThreshold(m3WorldId worldId, float value)
+{
+    m3World* world = m3WorldFromId(worldId);
+    if (world == NULL || !m3FiniteF(value) || value < 0.0f)
+    {
+        return;
+    }
+    if (world->journalActive != 0)
+    {
+        m3JournalRecord(world, m3_opSetRestitutionThreshold, &value, (int32_t)sizeof(value));
+    }
+    m3SetRestitutionThresholdInternal(world, value);
+}
+
+void m3World_SetMaximumLinearSpeed(m3WorldId worldId, float value)
+{
+    m3World* world = m3WorldFromId(worldId);
+    if (world == NULL || !m3FiniteF(value) || value <= 0.0f)
+    {
+        return;
+    }
+    if (world->journalActive != 0)
+    {
+        m3JournalRecord(world, m3_opSetMaximumLinearSpeed, &value, (int32_t)sizeof(value));
+    }
+    m3SetMaximumLinearSpeedInternal(world, value);
+}
+
+void m3World_EnableSleeping(m3WorldId worldId, bool flag)
+{
+    m3World* world = m3WorldFromId(worldId);
+    if (world == NULL)
+    {
+        return;
+    }
+    if (world->journalActive != 0)
+    {
+        int32_t on = flag ? 1 : 0;
+        m3JournalRecord(world, m3_opEnableSleeping, &on, (int32_t)sizeof(on));
+    }
+    m3EnableSleepingInternal(world, flag ? 1 : 0);
+}
+
+bool m3World_IsSleepingEnabled(m3WorldId worldId)
+{
+    m3World* world = m3WorldFromId(worldId);
+    return world != NULL && world->sleepEnabled != 0;
+}
+
+void m3World_EnableContinuous(m3WorldId worldId, bool flag)
+{
+    m3World* world = m3WorldFromId(worldId);
+    if (world == NULL)
+    {
+        return;
+    }
+    if (world->journalActive != 0)
+    {
+        int32_t on = flag ? 1 : 0;
+        m3JournalRecord(world, m3_opEnableContinuous, &on, (int32_t)sizeof(on));
+    }
+    m3EnableContinuousInternal(world, flag ? 1 : 0);
+}
+
+bool m3World_IsContinuousEnabled(m3WorldId worldId)
+{
+    m3World* world = m3WorldFromId(worldId);
+    return world != NULL && world->continuousEnabled != 0;
 }
 
 // --- Journal ---------------------------------------------------------------
@@ -1435,6 +1619,127 @@ static bool JournalReplayApply(m3World* world, const void* data, int32_t size)
                 return false;
             }
             m3SetSleepControlsInternal(world, index, record.threshold, record.canSleep);
+            break;
+        }
+        case m3_opSetGravity:
+        {
+            m3Vec3 gravity;
+            if (bytes != (int32_t)sizeof(gravity))
+            {
+                return false;
+            }
+            memcpy(&gravity, payload, sizeof(gravity));
+            m3SetGravityInternal(world, gravity);
+            break;
+        }
+        case m3_opSetShapeFriction:
+        case m3_opSetShapeRestitution:
+        case m3_opSetShapeRolling:
+        {
+            struct
+            {
+                m3ShapeId id;
+                float value;
+            } record;
+            if (bytes != (int32_t)sizeof(record))
+            {
+                return false;
+            }
+            memcpy(&record, payload, sizeof(record));
+            record.id.world0 = world->worldIndex0;
+            int32_t slot = m3ShapeSlot(world, record.id);
+            if (slot < 0)
+            {
+                return false;
+            }
+            if (op == m3_opSetShapeFriction)
+            {
+                m3SetShapeFrictionInternal(world, slot, record.value);
+            }
+            else if (op == m3_opSetShapeRestitution)
+            {
+                m3SetShapeRestitutionInternal(world, slot, record.value);
+            }
+            else
+            {
+                m3SetShapeRollingInternal(world, slot, record.value);
+            }
+            break;
+        }
+        case m3_opSetShapeDensity:
+        {
+            struct
+            {
+                m3ShapeId id;
+                float value;
+                int32_t updateMass;
+            } record;
+            if (bytes != (int32_t)sizeof(record))
+            {
+                return false;
+            }
+            memcpy(&record, payload, sizeof(record));
+            record.id.world0 = world->worldIndex0;
+            int32_t slot = m3ShapeSlot(world, record.id);
+            if (slot < 0)
+            {
+                return false;
+            }
+            m3SetShapeDensityInternal(world, slot, record.value, record.updateMass);
+            break;
+        }
+        case m3_opSetContactTuning:
+        {
+            struct
+            {
+                float hertz;
+                float dampingRatio;
+                float pushSpeed;
+            } record;
+            if (bytes != (int32_t)sizeof(record))
+            {
+                return false;
+            }
+            memcpy(&record, payload, sizeof(record));
+            m3SetContactTuningInternal(world, record.hertz, record.dampingRatio, record.pushSpeed);
+            break;
+        }
+        case m3_opSetRestitutionThreshold:
+        case m3_opSetMaximumLinearSpeed:
+        {
+            float value;
+            if (bytes != (int32_t)sizeof(value))
+            {
+                return false;
+            }
+            memcpy(&value, payload, sizeof(value));
+            if (op == m3_opSetRestitutionThreshold)
+            {
+                m3SetRestitutionThresholdInternal(world, value);
+            }
+            else
+            {
+                m3SetMaximumLinearSpeedInternal(world, value);
+            }
+            break;
+        }
+        case m3_opEnableSleeping:
+        case m3_opEnableContinuous:
+        {
+            int32_t on;
+            if (bytes != (int32_t)sizeof(on))
+            {
+                return false;
+            }
+            memcpy(&on, payload, sizeof(on));
+            if (op == m3_opEnableSleeping)
+            {
+                m3EnableSleepingInternal(world, on);
+            }
+            else
+            {
+                m3EnableContinuousInternal(world, on);
+            }
             break;
         }
         default:

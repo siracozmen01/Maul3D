@@ -55,6 +55,16 @@ extern "C"
         m3EnqueueTaskFn* enqueueTask; // both null = serial (the default)
         m3FinishTaskFn* finishTask;
         void* userTaskContext;
+        // Tuning knobs (8-4). All journaled-settable at runtime too;
+        // they are engine STATE: snapshots carry them and replays
+        // reproduce them. Defaults are the reference values.
+        float contactHertz;         // contact softness frequency (30)
+        float contactDampingRatio;  // contact softness damping (10)
+        float contactPushMaxSpeed;  // max depenetration speed (3)
+        float restitutionThreshold; // impact speed under it: no bounce (1)
+        float maximumLinearSpeed;   // hard velocity cap (400)
+        int32_t enableSleeping;     // 1 = islands may sleep (default 1)
+        int32_t enableContinuous;   // 1 = CCD phase runs (default 1)
         int32_t internalValue;
     } m3WorldDef;
 
@@ -69,6 +79,39 @@ extern "C"
     M3_API m3WorldId m3CreateWorld(const m3WorldDef* def);
     M3_API void m3DestroyWorld(m3WorldId worldId);
     M3_API bool m3World_IsValid(m3WorldId worldId);
+
+    /// Set the gravity vector. Journaled; sleeping islands stay
+    /// asleep until disturbed (the reference behavior).
+    M3_API void m3World_SetGravity(m3WorldId worldId, m3Vec3 gravity);
+
+    /// Current gravity.
+    M3_API m3Vec3 m3World_GetGravity(m3WorldId worldId);
+
+    /// Contact softness tuning: frequency (hertz), damping ratio and
+    /// the maximum depenetration speed. Journaled. Static contacts
+    /// use twice the frequency, like the reference.
+    M3_API void m3World_SetContactTuning(m3WorldId worldId, float hertz, float dampingRatio,
+                                         float pushMaxSpeed);
+
+    /// Impact speed below the threshold does not bounce. Journaled.
+    M3_API void m3World_SetRestitutionThreshold(m3WorldId worldId, float value);
+
+    /// Hard cap on any body's linear speed, applied every substep.
+    /// Journaled.
+    M3_API void m3World_SetMaximumLinearSpeed(m3WorldId worldId, float value);
+
+    /// Turn island sleeping on or off. Turning it OFF wakes every
+    /// sleeping body (the reference behavior). Journaled.
+    M3_API void m3World_EnableSleeping(m3WorldId worldId, bool flag);
+
+    /// Whether island sleeping is enabled.
+    M3_API bool m3World_IsSleepingEnabled(m3WorldId worldId);
+
+    /// Turn the continuous phase (CCD) on or off. Journaled.
+    M3_API void m3World_EnableContinuous(m3WorldId worldId, bool flag);
+
+    /// Whether the continuous phase is enabled.
+    M3_API bool m3World_IsContinuousEnabled(m3WorldId worldId);
 
     /// Advance the simulation: collide, then the Soft Step solver
     /// with the given substep count. Deterministic: same inputs, same

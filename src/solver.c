@@ -17,11 +17,6 @@
 
 #include <string.h>
 
-#define M3_CONTACT_HERTZ          30.0f
-#define M3_CONTACT_DAMPING_RATIO  10.0f
-#define M3_CONTACT_PUSH_MAX_SPEED 3.0f
-#define M3_RESTITUTION_THRESHOLD  1.0f
-
 typedef struct m3Softness
 {
     m3real biasRate;
@@ -158,8 +153,8 @@ m3Mat3 m3WorldInvInertia(const m3World* world, int32_t body)
 
 static int32_t PrepareContacts(m3World* world, m3ContactConstraint* constraints, m3real h)
 {
-    m3Softness soft = MakeSoft(M3_CONTACT_HERTZ, M3_CONTACT_DAMPING_RATIO, h);
-    m3Softness staticSoft = MakeSoft(2.0f * M3_CONTACT_HERTZ, M3_CONTACT_DAMPING_RATIO, h);
+    m3Softness soft = MakeSoft(world->contactHertz, world->contactDampingRatio, h);
+    m3Softness staticSoft = MakeSoft(2.0f * world->contactHertz, world->contactDampingRatio, h);
 
     int32_t count = 0;
     for (int32_t i = 0; i < world->pairCount; ++i)
@@ -339,7 +334,7 @@ static void SolveOneContact(m3World* world, m3ContactConstraint* c, const m3Vec3
             }
             else if (useBias)
             {
-                bias = m3MaxF(c->softness.biasRate * s, -M3_CONTACT_PUSH_MAX_SPEED);
+                bias = m3MaxF(c->softness.biasRate * s, -world->contactPushMaxSpeed);
                 massScale = c->softness.massScale;
                 impulseScale = c->softness.impulseScale;
             }
@@ -1917,7 +1912,8 @@ static void Restitution(m3World* world, m3ContactConstraint* constraints, int32_
         for (int32_t k = 0; k < c->pointCount; ++k)
         {
             m3ConstraintPoint* cp = &c->points[k];
-            if (cp->relativeVelocity > -M3_RESTITUTION_THRESHOLD || cp->totalNormalImpulse == 0.0f)
+            if (cp->relativeVelocity > -world->restitutionThreshold ||
+                cp->totalNormalImpulse == 0.0f)
             {
                 continue;
             }
@@ -2938,6 +2934,17 @@ void m3StepInternal(m3World* world, float dt, int32_t substeps)
             v = m3MulSV3(1.0f / (1.0f + h * world->linearDamping[i]), v);
             w = m3MulSV3(1.0f / (1.0f + h * world->angularDamping[i]), w);
             w = GyroscopicOmega(world, i, w, h);
+            // Hard linear speed cap (8-4), the reference clamp. The
+            // angular cap stays out: the reference pairs it with an
+            // allowFastRotation escape hatch we have not shipped,
+            // and capping spin silently would rewrite scenes that
+            // legally tumble fast (argued in the plan).
+            m3real v2 = m3Dot3(v, v);
+            m3real cap = world->maximumLinearSpeed;
+            if (v2 > cap * cap)
+            {
+                v = m3MulSV3(cap / sqrtf(v2), v);
+            }
             world->linearVelocities[i] = v;
             world->angularVelocities[i] = w;
         }
@@ -3010,8 +3017,14 @@ void m3StepInternal(m3World* world, float dt, int32_t substeps)
     StoreImpulses(world, constraints, constraintCount);
     StoreJointImpulses(world, jointConstraints, jointCount);
 
-    SolveContinuousPhase(world, com0, rot0);
-    IslandSleepPass(world, islandParent, com0, rot0, dt);
+    if (world->continuousEnabled != 0)
+    {
+        SolveContinuousPhase(world, com0, rot0);
+    }
+    if (world->sleepEnabled != 0)
+    {
+        IslandSleepPass(world, islandParent, com0, rot0, dt);
+    }
     m3CharacterCarryRiders(world, com0, rot0);
     m3SoftBodyPass(world, dt, substeps);
 

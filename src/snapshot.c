@@ -22,7 +22,8 @@
 #endif
 
 #define M3_SNAPSHOT_MAGIC   0x4D33534Eu // 'M3SN'
-#define M3_SNAPSHOT_VERSION 32u
+#define M3_SNAPSHOT_VERSION 33u
+// v33: world tuning knobs (8-4).
 // v32: central friction manifold payload replaces per-point
 //      tangent impulses (solver rev 21).
 // v31: runtime body control state (8-3).
@@ -177,6 +178,13 @@ static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3Wal
     M3_BLOCK(world->bodyCanSleep, cap * (int32_t)sizeof(uint8_t));
     M3_BLOCK(world->bodyHasTarget, cap * (int32_t)sizeof(uint8_t));
     M3_BLOCK(world->bodyTarget, cap * (int32_t)sizeof(m3Transform));
+    M3_BLOCK(&world->contactHertz, (int32_t)sizeof(float));
+    M3_BLOCK(&world->contactDampingRatio, (int32_t)sizeof(float));
+    M3_BLOCK(&world->contactPushMaxSpeed, (int32_t)sizeof(float));
+    M3_BLOCK(&world->restitutionThreshold, (int32_t)sizeof(float));
+    M3_BLOCK(&world->maximumLinearSpeed, (int32_t)sizeof(float));
+    M3_BLOCK(&world->sleepEnabled, 1);
+    M3_BLOCK(&world->continuousEnabled, 1);
     // Identity is state: generations, liveness, and the FIFO queue
     // restore exactly, so post-rollback id minting cannot diverge.
     M3_BLOCK(world->bodyPool.generations, cap * (int32_t)sizeof(uint16_t));
@@ -539,6 +547,23 @@ uint64_t m3World_Hash(m3WorldId worldId)
     uint64_t h = M3_HASH_INIT;
     h = m3Hash64(h, &world->stepCount, 8);
     h = m3Hash64(h, &world->gravity, (int32_t)sizeof(m3Vec3));
+    if (world->contactHertz != M3_CONTACT_HERTZ_DEFAULT ||
+        world->contactDampingRatio != M3_CONTACT_DAMPING_RATIO_DEFAULT ||
+        world->contactPushMaxSpeed != M3_CONTACT_PUSH_MAX_SPEED_DEFAULT ||
+        world->restitutionThreshold != M3_RESTITUTION_THRESHOLD_DEFAULT ||
+        world->maximumLinearSpeed != M3_MAX_LINEAR_SPEED_DEFAULT || world->sleepEnabled == 0 ||
+        world->continuousEnabled == 0)
+    {
+        // Additive-state golden rule, sixth use: tuning knobs fold
+        // only off their defaults.
+        h = m3Hash64(h, &world->contactHertz, 4);
+        h = m3Hash64(h, &world->contactDampingRatio, 4);
+        h = m3Hash64(h, &world->contactPushMaxSpeed, 4);
+        h = m3Hash64(h, &world->restitutionThreshold, 4);
+        h = m3Hash64(h, &world->maximumLinearSpeed, 4);
+        h = m3Hash64(h, &world->sleepEnabled, 1);
+        h = m3Hash64(h, &world->continuousEnabled, 1);
+    }
     int32_t maxIndex = world->bodyPool.maxIndex;
     for (int32_t i = 0; i < maxIndex; ++i)
     {

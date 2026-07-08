@@ -267,6 +267,11 @@ target_link_libraries(test_bodycontrol PRIVATE maul3d)
 maul3d_apply_flags(test_bodycontrol)
 add_test(NAME bodycontrol COMMAND test_bodycontrol)
 
+add_executable(test_tuning test/test_tuning.c)
+target_link_libraries(test_tuning PRIVATE maul3d)
+maul3d_apply_flags(test_tuning)
+add_test(NAME tuning COMMAND test_tuning)
+
 add_executable(test_fuzz test/test_fuzz.c)
 target_link_libraries(test_fuzz PRIVATE maul3d)
 maul3d_apply_flags(test_fuzz)
