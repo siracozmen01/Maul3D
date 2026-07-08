@@ -23,6 +23,11 @@ jobs:
           - { name: ubuntu-scalar-sanitize, os: ubuntu-latest,  cc: clang, build: Debug,   flags: "-DMAUL3D_SANITIZE=ON -DMAUL3D_SIMD=scalar" }
           - { name: macos-arm64-release,    os: macos-14,       cc: clang, build: Release, flags: "" }
           - { name: windows-msvc-release,   os: windows-latest, cc: cl,    build: Release, flags: "" }
+          # The shared-library cell runs the black-box suites and the
+          # installed-package consumer; white-box suites need internal
+          # symbols a hidden-visibility .so does not export, and its
+          # hash lines stay out of the equality accounting (CELLS=6).
+          - { name: ubuntu-gcc-shared,      os: ubuntu-latest,  cc: gcc,   build: Release, flags: "-DMAUL3D_BUILD_SHARED=ON" }
     steps:
       - uses: actions/checkout@v4
       - name: Configure
@@ -41,13 +46,34 @@ jobs:
         run: |
           cd build
           ctest -C ${{ matrix.build }} -V --output-on-failure | tee out.txt
+      - name: Package consumer
+        if: matrix.name != 'ubuntu-scalar-sanitize'
+        shell: bash
+        run: |
+          cmake --install build --config ${{ matrix.build }} --prefix "$PWD/pkg"
+          if [ "${{ matrix.cc }}" = "cl" ]; then
+            cmake -S test/consumer -B build-consumer -DCMAKE_PREFIX_PATH="$PWD/pkg"
+          else
+            CC=${{ matrix.cc }} cmake -S test/consumer -B build-consumer \
+              -DCMAKE_BUILD_TYPE=${{ matrix.build }} -DCMAKE_PREFIX_PATH="$PWD/pkg"
+          fi
+          cmake --build build-consumer --config ${{ matrix.build }}
+          if [ "${{ matrix.cc }}" = "cl" ]; then
+            ./build-consumer/${{ matrix.build }}/consumer.exe | tee consumer.txt
+          else
+            LD_LIBRARY_PATH="$PWD/pkg/lib:$PWD/pkg/lib64" \
+              ./build-consumer/consumer | tee consumer.txt
+          fi
+          grep -q M3_CONSUMER_OK consumer.txt
       - name: Extract hashes
+        if: matrix.name != 'ubuntu-gcc-shared'
         shell: bash
         run: |
           grep -oE 'M3_(DET|MATH|WORLD|SOLVER|JOURNAL)_HASH=[0-9a-f]{16}' build/out.txt \
             | sort -u > "hash-${{ matrix.name }}.txt"
           cat "hash-${{ matrix.name }}.txt"
       - uses: actions/upload-artifact@v4
+        if: matrix.name != 'ubuntu-gcc-shared'
         with:
           name: hash-${{ matrix.name }}
           path: hash-${{ matrix.name }}.txt

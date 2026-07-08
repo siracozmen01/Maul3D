@@ -1,0 +1,10 @@
+prefix=@CMAKE_INSTALL_PREFIX@
+libdir=${prefix}/@CMAKE_INSTALL_LIBDIR@
+includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
+
+Name: maul3d
+Description: Deterministic 3D rigid body physics engine for sandbox and destruction games
+Version: @PROJECT_VERSION@
+Libs: -L${libdir} -lmaul3d
+Libs.private: -lm
+Cflags: -I${includedir}

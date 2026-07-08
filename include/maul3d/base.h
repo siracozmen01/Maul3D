@@ -12,12 +12,25 @@ extern "C"
 {
 #endif
 
+/// Export decoration. Static builds (the default) need none; shared
+/// builds export with default visibility on ELF and Mach-O and with
+/// dllexport/dllimport on Windows (maul3d_EXPORTS is defined by the
+/// build of the library itself, never by consumers).
+#if defined(MAUL3D_SHARED) && defined(_WIN32)
+#if defined(maul3d_EXPORTS)
+#define M3_API __declspec(dllexport) extern
+#else
+#define M3_API __declspec(dllimport) extern
+#endif
+#elif defined(MAUL3D_SHARED) && (defined(__GNUC__) || defined(__clang__))
+#define M3_API __attribute__((visibility("default"))) extern
+#else
 #define M3_API extern
+#endif
 
     /// Library version, encoded as major * 10000 + minor * 100 + patch.
-    /// 0.1.0 during phase 2a.
 #define M3_VERSION_MAJOR 0
-#define M3_VERSION_MINOR 1
+#define M3_VERSION_MINOR 3
 #define M3_VERSION_PATCH 0
 
     M3_API int m3GetVersion(void);
