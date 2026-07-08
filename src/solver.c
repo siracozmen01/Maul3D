@@ -319,7 +319,29 @@ typedef struct m3JointConstraint
     m3real lowerLimit;
     m3real upperLimit;
     m3Vec3 angularImpulse; // prismatic rotation lock (3 DOF)
+    // Spherical cone and twist (prepared, the reference layout):
+    m3Vec3 swingAxis;
+    m3Vec3 twistJacobian; // the flagged row, FD-verified in the tests
+    m3real swingMass;
+    m3real twistMass;
+    m3real coneAngle;
+    m3real swingImpulse;
 } m3JointConstraint;
+
+// Twist about z with the polarity guard, and the all-squared swing
+// (the reference math_functions forms).
+static m3real GetTwistAngle(m3Quat q)
+{
+    m3real twist = q.w < 0.0f ? m3Atan2(-q.z, -q.w) : m3Atan2(q.z, q.w);
+    return 2.0f * twist;
+}
+
+static m3real GetSwingAngle(m3Quat q)
+{
+    m3real x = sqrtf(q.z * q.z + q.w * q.w);
+    m3real y = sqrtf(q.x * q.x + q.y * q.y);
+    return 2.0f * m3Atan2(y, x);
+}
 
 // Rotation vector of a relative quaternion (robust: exact angle via
 // atan2, small angles fall back to the linear form).
@@ -390,7 +412,55 @@ static int32_t PrepareJoints(m3World* world, m3JointConstraint* joints, m3real h
         c->impulse = world->jointImpulse[j];
         c->type = world->jointType[j];
         c->flags = world->jointFlags[j];
-        if (c->type == (uint8_t)m3_revoluteJoint || c->type == (uint8_t)m3_prismaticJoint)
+        if (c->type == (uint8_t)m3_sphericalJoint && (c->flags & (1 | 4)) != 0)
+        {
+            // The shoulder: cone and twist limits (2c-5), prepared
+            // per the reference: swing axis from the two frame
+            // z-axes, the flagged twist Jacobian with its tan(theta
+            // over two) term, both masses frozen at prepare.
+            c->frameQA = m3MulQuat(xfA->q, world->jointFrameQA[j]);
+            c->frameQB = m3MulQuat(xfB->q, world->jointFrameQB[j]);
+            m3Vec3 coneAxis = m3RotateVec3(c->frameQA, (m3Vec3){0.0f, 0.0f, 1.0f});
+            m3Vec3 twistAxis = m3RotateVec3(c->frameQB, (m3Vec3){0.0f, 0.0f, 1.0f});
+            m3Vec3 swing = m3Cross3(coneAxis, twistAxis);
+            m3real swingLen2 = m3Dot3(swing, swing);
+            if (swingLen2 > 1.0e-12f)
+            {
+                swing = m3MulSV3(1.0f / sqrtf(swingLen2), swing);
+            }
+            else
+            {
+                // Aligned axes: any perpendicular does; the tangent
+                // basis rule keeps the pick bit-stable.
+                m3Vec3 t2;
+                m3MakeTangentBasis(coneAxis, &swing, &t2);
+            }
+            c->swingAxis = swing;
+            c->rotationAxis = coneAxis;
+            m3Vec3 sumSwing = m3Add3(m3MulMV3(c->invIA, swing), m3MulMV3(c->invIB, swing));
+            m3real kSwing = m3Dot3(swing, sumSwing);
+            c->swingMass = kSwing > 0.0f ? 1.0f / kSwing : 0.0f;
+
+            m3Quat conjA = {-c->frameQA.x, -c->frameQA.y, -c->frameQA.z, c->frameQA.w};
+            m3Quat relQ = m3MulQuat(conjA, c->frameQB);
+            m3real denom = relQ.z * relQ.z + relQ.w * relQ.w;
+            m3real tanHalf =
+                denom > 1.0e-12f ? sqrtf((relQ.x * relQ.x + relQ.y * relQ.y) / denom) : 0.0f;
+            m3Vec3 perp = m3Cross3(swing, coneAxis);
+            c->twistJacobian = m3Add3(coneAxis, m3MulSV3(tanHalf, perp));
+            m3Vec3 sumTwist =
+                m3Add3(m3MulMV3(c->invIA, c->twistJacobian), m3MulMV3(c->invIB, c->twistJacobian));
+            m3real kTwist = m3Dot3(c->twistJacobian, sumTwist);
+            c->twistMass = kTwist > 0.0f ? 1.0f / kTwist : 0.0f;
+
+            c->coneAngle = world->jointLimits[j].z;
+            c->lowerLimit = world->jointLimits[j].x;
+            c->upperLimit = world->jointLimits[j].y;
+            c->lowerImpulse = world->jointLimitImpulse[j].x;
+            c->upperImpulse = world->jointLimitImpulse[j].y;
+            c->swingImpulse = world->jointLimitImpulse[j].z;
+        }
+        else if (c->type == (uint8_t)m3_revoluteJoint || c->type == (uint8_t)m3_prismaticJoint)
         {
             c->frameQA = m3MulQuat(xfA->q, world->jointFrameQA[j]);
             c->frameQB = m3MulQuat(xfB->q, world->jointFrameQB[j]);
@@ -428,7 +498,15 @@ static void WarmStartJoints(m3World* world, m3JointConstraint* joints, int32_t c
         m3Vec3 rB = m3RotateVec3(deltaRot[c->bodyB], c->rB);
         m3Vec3 angularImpulse = {0.0f, 0.0f, 0.0f};
         m3Vec3 linearExtra = {0.0f, 0.0f, 0.0f};
-        if (c->type == (uint8_t)m3_revoluteJoint)
+        if (c->type == (uint8_t)m3_sphericalJoint && (c->flags & (1 | 4)) != 0)
+        {
+            // Reference warm form: minus swing along the swing axis,
+            // twist difference along the flagged Jacobian.
+            angularImpulse = m3MulSV3(-c->swingImpulse, c->swingAxis);
+            angularImpulse = m3Add3(angularImpulse,
+                                    m3MulSV3(c->lowerImpulse - c->upperImpulse, c->twistJacobian));
+        }
+        else if (c->type == (uint8_t)m3_revoluteJoint)
         {
             m3real axial = c->motorImpulse + c->lowerImpulse - c->upperImpulse;
             angularImpulse = m3Add3(m3MulSV3(c->perpImpulseX, c->perpAxisX),
@@ -476,7 +554,102 @@ static void SolveJoints(m3World* world, m3JointConstraint* joints, int32_t count
         m3Vec3 vB = world->linearVelocities[c->bodyB];
         m3Vec3 wB = world->angularVelocities[c->bodyB];
 
-        if (c->type == (uint8_t)m3_revoluteJoint)
+        if (c->type == (uint8_t)m3_sphericalJoint && (c->flags & (1 | 4)) != 0)
+        {
+            m3Quat quatA = m3MulQuat(deltaRot[c->bodyA], c->frameQA);
+            m3Quat quatB = m3MulQuat(deltaRot[c->bodyB], c->frameQB);
+            m3Quat conjA = {-quatA.x, -quatA.y, -quatA.z, quatA.w};
+            m3Quat relQ = m3MulQuat(conjA, quatB);
+
+            if ((c->flags & 1) != 0)
+            {
+                // Twist range on the flagged Jacobian (FD-verified).
+                m3real angle = GetTwistAngle(relQ);
+                m3Vec3 jac = c->twistJacobian;
+                // Lower twist.
+                {
+                    m3real cc = angle - c->lowerLimit;
+                    m3real bias = 0.0f;
+                    m3real massScale = 1.0f;
+                    m3real impulseScale = 0.0f;
+                    if (cc > 0.0f)
+                    {
+                        bias = cc * invHSub;
+                    }
+                    else if (useBias)
+                    {
+                        bias = c->softness.biasRate * cc;
+                        massScale = c->softness.massScale;
+                        impulseScale = c->softness.impulseScale;
+                    }
+                    m3real cdot = m3Dot3(m3Sub3(wB, wA), jac);
+                    m3real old = c->lowerImpulse;
+                    m3real delta = -massScale * c->twistMass * (cdot + bias) - impulseScale * old;
+                    c->lowerImpulse = m3MaxF(old + delta, 0.0f);
+                    delta = c->lowerImpulse - old;
+                    wA = m3Sub3(wA, m3MulSV3(delta, m3MulMV3(c->invIA, jac)));
+                    wB = m3Add3(wB, m3MulSV3(delta, m3MulMV3(c->invIB, jac)));
+                }
+                // Upper twist (signs flipped).
+                {
+                    m3real cc = c->upperLimit - angle;
+                    m3real bias = 0.0f;
+                    m3real massScale = 1.0f;
+                    m3real impulseScale = 0.0f;
+                    if (cc > 0.0f)
+                    {
+                        bias = cc * invHSub;
+                    }
+                    else if (useBias)
+                    {
+                        bias = c->softness.biasRate * cc;
+                        massScale = c->softness.massScale;
+                        impulseScale = c->softness.impulseScale;
+                    }
+                    m3real cdot = m3Dot3(m3Sub3(wA, wB), jac);
+                    m3real old = c->upperImpulse;
+                    m3real delta = -massScale * c->twistMass * (cdot + bias) - impulseScale * old;
+                    c->upperImpulse = m3MaxF(old + delta, 0.0f);
+                    delta = c->upperImpulse - old;
+                    wA = m3Add3(wA, m3MulSV3(delta, m3MulMV3(c->invIA, jac)));
+                    wB = m3Sub3(wB, m3MulSV3(delta, m3MulMV3(c->invIB, jac)));
+                }
+            }
+
+            if ((c->flags & 4) != 0)
+            {
+                // The cone: keep the swing inside the shoulder angle
+                // (one-sided, signs flipped, the reference form).
+                m3real swingAngle = GetSwingAngle(relQ);
+                m3Vec3 axis = c->swingAxis;
+                m3real cc = c->coneAngle - swingAngle;
+                m3real bias = 0.0f;
+                m3real massScale = 1.0f;
+                m3real impulseScale = 0.0f;
+                if (cc > 0.0f)
+                {
+                    bias = cc * invHSub;
+                }
+                else if (useBias)
+                {
+                    bias = c->softness.biasRate * cc;
+                    massScale = c->softness.massScale;
+                    impulseScale = c->softness.impulseScale;
+                }
+                m3real cdot = m3Dot3(m3Sub3(wA, wB), axis);
+                m3real old = c->swingImpulse;
+                m3real delta = -massScale * c->swingMass * (cdot + bias) - impulseScale * old;
+                c->swingImpulse = m3MaxF(old + delta, 0.0f);
+                delta = c->swingImpulse - old;
+                wA = m3Add3(wA, m3MulSV3(delta, m3MulMV3(c->invIA, axis)));
+                wB = m3Sub3(wB, m3MulSV3(delta, m3MulMV3(c->invIB, axis)));
+            }
+
+            world->angularVelocities[c->bodyA] = wA;
+            world->angularVelocities[c->bodyB] = wB;
+            // Fall through to the shared point constraint.
+        }
+        else if (c->type == (uint8_t)m3_revoluteJoint)
         {
             // Substep frames and the relative rotation, sign-guarded
             // so the angle lives in [-pi, pi] (the reference rule).
@@ -859,7 +1032,9 @@ static void StoreJointImpulses(m3World* world, m3JointConstraint* joints, int32_
         world->jointImpulse[c->joint] = c->impulse;
         world->jointPerpImpulse[c->joint] =
             (m3Vec3){c->perpImpulseX, c->perpImpulseY, c->motorImpulse};
-        world->jointLimitImpulse[c->joint] = (m3Vec3){c->lowerImpulse, c->upperImpulse, 0.0f};
+        world->jointLimitImpulse[c->joint] =
+            (m3Vec3){c->lowerImpulse, c->upperImpulse,
+                     c->type == (uint8_t)m3_sphericalJoint ? c->swingImpulse : 0.0f};
         world->jointAngularImpulse[c->joint] = c->angularImpulse;
     }
 }

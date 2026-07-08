@@ -45,6 +45,11 @@ extern "C"
         bool enableMotor;
         m3real motorSpeed; // rad/s or m/s by joint type
         m3real maxMotorEffort;
+        /// Spherical only: the swing cone (the shoulder). enableLimit
+        /// doubles as the twist range for the spherical, using
+        /// lowerLimit and upperLimit as twist angles.
+        bool enableCone;
+        m3real coneAngle; // radians from the A frame's z-axis
         /// Jointed bodies do not collide with each other unless this
         /// is set (the classic chain-fight guard).
         bool collideConnected;

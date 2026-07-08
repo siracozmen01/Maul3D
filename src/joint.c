@@ -102,9 +102,12 @@ int32_t m3CreateJointInternal(m3World* world, const m3JointDef* def, int32_t bod
     world->jointAngularImpulse[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
     world->jointFrameQA[index] = QuatFromAxisZ(m3Normalize3(def->localAxisA));
     world->jointFrameQB[index] = QuatFromAxisZ(m3Normalize3(def->localAxisB));
-    world->jointFlags[index] = (uint8_t)((def->enableLimit ? 1 : 0) | (def->enableMotor ? 2 : 0));
+    world->jointFlags[index] = (uint8_t)((def->enableLimit ? 1 : 0) | (def->enableMotor ? 2 : 0) |
+                                         (def->enableCone ? 4 : 0));
     world->jointMotor[index] = (m3Vec3){def->motorSpeed, def->maxMotorEffort, 0.0f};
-    world->jointLimits[index] = (m3Vec3){def->lowerLimit, def->upperLimit, 0.0f};
+    // For the spherical, z carries the cone angle (x and y stay the
+    // twist range): no snapshot growth, all of it already hashed.
+    world->jointLimits[index] = (m3Vec3){def->lowerLimit, def->upperLimit, def->coneAngle};
     // Push onto both bodies' joint lists (creation order recoverable:
     // replay recreates in the same order).
     world->jointNextA[index] = world->bodyJointHead[bodyA];

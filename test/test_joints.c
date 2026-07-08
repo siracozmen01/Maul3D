@@ -8,6 +8,7 @@
 #include "maul3d/joint.h"
 #include "maul3d/shape.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -583,6 +584,193 @@ static void TestSliderGravityAlongRail(void)
     m3DestroyWorld(world);
 }
 
+static double TwistOf(m3Quat q)
+{
+    double tw =
+        (double)q.w < 0.0 ? atan2(-(double)q.z, -(double)q.w) : atan2((double)q.z, (double)q.w);
+    return 2.0 * tw;
+}
+
+static double SwingOf(m3Quat q)
+{
+    double x = sqrt((double)q.z * (double)q.z + (double)q.w * (double)q.w);
+    double y = sqrt((double)q.x * (double)q.x + (double)q.y * (double)q.y);
+    return 2.0 * atan2(y, x);
+}
+
+static void TestTwistJacobianFiniteDifference(void)
+{
+    // The second flagged Jacobian: the reference's twist row is
+    // coneAxis + tan(theta/2) * perp and carries the author's own
+    // verify-me todo. Claim: d(twist)/dt = dot(wB - wA, J_twist),
+    // and d(swing)/dt = dot(wB - wA, swingAxis). Both held to
+    // central differences over random moderate poses (swing kept
+    // under two radians, away from the antipodal singularity).
+    uint64_t state = 0x5EED5EEDull;
+    int32_t checked = 0;
+    for (int32_t round = 0; round < 20; ++round)
+    {
+        m3Quat qA = RandQuat(&state);
+        // qB = qA composed with a bounded random rotation.
+        m3Vec3 rot = {(m3real)RandD(&state, -0.8, 0.8), (m3real)RandD(&state, -0.8, 0.8),
+                      (m3real)RandD(&state, -0.8, 0.8)};
+        m3Quat qB = m3IntegrateRotation(qA, rot);
+        m3Vec3 wA = {(m3real)RandD(&state, -2.0, 2.0), (m3real)RandD(&state, -2.0, 2.0),
+                     (m3real)RandD(&state, -2.0, 2.0)};
+        m3Vec3 wB = {(m3real)RandD(&state, -2.0, 2.0), (m3real)RandD(&state, -2.0, 2.0),
+                     (m3real)RandD(&state, -2.0, 2.0)};
+
+        m3Vec3 coneAxis = m3RotateVec3(qA, (m3Vec3){0.0f, 0.0f, 1.0f});
+        m3Vec3 twistAxis = m3RotateVec3(qB, (m3Vec3){0.0f, 0.0f, 1.0f});
+        m3Vec3 swing = m3Cross3(coneAxis, twistAxis);
+        m3real len2 = m3Dot3(swing, swing);
+        if (len2 < 1.0e-6f)
+        {
+            continue; // aligned pose: the axis is arbitrary, skip
+        }
+        swing = m3MulSV3(1.0f / sqrtf(len2), swing);
+        m3Quat conjA = {-qA.x, -qA.y, -qA.z, qA.w};
+        m3Quat relQ = m3NormalizeQuat(m3MulQuat(conjA, qB));
+        m3real denom = relQ.z * relQ.z + relQ.w * relQ.w;
+        if (denom < 1.0e-6f)
+        {
+            continue; // near the swing singularity
+        }
+        m3real tanHalf = sqrtf((relQ.x * relQ.x + relQ.y * relQ.y) / denom);
+        m3Vec3 perp = m3Cross3(swing, coneAxis);
+        m3Vec3 twistJac = m3Add3(coneAxis, m3MulSV3(tanHalf, perp));
+
+        double analyticTwist = (double)m3Dot3(m3Sub3(wB, wA), twistJac);
+        double analyticSwing = (double)m3Dot3(m3Sub3(wB, wA), swing);
+
+        const double h = 1.0e-3;
+        m3Quat qAp = m3IntegrateRotation(qA, m3MulSV3((m3real)h, wA));
+        m3Quat qBp = m3IntegrateRotation(qB, m3MulSV3((m3real)h, wB));
+        m3Quat qAm = m3IntegrateRotation(qA, m3MulSV3(-(m3real)h, wA));
+        m3Quat qBm = m3IntegrateRotation(qB, m3MulSV3(-(m3real)h, wB));
+        m3Quat cAp = {-qAp.x, -qAp.y, -qAp.z, qAp.w};
+        m3Quat cAm = {-qAm.x, -qAm.y, -qAm.z, qAm.w};
+        m3Quat relP = m3NormalizeQuat(m3MulQuat(cAp, qBp));
+        m3Quat relM = m3NormalizeQuat(m3MulQuat(cAm, qBm));
+
+        double fdTwist = (TwistOf(relP) - TwistOf(relM)) / (2.0 * h);
+        double fdSwing = (SwingOf(relP) - SwingOf(relM)) / (2.0 * h);
+
+        double scaleT = analyticTwist < 0.0 ? -analyticTwist : analyticTwist;
+        scaleT = scaleT > 1.0 ? scaleT : 1.0;
+        double errT = fdTwist - analyticTwist;
+        errT = errT < 0.0 ? -errT : errT;
+        CHECK(errT / scaleT < 1.0e-2, "the flagged twist Jacobian matches the numerics");
+
+        double scaleS = analyticSwing < 0.0 ? -analyticSwing : analyticSwing;
+        scaleS = scaleS > 1.0 ? scaleS : 1.0;
+        double errS = fdSwing - analyticSwing;
+        errS = errS < 0.0 ? -errS : errS;
+        CHECK(errS / scaleS < 1.0e-2, "the swing axis row matches the numerics");
+        checked += 1;
+    }
+    CHECK(checked >= 15, "enough non-degenerate poses were checked");
+}
+
+static void TestShoulderCone(void)
+{
+    // An arm on a spherical joint with a 30-degree cone: dropped from
+    // horizontal (swing 90 degrees), it must be caught by the cone
+    // and settle hanging inside it, never outside the band.
+    m3WorldDef def = m3DefaultWorldDef();
+    def.bodyCapacity = 8;
+    def.shapeCapacity = 8;
+    m3WorldId world = m3CreateWorld(&def);
+    m3BodyDef ad = m3DefaultBodyDef();
+    // The socket frame points its z DOWN so the cone opens downward.
+    m3BodyId socket = m3CreateBody(world, &ad);
+
+    m3BodyDef bd = m3DefaultBodyDef();
+    bd.type = m3_dynamicBody;
+    bd.position = (m3Pos3){0.6, 0.0, 0.0}; // arm sticks out horizontal
+    bd.linearDamping = 1.0f;
+    bd.angularDamping = 1.0f;
+    m3BodyId arm = m3CreateBody(world, &bd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    m3Capsule capsule = {{-0.5f, 0.0f, 0.0f}, {0.3f, 0.0f, 0.0f}, 0.1f};
+    m3CreateCapsuleShape(arm, &sd, &capsule);
+
+    m3JointDef jd = m3DefaultJointDef();
+    jd.type = m3_sphericalJoint;
+    jd.bodyA = socket;
+    jd.bodyB = arm;
+    jd.localAnchorA = (m3Vec3){0.0f, 0.0f, 0.0f};
+    jd.localAnchorB = (m3Vec3){-0.6f, 0.0f, 0.0f};
+    // The cone axis points along +x, HORIZONTAL: gravity wants the
+    // arm hanging straight down (swing 90 degrees), the cone stops
+    // the droop at 30 degrees below the horizon. Pointing the cone
+    // downward would make hanging the cone CENTER and catch nothing
+    // (the first version of this test learned that the hard way).
+    jd.localAxisA = (m3Vec3){1.0f, 0.0f, 0.0f};
+    jd.localAxisB = (m3Vec3){1.0f, 0.0f, 0.0f}; // the arm's long axis
+    jd.enableCone = true;
+    jd.coneAngle = 0.5236f; // 30 degrees
+    CHECK(m3Joint_IsValid(m3CreateJoint(&jd)), "the shoulder creates");
+
+    StepN(world, 480);
+    m3Pos3 p = m3Body_GetPosition(arm);
+    double len = sqrt(p.x * p.x + p.y * p.y + p.z * p.z);
+    CHECK(len > 0.55 && len < 0.65, "the arm still hangs from the socket");
+    double droop = -p.y / len; // sine of the angle below the horizon
+    CHECK(droop > 0.44 && droop < 0.56, "the cone catches the droop at thirty degrees");
+    CHECK(p.x > 0.4, "the arm stays out along the cone axis");
+    m3DestroyWorld(world);
+}
+
+static void TestTwistClamp(void)
+{
+    // A spinning body on a twist-limited spherical joint: the twist
+    // angle must stay inside the band while the spin bleeds into the
+    // stops (gravity off, aligned frames, pure twist geometry).
+    m3WorldDef def = m3DefaultWorldDef();
+    def.gravity = (m3Vec3){0.0f, 0.0f, 0.0f};
+    def.bodyCapacity = 8;
+    def.shapeCapacity = 8;
+    m3WorldId world = m3CreateWorld(&def);
+    m3BodyDef ad = m3DefaultBodyDef();
+    m3BodyId anchor = m3CreateBody(world, &ad);
+    m3BodyDef bd = m3DefaultBodyDef();
+    bd.type = m3_dynamicBody;
+    bd.position = (m3Pos3){0.0, 0.0, 0.0};
+    m3BodyId spinner = m3CreateBody(world, &bd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    m3CreateBoxShape(spinner, &sd, (m3Vec3){0.4f, 0.1f, 0.4f});
+
+    m3JointDef jd = m3DefaultJointDef();
+    jd.type = m3_sphericalJoint;
+    jd.bodyA = anchor;
+    jd.bodyB = spinner;
+    jd.localAxisA = (m3Vec3){0.0f, 0.0f, 1.0f};
+    jd.localAxisB = (m3Vec3){0.0f, 0.0f, 1.0f};
+    jd.enableLimit = true;
+    jd.lowerLimit = -0.5f;
+    jd.upperLimit = 0.5f;
+    CHECK(m3Joint_IsValid(m3CreateJoint(&jd)), "the twist-limited joint creates");
+    m3Body_SetAngularVelocity(spinner, (m3Vec3){0.0f, 0.0f, 6.0f});
+
+    double maxTwist = 0.0;
+    for (int32_t i = 0; i < 240; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+        if (i == 120)
+        {
+            m3Body_SetAngularVelocity(spinner, (m3Vec3){0.0f, 0.0f, -6.0f});
+        }
+        m3Quat q = m3Body_GetRotation(spinner);
+        double tw = TwistOf(q);
+        double mag = tw < 0.0 ? -tw : tw;
+        maxTwist = mag > maxTwist ? mag : maxTwist;
+    }
+    CHECK(maxTwist < 0.55, "the twist stops hold from both directions");
+    CHECK(maxTwist > 0.42, "the stops were actually reached");
+    m3DestroyWorld(world);
+}
+
 int main(void)
 {
     TestPendulum();
@@ -595,6 +783,9 @@ int main(void)
     TestPrismaticJacobianFiniteDifference();
     TestElevator();
     TestSliderGravityAlongRail();
+    TestTwistJacobianFiniteDifference();
+    TestShoulderCone();
+    TestTwistClamp();
     if (s_failures == 0)
     {
         printf("test_joints: all checks passed\n");
