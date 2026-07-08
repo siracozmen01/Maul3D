@@ -364,9 +364,25 @@ bool m3World_Restore(m3WorldId worldId, const void* data, int32_t size)
     }
     for (int32_t v = 0; v < world->voxelPool.maxIndex; ++v)
     {
+        world->voxelShape[v] = -1;
         if (world->voxelPool.alive[v] != 0)
         {
             m3VoxelSurfaceBuild(&world->voxelSurface[v], &world->voxelData[v]);
+        }
+    }
+    for (int32_t s2 = 0; s2 < world->shapePool.maxIndex; ++s2)
+    {
+        if (world->shapePool.alive[s2] != 0 && world->shapeVoxelIndex[s2] >= 0)
+        {
+            world->voxelShape[world->shapeVoxelIndex[s2]] = s2;
+        }
+    }
+    m3VoxelRebuildLinks(world);
+    for (int32_t v = 0; v < world->voxelPool.maxIndex; ++v)
+    {
+        if (world->voxelPool.alive[v] != 0)
+        {
+            m3VoxelCoverageBuild(world, v);
         }
     }
     return true;

@@ -175,6 +175,16 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     M3_ALLOC(world->voxelData, def->voxelCapacity, m3VoxelChunkData);
     M3_ALLOC(world->voxelRefCounts, def->voxelCapacity, int32_t);
     M3_ALLOC(world->voxelSurface, def->voxelCapacity, m3VoxelSurface);
+    M3_ALLOC(world->voxelShape, def->voxelCapacity, int32_t);
+    M3_ALLOC(world->voxelNeighbors, def->voxelCapacity * 6, int32_t);
+    for (int32_t i = 0; i < def->voxelCapacity; ++i)
+    {
+        world->voxelShape[i] = -1;
+    }
+    for (int32_t i = 0; i < def->voxelCapacity * 6; ++i)
+    {
+        world->voxelNeighbors[i] = -1;
+    }
     M3_ALLOC(world->shapeVoxelIndex, shapeCap, int32_t);
     M3_ALLOC(world->fragmentEvents, M3_FRAGMENT_EVENT_CAP, m3FragmentEvent);
     M3_ALLOC(world->fragmentRecipe, M3_FRAGMENT_RECIPE_CAP, uint16_t);
@@ -284,6 +294,8 @@ void m3DestroyWorld(m3WorldId worldId)
     m3Free(world->voxelData);
     m3Free(world->voxelRefCounts);
     m3Free(world->voxelSurface);
+    m3Free(world->voxelShape);
+    m3Free(world->voxelNeighbors);
     m3Free(world->shapeVoxelIndex);
     m3Free(world->fragmentEvents);
     m3Free(world->fragmentRecipe);

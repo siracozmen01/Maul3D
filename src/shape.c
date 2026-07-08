@@ -373,6 +373,11 @@ int32_t m3CreateShapeInternal(m3World* world, int32_t bodyIndex, uint8_t type,
         m3VoxelSurfaceBuild(&world->voxelSurface[voxelIndex], &world->voxelData[voxelIndex]);
         world->voxelRefCounts[voxelIndex] = 1;
         world->shapeVoxelIndex[index] = voxelIndex;
+        world->voxelShape[voxelIndex] = index;
+        // A new chunk can weld to existing ones and change THEIR
+        // border coverage too: rebuild links, refresh the seam.
+        m3VoxelRebuildLinks(world);
+        m3VoxelCoverageRefreshAround(world, voxelIndex);
     }
     // Spheres and hulls enter the broadphase tree; infinite planes
     // stay out and take the dedicated pair pass.
@@ -452,7 +457,18 @@ void m3DestroyShapeInternal(m3World* world, int32_t index)
         {
             memset(&world->voxelData[voxelIndex], 0, sizeof(m3VoxelChunkData));
             memset(&world->voxelSurface[voxelIndex], 0, sizeof(m3VoxelSurface));
+            world->voxelShape[voxelIndex] = -1;
             m3IdPoolFree(&world->voxelPool, voxelIndex);
+            // A vanished chunk un-welds its neighbors: their border
+            // faces just became exposed.
+            m3VoxelRebuildLinks(world);
+            for (int32_t v = 0; v < world->voxelPool.maxIndex; ++v)
+            {
+                if (world->voxelPool.alive[v] != 0)
+                {
+                    m3VoxelCoverageBuild(world, v);
+                }
+            }
         }
         world->shapeVoxelIndex[index] = -1;
     }

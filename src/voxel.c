@@ -274,6 +274,7 @@ bool m3VoxelSetInternal(m3World* world, int32_t shape, int32_t x, int32_t y, int
         // occupancy and cell size, never of payload). No fracture
         // sweep here: adding a voxel can only CONNECT islands.
         m3VoxelSurfaceBuild(&world->voxelSurface[slot], chunk);
+        m3VoxelCoverageRefreshAround(world, slot);
     }
     int32_t lo[3] = {x, y, z};
     VoxelWakeRegion(world, shape, lo, lo);
@@ -292,6 +293,7 @@ bool m3VoxelClearInternal(m3World* world, int32_t shape, int32_t x, int32_t y, i
         chunk->filledCount -= 1;
         m3VoxelSurfaceBuild(&world->voxelSurface[slot], chunk);
         m3VoxelFractureSweep(world, shape);
+        m3VoxelCoverageRefreshAround(world, slot);
     }
     int32_t lo[3] = {x, y, z};
     VoxelWakeRegion(world, shape, lo, lo);
@@ -325,6 +327,7 @@ int32_t m3VoxelClearBoxInternal(m3World* world, int32_t shape, const int32_t lo[
         chunk->filledCount -= cleared;
         m3VoxelSurfaceBuild(&world->voxelSurface[slot], chunk);
         m3VoxelFractureSweep(world, shape);
+        m3VoxelCoverageRefreshAround(world, slot);
     }
     VoxelWakeRegion(world, shape, lo, hi);
     return cleared;
@@ -575,5 +578,168 @@ void m3VoxelFractureSweep(m3World* world, int32_t shape)
     {
         // The surface follows the grid, always (the derived law).
         m3VoxelSurfaceBuild(&world->voxelSurface[slot], chunk);
+        m3VoxelCoverageRefreshAround(world, slot);
     }
+}
+
+// ---------------------------------------------------------------
+// Seam welding (3-4).
+
+void m3VoxelRebuildLinks(m3World* world)
+{
+    int32_t cap = world->voxelCapacity;
+    for (int32_t i = 0; i < cap * 6; ++i)
+    {
+        world->voxelNeighbors[i] = -1;
+    }
+    static const m3Quat identity = {0.0f, 0.0f, 0.0f, 1.0f};
+    int32_t maxSlot = world->voxelPool.maxIndex;
+    for (int32_t a = 0; a < maxSlot; ++a)
+    {
+        if (world->voxelPool.alive[a] == 0)
+        {
+            continue;
+        }
+        int32_t bodyA = world->shapeBody[world->voxelShape[a]];
+        const m3Transform* xfA = &world->transforms[bodyA];
+        if (memcmp(&xfA->q, &identity, sizeof(m3Quat)) != 0)
+        {
+            continue; // the welding contract wants grid alignment
+        }
+        double extentA = (double)((m3real)M3_VOXEL_DIM * world->voxelData[a].cellSize);
+        for (int32_t b = 0; b < maxSlot; ++b)
+        {
+            if (b == a || world->voxelPool.alive[b] == 0 ||
+                world->voxelData[b].cellSize != world->voxelData[a].cellSize)
+            {
+                continue;
+            }
+            int32_t bodyB = world->shapeBody[world->voxelShape[b]];
+            const m3Transform* xfB = &world->transforms[bodyB];
+            if (memcmp(&xfB->q, &identity, sizeof(m3Quat)) != 0)
+            {
+                continue;
+            }
+            double dx = xfB->p.x - xfA->p.x;
+            double dy = xfB->p.y - xfA->p.y;
+            double dz = xfB->p.z - xfA->p.z;
+            // Exact adjacency on exactly one axis (the contract).
+            if (dy == 0.0 && dz == 0.0 && dx == extentA)
+            {
+                world->voxelNeighbors[a * 6 + 1] = b; // +x
+            }
+            else if (dy == 0.0 && dz == 0.0 && dx == -extentA)
+            {
+                world->voxelNeighbors[a * 6 + 0] = b; // -x
+            }
+            else if (dx == 0.0 && dz == 0.0 && dy == extentA)
+            {
+                world->voxelNeighbors[a * 6 + 3] = b; // +y
+            }
+            else if (dx == 0.0 && dz == 0.0 && dy == -extentA)
+            {
+                world->voxelNeighbors[a * 6 + 2] = b; // -y
+            }
+            else if (dx == 0.0 && dy == 0.0 && dz == extentA)
+            {
+                world->voxelNeighbors[a * 6 + 5] = b; // +z
+            }
+            else if (dx == 0.0 && dy == 0.0 && dz == -extentA)
+            {
+                world->voxelNeighbors[a * 6 + 4] = b; // -z
+            }
+        }
+    }
+}
+
+// Is the axis-aligned layer just OUTSIDE face `face` of the box
+// fully filled? Looks into the slot's own grid, or across the weld
+// into the neighbor's border layer when the box touches the chunk
+// boundary.
+static bool VoxelFaceCovered(const m3World* world, int32_t slot, const uint8_t lo[3],
+                             const uint8_t hi[3], int32_t face)
+{
+    static const int32_t axisOf[6] = {0, 0, 1, 1, 2, 2};
+    static const int32_t signOf[6] = {-1, 1, -1, 1, -1, 1};
+    int32_t axis = axisOf[face];
+    int32_t sign = signOf[face];
+    int32_t layer = sign < 0 ? (int32_t)lo[axis] - 1 : (int32_t)hi[axis] + 1;
+    const m3VoxelChunkData* grid = &world->voxelData[slot];
+    if (layer < 0 || layer >= M3_VOXEL_DIM)
+    {
+        int32_t neighbor = world->voxelNeighbors[slot * 6 + face];
+        if (neighbor < 0)
+        {
+            return false; // no weld: the face is exposed to the world
+        }
+        grid = &world->voxelData[neighbor];
+        layer = sign < 0 ? M3_VOXEL_DIM - 1 : 0; // the mirrored border
+    }
+    int32_t u = (axis + 1) % 3;
+    int32_t v = (axis + 2) % 3;
+    for (int32_t i = lo[u]; i <= hi[u]; ++i)
+    {
+        for (int32_t j = lo[v]; j <= hi[v]; ++j)
+        {
+            int32_t c[3];
+            c[axis] = layer;
+            c[u] = i;
+            c[v] = j;
+            if (!m3VoxelGet(grid, c[0], c[1], c[2]))
+            {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+void m3VoxelCoverageBuild(m3World* world, int32_t slot)
+{
+    m3VoxelSurface* surface = &world->voxelSurface[slot];
+    for (int32_t b = 0; b < surface->boxCount; ++b)
+    {
+        uint8_t covered = 0;
+        for (int32_t face = 0; face < 6; ++face)
+        {
+            if (VoxelFaceCovered(world, slot, surface->boxLo[b], surface->boxHi[b], face))
+            {
+                covered |= (uint8_t)(1u << face);
+            }
+        }
+        surface->boxCovered[b] = covered;
+    }
+}
+
+void m3VoxelCoverageRefreshAround(m3World* world, int32_t slot)
+{
+    m3VoxelCoverageBuild(world, slot);
+    for (int32_t face = 0; face < 6; ++face)
+    {
+        int32_t neighbor = world->voxelNeighbors[slot * 6 + face];
+        if (neighbor >= 0)
+        {
+            // The neighbor's border coverage reads THIS grid.
+            m3VoxelCoverageBuild(world, neighbor);
+        }
+    }
+}
+
+// A hull from raw chunk-frame bounds (the welded collision path
+// extends covered faces before building, so the SAT never sees an
+// interior face as a candidate).
+void m3VoxelBoundsHull(m3Vec3 lo, m3Vec3 hi, m3HullData* out)
+{
+    m3Vec3 half = m3MulSV3(0.5f, m3Sub3(hi, lo));
+    m3Vec3 center = m3MulSV3(0.5f, m3Add3(lo, hi));
+    m3BuildBoxHull(out, half);
+    for (int32_t v = 0; v < out->vertexCount; ++v)
+    {
+        out->vertices[v] = m3Add3(out->vertices[v], center);
+    }
+    for (int32_t f = 0; f < out->faceCount; ++f)
+    {
+        out->faceOffsets[f] += m3Dot3(out->faceNormals[f], center);
+    }
+    out->center = m3Add3(out->center, center);
 }

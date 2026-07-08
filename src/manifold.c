@@ -1965,11 +1965,45 @@ static void CollideVoxelConvex(m3World* world, m3Manifold* fresh, int32_t voxelS
         int32_t box = gather[g];
         m3Manifold local;
         memset(&local, 0, sizeof(local));
+        // Seam welding (3-4): a covered face is interior geometry.
+        // Extending it one chunk length outward models the solid
+        // continuing through the seam, so the clamp and the SATs can
+        // only ever answer with exposed features. No ghost normals.
+        m3Vec3 boxLo;
+        m3Vec3 boxHi;
+        m3VoxelBoxBounds(surface, cell, box, &boxLo, &boxHi);
+        {
+            m3real ext = (m3real)M3_VOXEL_DIM * cell;
+            uint8_t covered = surface->boxCovered[box];
+            if ((covered & 1u) != 0)
+            {
+                boxLo.x -= ext;
+            }
+            if ((covered & 2u) != 0)
+            {
+                boxHi.x += ext;
+            }
+            if ((covered & 4u) != 0)
+            {
+                boxLo.y -= ext;
+            }
+            if ((covered & 8u) != 0)
+            {
+                boxHi.y += ext;
+            }
+            if ((covered & 16u) != 0)
+            {
+                boxLo.z -= ext;
+            }
+            if ((covered & 32u) != 0)
+            {
+                boxHi.z += ext;
+            }
+        }
         if (otherType == (uint8_t)m3_sphereShape)
         {
-            m3Vec3 lo;
-            m3Vec3 hi;
-            m3VoxelBoxBounds(surface, cell, box, &lo, &hi);
+            m3Vec3 lo = boxLo;
+            m3Vec3 hi = boxHi;
             m3Vec3 closest = {m3ClampF(s1.x, lo.x, hi.x), m3ClampF(s1.y, lo.y, hi.y),
                               m3ClampF(s1.z, lo.z, hi.z)};
             m3Vec3 d = m3Sub3(s1, closest);
@@ -2019,7 +2053,7 @@ static void CollideVoxelConvex(m3World* world, m3Manifold* fresh, int32_t voxelS
         else
         {
             m3HullData boxHull;
-            m3VoxelBoxHull(surface, cell, box, &boxHull);
+            m3VoxelBoundsHull(boxLo, boxHi, &boxHull);
             if (otherType == (uint8_t)m3_capsuleShape)
             {
                 local = CollideSegmentHull(&boxHull, s1, s2, radius);

@@ -194,6 +194,11 @@ typedef struct m3VoxelSurface
     int32_t boxCount;
     uint8_t boxLo[M3_VOXEL_MAX_BOXES][3]; // inclusive voxel coords
     uint8_t boxHi[M3_VOXEL_MAX_BOXES][3];
+    // Seam welding (3-4): bit k of boxCovered[b] says face k of box
+    // b (-x,+x,-y,+y,-z,+z) is fully flush against filled voxels,
+    // in this chunk or a welded neighbor. A covered face is
+    // interior geometry and can never be a contact feature.
+    uint8_t boxCovered[M3_VOXEL_MAX_BOXES];
     m3MeshBvh bvh;
 } m3VoxelSurface;
 
@@ -363,6 +368,10 @@ typedef struct m3World
     m3VoxelChunkData* voxelData;
     int32_t* voxelRefCounts;
     struct m3VoxelSurface* voxelSurface; // derived, not snapshot
+    int32_t* voxelShape;                 // owning shape per slot, -1 free
+    int32_t* voxelNeighbors;             // derived: 6 welded slots per
+                                         // slot (-1 none), from exact
+                                         // grid-aligned transforms
 
     // Per-mesh static BVH (2c-10): DERIVED data, never in the
     // snapshot or the hash. Rebuilt from mesh content on create and
@@ -530,6 +539,20 @@ int32_t m3ShapeSlot(const m3World* world, m3ShapeId shapeId);
 #define M3_FRAGMENT_EVENT_CAP  256
 #define M3_FRAGMENT_RECIPE_CAP 8192
 void m3VoxelFractureSweep(m3World* world, int32_t shape);
+
+// Seam welding (3-4). Links derive from EXACT transforms: two
+// chunks weld when both bodies carry the bit-exact identity
+// rotation, cell sizes match, and world positions differ by
+// exactly one chunk extent along one axis (grid-laid level
+// geometry; rotated assemblies still collide, just without seam
+// suppression, documented in the public header). Coverage reads
+// the box list of the slot and the GRIDS of the slot and its
+// welded neighbors; both are pure functions of world state and
+// rebuild wherever content lands.
+void m3VoxelRebuildLinks(m3World* world);
+void m3VoxelCoverageBuild(m3World* world, int32_t slot);
+void m3VoxelCoverageRefreshAround(m3World* world, int32_t slot);
+void m3VoxelBoundsHull(m3Vec3 lo, m3Vec3 hi, m3HullData* out);
 
 // Voxel edit internals (3-2): apply without journaling (replay
 // drives these); the public entries validate, journal, then call.

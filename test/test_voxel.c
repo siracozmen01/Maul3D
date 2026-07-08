@@ -614,6 +614,178 @@ static void TestFractureTwoIslands(void)
     m3DestroyWorld(world);
 }
 
+static void TestSeamWeldingCoverage(void)
+{
+    // White-box: welded borders read as covered, unwelded borders
+    // as exposed, and destroying the neighbor un-welds.
+    m3WorldId world = SmallWorld();
+    m3ShapeDef sd = m3DefaultShapeDef();
+    static uint8_t voxels[M3_VOXEL_COUNT];
+    FillSlab(voxels, 4);
+
+    m3BodyDef gd = m3DefaultBodyDef();
+    gd.position = (m3Pos3){0.0, 0.0, 0.0};
+    m3BodyId groundA = m3CreateBody(world, &gd);
+    m3ShapeId chunkA = m3CreateVoxelChunkShape(groundA, &sd, voxels, NULL, 1.0f);
+    gd.position = (m3Pos3){16.0, 0.0, 0.0}; // exactly one extent: welds
+    m3BodyId groundB = m3CreateBody(world, &gd);
+    m3ShapeId chunkB = m3CreateVoxelChunkShape(groundB, &sd, voxels, NULL, 1.0f);
+
+    const m3VoxelSurface* surfA = SurfaceOf(world, chunkA);
+    CHECK(surfA->boxCount == 1, "the slab is one box");
+    CHECK((surfA->boxCovered[0] & 2u) != 0, "the welded +x border reads covered");
+    CHECK((surfA->boxCovered[0] & 1u) == 0, "the open -x border reads exposed");
+    CHECK((surfA->boxCovered[0] & 8u) == 0, "the top face reads exposed");
+    CHECK((surfA->boxCovered[0] & 4u) == 0, "the world-facing bottom reads exposed");
+
+    // Destroying the neighbor un-welds the border.
+    m3DestroyBody(groundB);
+    CHECK(!m3Shape_IsValid(chunkB), "the neighbor chunk went with its body");
+    CHECK((SurfaceOf(world, chunkA)->boxCovered[0] & 2u) == 0,
+          "the border is exposed again after the neighbor vanishes");
+    m3DestroyWorld(world);
+}
+
+static void TestRollingAcrossSeams(void)
+{
+    // The headline: a ball rolls across an INTRA-chunk box seam and
+    // then a CHUNK-chunk border, and neither seam kicks it. Chunk A
+    // is built so the greedy merge must split it into two boxes with
+    // a flush internal wall (the lower layer is missing under the
+    // second half); the walking surface is flat at y = 4 the whole
+    // way. Twin worlds for determinism.
+    uint64_t hashes[2];
+    for (int32_t run = 0; run < 2; ++run)
+    {
+        m3WorldDef def = m3DefaultWorldDef();
+        def.bodyCapacity = 8;
+        def.shapeCapacity = 8;
+        def.voxelCapacity = 2;
+        m3WorldId world = m3CreateWorld(&def);
+        m3ShapeDef sd = m3DefaultShapeDef();
+        static uint8_t voxels[M3_VOXEL_COUNT];
+
+        // Chunk A: x 0..7 filled y 0..3; x 8..15 filled y 1..3 only.
+        memset(voxels, 0, sizeof(voxels));
+        for (int32_t z = 0; z < M3_VOXEL_DIM; ++z)
+        {
+            for (int32_t x = 0; x < M3_VOXEL_DIM; ++x)
+            {
+                for (int32_t y = x < 8 ? 0 : 1; y <= 3; ++y)
+                {
+                    voxels[x + M3_VOXEL_DIM * (y + M3_VOXEL_DIM * z)] = 1;
+                }
+            }
+        }
+        m3BodyDef gd = m3DefaultBodyDef();
+        gd.position = (m3Pos3){0.0, 0.0, 0.0};
+        m3BodyId groundA = m3CreateBody(world, &gd);
+        m3ShapeId chunkA = m3CreateVoxelChunkShape(groundA, &sd, voxels, NULL, 1.0f);
+        CHECK(SurfaceOf(world, chunkA)->boxCount == 2, "the split floor is two boxes");
+
+        // Chunk B: a full-width slab, welded at x = 16.
+        FillSlab(voxels, 4);
+        gd.position = (m3Pos3){16.0, 0.0, 0.0};
+        m3BodyId groundB = m3CreateBody(world, &gd);
+        m3ShapeId chunkB = m3CreateVoxelChunkShape(groundB, &sd, voxels, NULL, 1.0f);
+        CHECK(m3Shape_IsValid(chunkB), "chunk B creates");
+
+        m3BodyDef bd = m3DefaultBodyDef();
+        bd.type = m3_dynamicBody;
+        bd.position = (m3Pos3){4.0, 4.5, 8.0};
+        m3BodyId ball = m3CreateBody(world, &bd);
+        m3ShapeDef ballDef = m3DefaultShapeDef();
+        ballDef.friction = 0.2f; // keep it rolling the whole runway
+        m3Sphere sphere = {{0.0f, 0.0f, 0.0f}, 0.5f};
+        m3CreateSphereShape(ball, &ballDef, &sphere);
+        m3Body_SetLinearVelocity(ball, (m3Vec3){4.0f, 0.0f, 0.0f});
+
+        double maxHeightDeviation = 0.0;
+        float maxVerticalSpeed = 0.0f;
+        for (int32_t i = 0; i < 420; ++i)
+        {
+            m3World_Step(world, 1.0f / 60.0f, 4);
+            m3Pos3 p = m3Body_GetPosition(ball);
+            double dev = p.y - 4.5;
+            if (dev < 0.0)
+            {
+                dev = -dev;
+            }
+            if (dev > maxHeightDeviation)
+            {
+                maxHeightDeviation = dev;
+            }
+            m3Vec3 v = m3Body_GetLinearVelocity(ball);
+            float vy = v.y < 0.0f ? -v.y : v.y;
+            if (i > 30 && vy > maxVerticalSpeed)
+            {
+                maxVerticalSpeed = vy; // after the initial settle
+            }
+        }
+        m3Pos3 p = m3Body_GetPosition(ball);
+        CHECK(p.x > 20.0, "the ball crossed both seams and kept going");
+        CHECK(maxHeightDeviation < 0.05, "no seam lifted or dropped the ball");
+        CHECK(maxVerticalSpeed < 0.25f, "no seam kicked the ball vertically");
+        m3Vec3 v = m3Body_GetLinearVelocity(ball);
+        CHECK(v.x > 1.0f, "the roll survived with real forward speed");
+        hashes[run] = m3World_Hash(world);
+        m3DestroyWorld(world);
+    }
+    CHECK(hashes[0] == hashes[1], "the seam crossing is bit-deterministic");
+}
+
+static void TestVoxelMeetsHeightfield(void)
+{
+    // The junction contract: a ball resting where a voxel block and
+    // a heightfield floor meet settles clean (two ordinary pairs,
+    // no special case), sleeps, and twins agree.
+    uint64_t hashes[2];
+    for (int32_t run = 0; run < 2; ++run)
+    {
+        m3WorldId world = SmallWorld();
+        m3ShapeDef sd = m3DefaultShapeDef();
+        m3BodyDef gd = m3DefaultBodyDef();
+        gd.position = (m3Pos3){-8.0, 0.0, -8.0};
+        m3BodyId field = m3CreateBody(world, &gd);
+        float heights[16 * 16];
+        for (int32_t i = 0; i < 16 * 16; ++i)
+        {
+            heights[i] = 0.0f; // a flat field: the junction is exact
+        }
+        CHECK(m3Shape_IsValid(m3CreateHeightFieldShape(field, &sd, heights, 16, 16, 1.0f)),
+              "the field creates");
+
+        static uint8_t voxels[M3_VOXEL_COUNT];
+        FillSlab(voxels, 2); // a low voxel block ON the field
+        m3BodyDef vd = m3DefaultBodyDef();
+        vd.position = (m3Pos3){0.0, 0.0, -3.0};
+        m3BodyId block = m3CreateBody(world, &vd);
+        CHECK(m3Shape_IsValid(m3CreateVoxelChunkShape(block, &sd, voxels, NULL, 0.5f)),
+              "the block creates");
+
+        // The ball drops right at the wall base: it touches the
+        // heightfield floor and the voxel wall at once.
+        m3BodyDef bd = m3DefaultBodyDef();
+        bd.type = m3_dynamicBody;
+        bd.position = (m3Pos3){-0.8, 1.5, -1.0};
+        m3BodyId ball = m3CreateBody(world, &bd);
+        m3Sphere sphere = {{0.0f, 0.0f, 0.0f}, 0.4f};
+        m3CreateSphereShape(ball, &sd, &sphere);
+
+        for (int32_t i = 0; i < 300; ++i)
+        {
+            m3World_Step(world, 1.0f / 60.0f, 4);
+        }
+        m3Pos3 p = m3Body_GetPosition(ball);
+        CHECK(p.y > 0.35 && p.y < 0.45, "the ball rests on the field at the wall base");
+        m3World* wp = m3WorldFromId(world);
+        CHECK(wp->awake[ball.index1 - 1] == 0, "the junction rest is stable enough to sleep");
+        hashes[run] = m3World_Hash(world);
+        m3DestroyWorld(world);
+    }
+    CHECK(hashes[0] == hashes[1], "the junction scene is bit-deterministic");
+}
+
 int main(void)
 {
     TestGreedyMergeAnalytics();
@@ -626,6 +798,9 @@ int main(void)
     TestEditRefusalsAndEmptyEnd();
     TestFractureBridge();
     TestFractureTwoIslands();
+    TestSeamWeldingCoverage();
+    TestRollingAcrossSeams();
+    TestVoxelMeetsHeightfield();
     if (s_failures == 0)
     {
         printf("test_voxel: all green\n");

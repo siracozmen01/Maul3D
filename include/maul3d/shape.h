@@ -128,6 +128,15 @@ extern "C"
     /// answers true inside filled cells. Shape casts and continuous
     /// collision do not see voxel chunks until the voxel CCD slice
     /// (3-5); rays and contacts do.
+    ///
+    /// Seam welding: chunks weld automatically when both bodies
+    /// carry the exact identity rotation, cell sizes match, and
+    /// world positions differ by exactly one chunk extent along one
+    /// axis (grid-laid level geometry). Welded borders are interior
+    /// geometry and never produce contact features, so bodies roll
+    /// and slide across chunk boundaries without seam impulses.
+    /// Rotated or misaligned chunks still collide correctly; they
+    /// just do not weld.
     M3_API m3ShapeId m3CreateVoxelChunkShape(m3BodyId bodyId, const m3ShapeDef* def,
                                              const uint8_t* voxels, const uint16_t* payload,
                                              m3real cellSize);
