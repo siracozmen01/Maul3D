@@ -564,6 +564,34 @@ destroys the joint at the end of the step and emits the break
 event. Breakage is an in-step deterministic transition on
 purpose: a host poll would race the journal under rollback.
 
+## Lockstep and rollback networking
+
+The engine's bit contract makes the classic rollback recipe safe
+to build exactly as the books describe it, and tools/m3lockstep
+is that recipe as a runnable document. The shape:
+
+1. Inputs are the only truth on the wire. Send each player's
+   inputs per frame; never send state.
+2. Keep a snapshot of the last frame whose inputs are ALL
+   confirmed (m3World_Snapshot: one buffer is enough).
+3. Predict forward past the frontier with guessed remote inputs
+   (empty is the honest cheap guess).
+4. When a late input arrives, restore the frontier snapshot,
+   re-apply confirmed inputs, re-predict to the present
+   (m3World_Restore + your step loop; bit-exactness makes the
+   repair invisible).
+5. Hash at agreed checkpoints (m3World_Hash). Equal hashes ARE
+   the sync proof; a mismatch is a desync alarm on the exact
+   frame it was born, and the divergence finder (m3replay diff)
+   tells you which body carried it.
+
+The sample runs an online peer against an offline truth peer
+through a jittered 1..4 frame wire at 60 Hz, absorbs hundreds of
+rollbacks, and demands checkpoint equality in CI on every commit.
+Input delay, rollback windows, and per-peer prediction policies
+are host decisions; the engine's promise is only, and exactly,
+that the same inputs produce the same bits.
+
 ## The integration checklist
 
 What an engine evaluator wires first, and where Maul3D answers:

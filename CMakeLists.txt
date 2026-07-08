@@ -190,6 +190,11 @@ maul3d_apply_flags(m3replay)
 add_test(NAME replaytool COMMAND m3replay selftest)
 add_test(NAME replaydiff COMMAND m3replay difftest)
 
+add_executable(m3lockstep tools/m3lockstep.c)
+target_link_libraries(m3lockstep PRIVATE maul3d)
+maul3d_apply_flags(m3lockstep)
+add_test(NAME lockstep COMMAND m3lockstep)
+
 add_executable(test_joints test/test_joints.c)
 target_link_libraries(test_joints PRIVATE maul3d)
 maul3d_apply_flags(test_joints)
