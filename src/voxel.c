@@ -273,6 +273,52 @@ static void VoxelWakeRegion(m3World* world, int32_t shape, const int32_t lo[3], 
         }
         m3CharacterRefreshGrounding(world, c);
     }
+
+    // A parked car hovers on wheel RAYS: its chassis bounds may sit
+    // well above the carved region and the tree wake would leave
+    // the sleeper floating on vanished floor. Any wheel ray
+    // overlapping the region wakes the chassis (5-3); the next
+    // suspension pass reads the new surface the same step.
+    for (int32_t v = 0; v < world->vehPool.maxIndex; ++v)
+    {
+        if (world->vehPool.alive[v] == 0)
+        {
+            continue;
+        }
+        int32_t chassis = world->vehChassis[v];
+        if (chassis < 0 || world->bodyPool.alive[chassis] == 0 ||
+            world->bodyPool.generations[chassis] != world->vehChassisGen[v] ||
+            world->awake[chassis] != 0)
+        {
+            continue;
+        }
+        const m3Transform* cxf = &world->transforms[chassis];
+        for (int32_t w = 0; w < world->vehWheelCount[v]; ++w)
+        {
+            int32_t k = v * M3_VEHICLE_MAX_WHEELS + w;
+            m3Vec3 anchorR = m3RotateVec3(cxf->q, world->vehWheelAnchor[k]);
+            double ax = cxf->p.x + (double)anchorR.x;
+            double ay = cxf->p.y + (double)anchorR.y;
+            double az = cxf->p.z + (double)anchorR.z;
+            m3Vec3 dir = m3RotateVec3(cxf->q, world->vehWheelDir[k]);
+            m3real reach = world->vehWheelRest[k] + world->vehWheelRadius[k];
+            double ex = ax + (double)(dir.x * reach);
+            double ey = ay + (double)(dir.y * reach);
+            double ez = az + (double)(dir.z * reach);
+            double m = (double)M3_AABB_MARGIN;
+            double slo[3] = {(ax < ex ? ax : ex) - m, (ay < ey ? ay : ey) - m,
+                             (az < ez ? az : ez) - m};
+            double shi[3] = {(ax > ex ? ax : ex) + m, (ay > ey ? ay : ey) + m,
+                             (az > ez ? az : ez) + m};
+            if (slo[0] <= whi[0] && shi[0] >= wlo[0] && slo[1] <= whi[1] && shi[1] >= wlo[1] &&
+                slo[2] <= whi[2] && shi[2] >= wlo[2])
+            {
+                world->awake[chassis] = 1;
+                world->sleepTimes[chassis] = 0.0f;
+                break;
+            }
+        }
+    }
 }
 
 static bool VoxelCoordsValid(int32_t x, int32_t y, int32_t z)

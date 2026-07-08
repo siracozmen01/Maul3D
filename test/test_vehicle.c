@@ -313,6 +313,293 @@ static void TestBounceTwinsAndRollback(void)
     CHECK(hashes[0] == hashes[1], "twin drops are bit-identical");
 }
 
+static void TestVoxelDeckAndSeam(void)
+{
+    // Two welded chunks make one long deck: the car drives across
+    // the seam without a hitch, dead straight, at speed.
+    m3WorldDef def = m3DefaultWorldDef();
+    def.bodyCapacity = 16;
+    def.shapeCapacity = 16;
+    def.voxelCapacity = 2;
+    def.vehicleCapacity = 1;
+    m3WorldId world = m3CreateWorld(&def);
+    static uint8_t deck[16 * 16 * 16];
+    memset(deck, 0, sizeof(deck));
+    for (int32_t z = 0; z < 16; ++z)
+    {
+        for (int32_t x = 0; x < 16; ++x)
+        {
+            deck[x + 16 * (0 + 16 * z)] = 1;
+            deck[x + 16 * (1 + 16 * z)] = 1;
+        }
+    }
+    m3ShapeDef sd = m3DefaultShapeDef();
+    m3BodyDef ga = m3DefaultBodyDef();
+    ga.position = (m3Pos3){-8.0, 0.0, -4.0};
+    CHECK(m3Shape_IsValid(m3CreateVoxelChunkShape(m3CreateBody(world, &ga), &sd, deck, NULL, 0.5f)),
+          "the west deck creates");
+    m3BodyDef gb = m3DefaultBodyDef();
+    gb.position = (m3Pos3){0.0, 0.0, -4.0}; // exactly one extent east: welded
+    CHECK(m3Shape_IsValid(m3CreateVoxelChunkShape(m3CreateBody(world, &gb), &sd, deck, NULL, 0.5f)),
+          "the east deck creates");
+
+    m3BodyId chassis;
+    m3VehicleId car = MakeCar(world, (m3Pos3){-5.0, 2.0, 0.0}, &chassis);
+    CHECK(m3Vehicle_IsValid(car), "the deck car creates");
+    for (int32_t i = 0; i < 90; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+    }
+    m3Vehicle_SetCommands(car, 0.5f, 0.0f, 0.0f);
+    for (int32_t i = 0; i < 300; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+        m3Pos3 q = m3Body_GetPosition(chassis);
+        CHECK(q.y > 1.3 && q.y < 2.2, "the deck ride never hitches");
+        if (q.x > 5.0)
+        {
+            break;
+        }
+    }
+    m3Pos3 p = m3Body_GetPosition(chassis);
+    CHECK(p.x > 3.0, "the car crosses the welded seam");
+    CHECK(fabs(p.z) < 0.05, "the seam crossing stays dead straight");
+    m3DestroyWorld(world);
+}
+
+static void TestRampClimbAndWall(void)
+{
+    // A quarter-cell voxel ramp climbs like rough road; a two-meter
+    // voxel wall is a wall. The suspension casts do not care about
+    // grade, the chassis contact does.
+    m3WorldDef def = m3DefaultWorldDef();
+    def.bodyCapacity = 16;
+    def.shapeCapacity = 16;
+    def.voxelCapacity = 2;
+    def.vehicleCapacity = 1;
+    m3WorldId world = m3CreateWorld(&def);
+    m3BodyDef gd = m3DefaultBodyDef();
+    m3BodyId ground = m3CreateBody(world, &gd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    m3Plane floor = {{0.0f, 1.0f, 0.0f}, 0.0f};
+    m3CreatePlaneShape(ground, &sd, &floor);
+
+    // The ramp chunk: one layer per two cells from x = 4.
+    static uint8_t ramp[16 * 16 * 16];
+    memset(ramp, 0, sizeof(ramp));
+    for (int32_t z = 0; z < 16; ++z)
+    {
+        for (int32_t x = 0; x < 16; ++x)
+        {
+            int32_t top = x < 4 ? 0 : (x - 4) / 2;
+            for (int32_t y = 0; y <= top; ++y)
+            {
+                ramp[x + 16 * (y + 16 * z)] = 1;
+            }
+        }
+    }
+    m3BodyDef rd = m3DefaultBodyDef();
+    rd.position = (m3Pos3){0.0, 0.0, -2.0};
+    CHECK(
+        m3Shape_IsValid(m3CreateVoxelChunkShape(m3CreateBody(world, &rd), &sd, ramp, NULL, 0.25f)),
+        "the ramp creates");
+
+    // The wall chunk: a two-meter cliff just past the ramp.
+    static uint8_t wall[16 * 16 * 16];
+    memset(wall, 0, sizeof(wall));
+    for (int32_t z = 0; z < 16; ++z)
+    {
+        for (int32_t y = 0; y < 8; ++y)
+        {
+            for (int32_t x = 0; x < 2; ++x)
+            {
+                wall[x + 16 * (y + 16 * z)] = 1;
+            }
+        }
+    }
+    m3BodyDef wd = m3DefaultBodyDef();
+    wd.position = (m3Pos3){6.0, 1.5, -2.0};
+    CHECK(
+        m3Shape_IsValid(m3CreateVoxelChunkShape(m3CreateBody(world, &wd), &sd, wall, NULL, 0.25f)),
+        "the wall creates");
+
+    m3BodyId chassis;
+    m3VehicleId car = MakeCar(world, (m3Pos3){-2.5, 1.0, 0.0}, &chassis);
+    for (int32_t i = 0; i < 90; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+    }
+    double y0 = m3Body_GetPosition(chassis).y;
+    m3Vehicle_SetCommands(car, 0.6f, 0.0f, 0.0f);
+    double peak = y0;
+    for (int32_t i = 0; i < 420; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+        double y = m3Body_GetPosition(chassis).y;
+        peak = y > peak ? y : peak;
+    }
+    m3Pos3 p = m3Body_GetPosition(chassis);
+    CHECK(peak - y0 > 0.8, "the quarter-cell ramp climbs like road");
+    CHECK(p.x < 6.2, "the two-meter wall is a wall");
+    CHECK(isfinite(p.x) && isfinite(p.y) && isfinite(p.z), "the blocked car stays finite");
+    m3DestroyWorld(world);
+}
+
+static void TestCarveUnderParkedCar(void)
+{
+    // A car parked long enough to sleep drops the SAME step its
+    // deck is carved away: the wheel rays overlap the region, the
+    // chassis wakes, and the suspension reads the void. Without
+    // the wheel-ray wake the sleeper hovers on vanished floor.
+    m3WorldDef def = m3DefaultWorldDef();
+    def.bodyCapacity = 16;
+    def.shapeCapacity = 16;
+    def.voxelCapacity = 1;
+    def.vehicleCapacity = 1;
+    m3WorldId world = m3CreateWorld(&def);
+    static uint8_t deck[16 * 16 * 16];
+    memset(deck, 0, sizeof(deck));
+    for (int32_t z = 0; z < 16; ++z)
+    {
+        for (int32_t x = 0; x < 16; ++x)
+        {
+            deck[x + 16 * (0 + 16 * z)] = 1;
+            deck[x + 16 * (1 + 16 * z)] = 1;
+        }
+    }
+    m3BodyDef gd = m3DefaultBodyDef();
+    gd.position = (m3Pos3){-4.0, 0.0, -4.0};
+    m3ShapeDef sd = m3DefaultShapeDef();
+    m3ShapeId chunk = m3CreateVoxelChunkShape(m3CreateBody(world, &gd), &sd, deck, NULL, 0.5f);
+    CHECK(m3Shape_IsValid(chunk), "the parking deck creates");
+
+    m3BodyId chassis;
+    m3VehicleId car = MakeCar(world, (m3Pos3){0.0, 2.2, 0.0}, &chassis);
+    CHECK(m3Vehicle_IsValid(car), "the parked car creates");
+    for (int32_t i = 0; i < 600; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4); // long enough to sleep
+    }
+    double parked = m3Body_GetPosition(chassis).y;
+    CHECK(parked > 1.4 && parked < 2.0, "the car parks on the deck");
+
+    // Carve everything under and around the car.
+    int32_t lo[3] = {4, 0, 4};
+    int32_t hi[3] = {12, 1, 12};
+    CHECK(m3VoxelChunk_ClearBox(chunk, lo, hi) > 0, "the carve clears the deck");
+    for (int32_t i = 0; i < 120; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+    }
+    m3Pos3 p = m3Body_GetPosition(chassis);
+    CHECK(parked - p.y > 0.5, "the sleeping car drops the step its floor vanishes");
+    m3DestroyWorld(world);
+}
+
+static void TestStormUnderMovingCar(void)
+{
+    // Columns vanish ahead of a moving car, fragments rain, and
+    // twin worlds plus the wheel books agree to the bit.
+    uint64_t hashes[2];
+    for (int32_t run = 0; run < 2; ++run)
+    {
+        m3WorldDef def = m3DefaultWorldDef();
+        def.bodyCapacity = 16;
+        def.shapeCapacity = 16;
+        def.voxelCapacity = 1;
+        def.vehicleCapacity = 1;
+        m3WorldId world = m3CreateWorld(&def);
+        static uint8_t deck[16 * 16 * 16];
+        memset(deck, 0, sizeof(deck));
+        for (int32_t z = 0; z < 16; ++z)
+        {
+            for (int32_t x = 0; x < 16; ++x)
+            {
+                deck[x + 16 * (0 + 16 * z)] = 1;
+                deck[x + 16 * (1 + 16 * z)] = 1;
+            }
+        }
+        m3BodyDef gd = m3DefaultBodyDef();
+        gd.position = (m3Pos3){-4.0, 0.0, -4.0};
+        m3ShapeDef sd = m3DefaultShapeDef();
+        m3ShapeId chunk = m3CreateVoxelChunkShape(m3CreateBody(world, &gd), &sd, deck, NULL, 0.5f);
+        m3BodyId chassis;
+        m3VehicleId car = MakeCar(world, (m3Pos3){-2.0, 2.2, 0.0}, &chassis);
+        for (int32_t i = 0; i < 60; ++i)
+        {
+            m3World_Step(world, 1.0f / 60.0f, 4);
+        }
+        m3Vehicle_SetCommands(car, 0.5f, 0.0f, 0.0f);
+        for (int32_t i = 0; i < 90; ++i)
+        {
+            if (i % 6 == 3)
+            {
+                int32_t cx = 6 + (i / 6);
+                if (cx <= 15)
+                {
+                    int32_t lo[3] = {cx, 1, 6};
+                    int32_t hi[3] = {cx, 1, 10};
+                    m3VoxelChunk_ClearBox(chunk, lo, hi);
+                }
+            }
+            m3World_Step(world, 1.0f / 60.0f, 4);
+            int32_t count = 0;
+            (void)m3World_FragmentEvents(world, &count);
+            m3Pos3 p = m3Body_GetPosition(chassis);
+            CHECK(isfinite(p.x) && isfinite(p.y) && isfinite(p.z), "the storm drive stays finite");
+        }
+        hashes[run] = m3World_Hash(world);
+        m3DestroyWorld(world);
+    }
+    CHECK(hashes[0] == hashes[1], "twin storm drives are bit-identical");
+}
+
+static void TestHeightfieldDrive(void)
+{
+    // Rolling terrain through the heightfield path: the car crosses
+    // the swells without losing its line.
+    m3WorldDef def = m3DefaultWorldDef();
+    def.bodyCapacity = 16;
+    def.shapeCapacity = 16;
+    def.vehicleCapacity = 1;
+    m3WorldId world = m3CreateWorld(&def);
+    static float heights[32 * 32];
+    for (int32_t z = 0; z < 32; ++z)
+    {
+        for (int32_t x = 0; x < 32; ++x)
+        {
+            heights[x + 32 * z] = 0.25f * sinf((float)x * 0.6f);
+        }
+    }
+    m3BodyDef gd = m3DefaultBodyDef();
+    gd.position = (m3Pos3){-8.0, 0.0, -8.0};
+    m3ShapeDef sd = m3DefaultShapeDef();
+    CHECK(m3Shape_IsValid(
+              m3CreateHeightFieldShape(m3CreateBody(world, &gd), &sd, heights, 32, 32, 0.5f)),
+          "the terrain creates");
+
+    m3BodyId chassis;
+    m3VehicleId car = MakeCar(world, (m3Pos3){-5.0, 1.5, 0.0}, &chassis);
+    for (int32_t i = 0; i < 90; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+    }
+    m3Vehicle_SetCommands(car, 0.5f, 0.0f, 0.0f);
+    for (int32_t i = 0; i < 300; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+        if (m3Body_GetPosition(chassis).x > 4.0)
+        {
+            break; // stop well before the terrain's east edge
+        }
+    }
+    m3Pos3 p = m3Body_GetPosition(chassis);
+    CHECK(p.x > -1.0, "the car crosses the swells");
+    CHECK(fabs(p.z) < 0.2, "the swells do not steal the line");
+    CHECK(p.y > 0.5 && p.y < 2.5, "the ride height stays sane");
+    m3DestroyWorld(world);
+}
+
 static void TestPoolAndCascade(void)
 {
     // Capacity two: the third car refuses; destroying a chassis
@@ -416,6 +703,11 @@ int main(void)
     TestSteerCircle();
     TestBrakeStop();
     TestDriveDeterminism();
+    TestVoxelDeckAndSeam();
+    TestRampClimbAndWall();
+    TestCarveUnderParkedCar();
+    TestStormUnderMovingCar();
+    TestHeightfieldDrive();
     TestBounceTwinsAndRollback();
     TestPoolAndCascade();
     TestVehicleContracts();
