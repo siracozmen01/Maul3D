@@ -520,7 +520,8 @@ void m3DestroyShapeInternal(m3World* world, int32_t index)
         world->meshRefCounts[meshIndex] -= 1;
         if (world->meshRefCounts[meshIndex] == 0)
         {
-            memset(&world->meshData[meshIndex], 0, sizeof(m3MeshData));
+            m3MeshDataFree(&world->meshData[meshIndex]);
+            m3MeshBvhFree(&world->meshBvh[meshIndex]);
             m3IdPoolFree(&world->meshPool, meshIndex);
         }
         world->shapeMeshIndex[index] = -1;
@@ -532,6 +533,7 @@ void m3DestroyShapeInternal(m3World* world, int32_t index)
         if (world->voxelRefCounts[voxelIndex] == 0)
         {
             memset(&world->voxelData[voxelIndex], 0, sizeof(m3VoxelChunkData));
+            m3MeshBvhFree(&world->voxelSurface[voxelIndex].bvh);
             memset(&world->voxelSurface[voxelIndex], 0, sizeof(m3VoxelSurface));
             world->voxelShape[voxelIndex] = -1;
             m3IdPoolFree(&world->voxelPool, voxelIndex);
@@ -739,22 +741,25 @@ m3ShapeId m3CreateMeshShape(m3BodyId bodyId, const m3ShapeDef* def, const m3Vec3
             return m3_nullShapeId; // poisoned vertex: contract
         }
     }
-    m3MeshData* mesh = (m3MeshData*)m3AllocZeroed((int32_t)sizeof(m3MeshData));
-    if (mesh == NULL)
+    m3MeshData mesh;
+    memset(&mesh, 0, sizeof(mesh));
+    mesh.vertexCount = vertexCount;
+    mesh.triangleCount = triangleCount;
+    if (!m3MeshDataAlloc(&mesh))
     {
         return m3_nullShapeId;
     }
-    mesh->vertexCount = vertexCount;
-    mesh->triangleCount = triangleCount;
-    memcpy(mesh->vertices, vertices, (size_t)vertexCount * sizeof(m3Vec3));
-    memcpy(mesh->indices, indices, (size_t)(3 * triangleCount) * sizeof(uint16_t));
+    memcpy(mesh.vertices, vertices, (size_t)vertexCount * sizeof(m3Vec3));
+    memcpy(mesh.indices, indices, (size_t)(3 * triangleCount) * sizeof(uint16_t));
     m3ShapeGeom geom;
     memset(&geom, 0, sizeof(geom));
+    // The slot takes OWNERSHIP of the arrays on success (the struct
+    // copy carries the pointers); failure frees them here.
     int32_t index = m3CreateShapeInternal(world, bodyIndex, (uint8_t)m3_meshShape, &geom, def, NULL,
-                                          mesh, NULL);
-    m3Free(mesh);
+                                          &mesh, NULL);
     if (index < 0)
     {
+        m3MeshDataFree(&mesh);
         return m3_nullShapeId;
     }
     m3ShapeId id = {index + 1, world->worldIndex0, world->shapePool.generations[index]};
@@ -802,8 +807,15 @@ m3ShapeId m3CreateHeightFieldShape(m3BodyId bodyId, const m3ShapeDef* def, const
     }
     // Triangulate the grid (CCW seen from +y) and reuse the mesh
     // path whole: welding, journaling, snapshotting all come free.
-    m3Vec3 verts[M3_MESH_MAX_VERTS];
-    uint16_t tris[3 * M3_MESH_MAX_TRIS];
+    // Heap staging (10-3): 65k-scale grids no longer fit a stack.
+    m3Vec3* verts = (m3Vec3*)m3AllocZeroed(nx * nz * (int32_t)sizeof(m3Vec3));
+    uint16_t* tris = (uint16_t*)m3AllocZeroed(6 * (nx - 1) * (nz - 1) * (int32_t)sizeof(uint16_t));
+    if (verts == NULL || tris == NULL)
+    {
+        m3Free(verts);
+        m3Free(tris);
+        return m3_nullShapeId;
+    }
     for (int32_t iz = 0; iz < nz; ++iz)
     {
         for (int32_t ix = 0; ix < nx; ++ix)
@@ -829,7 +841,10 @@ m3ShapeId m3CreateHeightFieldShape(m3BodyId bodyId, const m3ShapeDef* def, const
             tris[n++] = v11;
         }
     }
-    return m3CreateMeshShape(bodyId, def, verts, nx * nz, tris, n / 3);
+    m3ShapeId id = m3CreateMeshShape(bodyId, def, verts, nx * nz, tris, n / 3);
+    m3Free(verts);
+    m3Free(tris);
+    return id;
 }
 
 m3ShapeId m3CreateVoxelChunkShape(m3BodyId bodyId, const m3ShapeDef* def, const uint8_t* voxels,
@@ -1138,4 +1153,37 @@ bool m3Shape_IsPreSolveEnabled(m3ShapeId shapeId)
     int32_t slot;
     m3World* world = ResolveShape(shapeId, &slot);
     return world != NULL && world->shapePreSolve[slot] != 0;
+}
+
+// --- Mesh content ownership (10-3) ------------------------------------------
+
+bool m3MeshDataAlloc(m3MeshData* mesh)
+{
+    m3Free(mesh->vertices);
+    m3Free(mesh->indices);
+    m3Free(mesh->edgeFlags);
+    mesh->vertices = NULL;
+    mesh->indices = NULL;
+    mesh->edgeFlags = NULL;
+    if (mesh->vertexCount <= 0 || mesh->triangleCount <= 0)
+    {
+        return mesh->vertexCount == 0 && mesh->triangleCount == 0; // an empty slot is legal
+    }
+    mesh->vertices = (m3Vec3*)m3AllocZeroed(mesh->vertexCount * (int32_t)sizeof(m3Vec3));
+    mesh->indices = (uint16_t*)m3AllocZeroed(3 * mesh->triangleCount * (int32_t)sizeof(uint16_t));
+    mesh->edgeFlags = (uint8_t*)m3AllocZeroed(mesh->triangleCount);
+    if (mesh->vertices == NULL || mesh->indices == NULL || mesh->edgeFlags == NULL)
+    {
+        m3MeshDataFree(mesh);
+        return false;
+    }
+    return true;
+}
+
+void m3MeshDataFree(m3MeshData* mesh)
+{
+    m3Free(mesh->vertices);
+    m3Free(mesh->indices);
+    m3Free(mesh->edgeFlags);
+    memset(mesh, 0, sizeof(*mesh));
 }

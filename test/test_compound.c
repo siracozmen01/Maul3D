@@ -276,6 +276,87 @@ static void TestBigHullUnderTheGates(void)
     (void)journal;
 }
 
+static void TestGrandMesh(void)
+{
+    // The 10-3 ceiling in the flesh: a procedural ~60k-triangle
+    // terrain accepts, carries traffic, snapshots, and restores
+    // onto identical bits; one triangle past the cap refuses.
+    enum
+    {
+        GRID = 174 // (174-1)^2 * 2 = 59858 triangles, 30276 verts
+    };
+    static m3Vec3 verts[GRID * GRID];
+    static uint16_t tris[6 * (GRID - 1) * (GRID - 1)];
+    for (int32_t z = 0; z < GRID; ++z)
+    {
+        for (int32_t x = 0; x < GRID; ++x)
+        {
+            float h = 0.15f * sinf(0.37f * (float)x) + 0.15f * cosf(0.29f * (float)z);
+            verts[z * GRID + x] = (m3Vec3){0.5f * (float)x, h, 0.5f * (float)z};
+        }
+    }
+    int32_t n = 0;
+    for (int32_t z = 0; z < GRID - 1; ++z)
+    {
+        for (int32_t x = 0; x < GRID - 1; ++x)
+        {
+            uint16_t v00 = (uint16_t)(z * GRID + x);
+            uint16_t v10 = (uint16_t)(z * GRID + x + 1);
+            uint16_t v01 = (uint16_t)((z + 1) * GRID + x);
+            uint16_t v11 = (uint16_t)((z + 1) * GRID + x + 1);
+            tris[n++] = v00;
+            tris[n++] = v11;
+            tris[n++] = v10;
+            tris[n++] = v00;
+            tris[n++] = v01;
+            tris[n++] = v11;
+        }
+    }
+    m3WorldDef def = m3DefaultWorldDef();
+    def.bodyCapacity = 16;
+    def.shapeCapacity = 16;
+    m3WorldId world = m3CreateWorld(&def);
+    m3BodyDef gd = m3DefaultBodyDef();
+    m3BodyId ground = m3CreateBody(world, &gd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    m3ShapeId terrain = m3CreateMeshShape(ground, &sd, verts, GRID * GRID, tris, n / 3);
+    CHECK(m3Shape_IsValid(terrain), "the 60k terrain accepts");
+
+    m3BodyDef bd = m3DefaultBodyDef();
+    bd.type = m3_dynamicBody;
+    bd.position = (m3Pos3){43.0, 2.0, 43.0};
+    m3BodyId crate = m3CreateBody(world, &bd);
+    m3CreateBoxShape(crate, &sd, (m3Vec3){0.4f, 0.4f, 0.4f});
+    for (int32_t i = 0; i < 90; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+    }
+    double y = m3Body_GetPosition(crate).y;
+    CHECK(y > -1.0 && y < 1.5, "the crate lands on the far side of the terrain");
+    m3RayHit hit =
+        m3World_CastRayClosest(world, (m3Pos3){21.0, 5.0, 21.0}, (m3Vec3){0.0f, -10.0f, 0.0f});
+    CHECK(hit.hit && fabs(hit.point.y) < 0.5, "a mid-terrain ray lands on the surface");
+
+    int32_t snapBytes = m3World_SnapshotSize(world);
+    uint8_t* snap = (uint8_t*)malloc((size_t)snapBytes);
+    CHECK(m3World_Snapshot(world, snap, snapBytes) == snapBytes, "the grand snapshot writes");
+    uint64_t mid = m3World_Hash(world);
+    for (int32_t i = 0; i < 30; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+    }
+    uint64_t end = m3World_Hash(world);
+    CHECK(m3World_Restore(world, snap, snapBytes), "the grand restore lands");
+    CHECK(m3World_Hash(world) == mid, "the restore is bit-identical");
+    for (int32_t i = 0; i < 30; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+    }
+    CHECK(m3World_Hash(world) == end, "the re-run is bit-identical");
+    free(snap);
+    m3DestroyWorld(world);
+}
+
 static void TestHostileOffsets(void)
 {
     m3WorldId world = PlaneWorld();
@@ -299,6 +380,7 @@ int main(void)
     TestRotatedOffsetRests();
     TestQueriesSeeOffsets();
     TestOffsetsReplayAndRollback();
+    TestGrandMesh();
     TestBigHullUnderTheGates();
     TestHostileOffsets();
     if (s_failures == 0)

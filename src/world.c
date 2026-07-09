@@ -514,6 +514,15 @@ void m3DestroyWorld(m3WorldId worldId)
     m3Free(world->jointNextB);
     m3Free(world->bodyJointHead);
     m3IdPoolDestroy(&world->meshPool);
+    for (int32_t m = 0; m < world->meshCapacity; ++m)
+    {
+        m3MeshDataFree(&world->meshData[m]);
+        m3MeshBvhFree(&world->meshBvh[m]);
+    }
+    for (int32_t v = 0; v < world->voxelCapacity; ++v)
+    {
+        m3MeshBvhFree(&world->voxelSurface[v].bvh);
+    }
     m3Free(world->meshData);
     m3Free(world->meshRefCounts);
     m3Free(world->meshBvh);
@@ -1137,23 +1146,31 @@ static bool JournalReplayApply(m3World* world, const void* data, int32_t size)
             {
                 return false;
             }
-            m3MeshData* mesh = (m3MeshData*)m3AllocZeroed((int32_t)sizeof(m3MeshData));
-            if (mesh == NULL)
+            m3MeshData mesh;
+            memset(&mesh, 0, sizeof(mesh));
+            mesh.vertexCount = record.vertexCount;
+            mesh.triangleCount = record.triangleCount;
+            if (!m3MeshDataAlloc(&mesh))
             {
                 return false;
             }
-            mesh->vertexCount = record.vertexCount;
-            mesh->triangleCount = record.triangleCount;
-            memcpy(mesh->vertices, (const uint8_t*)payload + sizeof(record), (size_t)vertexBytes);
-            memcpy(mesh->indices, (const uint8_t*)payload + sizeof(record) + vertexBytes,
+            memcpy(mesh.vertices, (const uint8_t*)payload + sizeof(record), (size_t)vertexBytes);
+            memcpy(mesh.indices, (const uint8_t*)payload + sizeof(record) + vertexBytes,
                    (size_t)indexBytes);
             m3ShapeGeom geom;
             memset(&geom, 0, sizeof(geom));
             NormalizeShapeDefBools(&record.def);
+            // On success the slot owns the arrays; an id mismatch
+            // leaves them with the slot too, and the atomic-replay
+            // restore reclaims them through the alloc gate.
             int32_t index = m3CreateShapeInternal(world, bodyIndex, (uint8_t)m3_meshShape, &geom,
-                                                  &record.def, NULL, mesh, NULL);
-            m3Free(mesh);
-            if (index < 0 || index + 1 != record.expected.index1 ||
+                                                  &record.def, NULL, &mesh, NULL);
+            if (index < 0)
+            {
+                m3MeshDataFree(&mesh);
+                return false;
+            }
+            if (index + 1 != record.expected.index1 ||
                 world->shapePool.generations[index] != record.expected.generation)
             {
                 return false; // id determinism holds for mesh shapes too

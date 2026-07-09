@@ -178,6 +178,30 @@ static void TestRefereeGather(void)
     m3DestroyWorld(world);
 }
 
+// Content equality for the pointer-based BVH (10-3): derived data
+// must match by VALUE, and the struct now carries heap pointers.
+static int BvhSame(const m3MeshBvh* a, const m3MeshBvh* b)
+{
+    if (a->nodeCount != b->nodeCount)
+    {
+        return 0;
+    }
+    if (a->nodeCount == 0)
+    {
+        return 1;
+    }
+    int32_t orderLen = 0;
+    for (int32_t i = 0; i < a->nodeCount; ++i)
+    {
+        if (a->nodes[i].count > 0 && a->nodes[i].start + a->nodes[i].count > orderLen)
+        {
+            orderLen = a->nodes[i].start + a->nodes[i].count;
+        }
+    }
+    return memcmp(a->nodes, b->nodes, (size_t)a->nodeCount * sizeof(m3MeshBvhNode)) == 0 &&
+           memcmp(a->order, b->order, (size_t)orderLen * sizeof(uint16_t)) == 0;
+}
+
 static void TestBuildDeterminismAndRestore(void)
 {
     // Twin builds are byte-identical, and a restore rebuilds the
@@ -188,10 +212,25 @@ static void TestBuildDeterminismAndRestore(void)
     m3WorldId b = MakeMeshWorld(&shapeB);
     const m3MeshBvh* bvhA = BvhOf(a, shapeA);
     const m3MeshBvh* bvhB = BvhOf(b, shapeB);
-    CHECK(memcmp(bvhA, bvhB, sizeof(m3MeshBvh)) == 0, "twin builds are byte-identical");
+    CHECK(BvhSame(bvhA, bvhB), "twin builds are byte-identical");
 
-    m3MeshBvh* before = (m3MeshBvh*)malloc(sizeof(m3MeshBvh));
-    memcpy(before, bvhA, sizeof(m3MeshBvh));
+    // Deep-copy the derived tree so the scrub below cannot alias it.
+    m3MeshBvh beforeCopy;
+    memset(&beforeCopy, 0, sizeof(beforeCopy));
+    beforeCopy.nodeCount = bvhA->nodeCount;
+    beforeCopy.nodes = (m3MeshBvhNode*)malloc((size_t)bvhA->nodeCount * sizeof(m3MeshBvhNode));
+    memcpy(beforeCopy.nodes, bvhA->nodes, (size_t)bvhA->nodeCount * sizeof(m3MeshBvhNode));
+    int32_t orderLen = 0;
+    for (int32_t i = 0; i < bvhA->nodeCount; ++i)
+    {
+        if (bvhA->nodes[i].count > 0 && bvhA->nodes[i].start + bvhA->nodes[i].count > orderLen)
+        {
+            orderLen = bvhA->nodes[i].start + bvhA->nodes[i].count;
+        }
+    }
+    beforeCopy.order = (uint16_t*)malloc((size_t)orderLen * sizeof(uint16_t));
+    memcpy(beforeCopy.order, bvhA->order, (size_t)orderLen * sizeof(uint16_t));
+    m3MeshBvh* before = &beforeCopy;
 
     int32_t bytes = m3World_SnapshotSize(a);
     uint8_t* snap = (uint8_t*)malloc((size_t)bytes);
@@ -199,12 +238,12 @@ static void TestBuildDeterminismAndRestore(void)
 
     // Scrub the live tree to prove restore really rebuilds it.
     m3World* worldA = m3WorldFromId(a);
-    memset(&worldA->meshBvh[worldA->shapeMeshIndex[shapeA.index1 - 1]], 0, sizeof(m3MeshBvh));
+    m3MeshBvhFree(&worldA->meshBvh[worldA->shapeMeshIndex[shapeA.index1 - 1]]);
     CHECK(m3World_Restore(a, snap, bytes), "restore accepts");
-    CHECK(memcmp(BvhOf(a, shapeA), before, sizeof(m3MeshBvh)) == 0,
-          "restore rebuilds a byte-identical tree");
+    CHECK(BvhSame(BvhOf(a, shapeA), before), "restore rebuilds a byte-identical tree");
 
-    free(before);
+    free(beforeCopy.nodes);
+    free(beforeCopy.order);
     free(snap);
     m3DestroyWorld(a);
     m3DestroyWorld(b);

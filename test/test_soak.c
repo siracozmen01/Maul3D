@@ -134,6 +134,12 @@ int main(void)
         m3World_Step(live, 1.0f / 60.0f, 4);
     }
 
+    // Prime the reused twin once: its first restore buys the
+    // count-derived mesh arrays (10-3), a one-time capacity
+    // purchase exactly like world creation, not steady state.
+    CHECK(m3World_Snapshot(live, snap, snapBytes) == snapBytes, "the priming snapshot writes");
+    CHECK(m3World_Restore(scratch, snap, snapBytes), "the priming restore lands");
+
     // Steady state starts here: the engine may not allocate again
     // on the live path (snapshot/restore/replay scratch must
     // balance to zero within every segment).

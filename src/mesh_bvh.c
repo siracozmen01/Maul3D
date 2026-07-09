@@ -131,12 +131,28 @@ static int32_t BuildRange(m3MeshBvh* bvh, BvhScratch* scratch, int32_t s, int32_
     return nodeIndex;
 }
 
+void m3MeshBvhFree(m3MeshBvh* bvh)
+{
+    m3Free(bvh->nodes);
+    m3Free(bvh->order);
+    memset(bvh, 0, sizeof(*bvh));
+}
+
 void m3MeshBvhBuildBounds(m3MeshBvh* bvh, const m3Vec3* los, const m3Vec3* his, int32_t count)
 {
-    memset(bvh, 0, sizeof(*bvh));
+    // Derived data, exact-size (10-3): free the old build, size the
+    // new one from the count (2 * count nodes bounds the tree).
+    m3MeshBvhFree(bvh);
     if (count <= 0 || count > M3_MESH_MAX_TRIS)
     {
         return;
+    }
+    bvh->nodes = (m3MeshBvhNode*)m3AllocZeroed(2 * count * (int32_t)sizeof(m3MeshBvhNode));
+    bvh->order = (uint16_t*)m3AllocZeroed(count * (int32_t)sizeof(uint16_t));
+    if (bvh->nodes == NULL || bvh->order == NULL)
+    {
+        m3MeshBvhFree(bvh);
+        return; // nodeCount 0 makes every gather empty, loud enough
     }
     BvhScratch* scratch = (BvhScratch*)m3AllocZeroed((int32_t)sizeof(BvhScratch));
     if (scratch == NULL)
@@ -162,12 +178,20 @@ void m3MeshBvhBuildBounds(m3MeshBvh* bvh, const m3Vec3* los, const m3Vec3* his, 
 
 void m3MeshBvhBuild(m3MeshBvh* bvh, const m3MeshData* mesh)
 {
-    m3Vec3 los[M3_MESH_MAX_TRIS];
-    m3Vec3 his[M3_MESH_MAX_TRIS];
     int32_t triCount = mesh->triangleCount;
-    if (triCount < 0 || triCount > M3_MESH_MAX_TRIS)
+    if (triCount <= 0 || triCount > M3_MESH_MAX_TRIS)
     {
-        memset(bvh, 0, sizeof(*bvh));
+        m3MeshBvhFree(bvh);
+        return;
+    }
+    // Heap staging (10-3): 65k bounds no longer fit a stack.
+    m3Vec3* los = (m3Vec3*)m3AllocZeroed(triCount * (int32_t)sizeof(m3Vec3));
+    m3Vec3* his = (m3Vec3*)m3AllocZeroed(triCount * (int32_t)sizeof(m3Vec3));
+    if (los == NULL || his == NULL)
+    {
+        m3Free(los);
+        m3Free(his);
+        m3MeshBvhFree(bvh);
         return;
     }
     for (int32_t t = 0; t < triCount; ++t)
@@ -181,6 +205,8 @@ void m3MeshBvhBuild(m3MeshBvh* bvh, const m3MeshData* mesh)
                           m3MaxF(a.z, m3MaxF(b.z, c.z))};
     }
     m3MeshBvhBuildBounds(bvh, los, his, triCount);
+    m3Free(los);
+    m3Free(his);
 }
 
 // Ascending insertion of gathered leaves would cost per-element
@@ -244,6 +270,10 @@ int32_t m3MeshBvhGather(const m3MeshBvh* bvh, m3Vec3 lo, m3Vec3 hi, uint16_t* ou
         stack[top++] = node->right;
         stack[top++] = index + 1;
     }
+    // Stack scratch on purpose: gathers run inside steady-state
+    // steps, and the zero-net-allocation law forbids heap here
+    // (the soak convicted a heap draft immediately). 128 KiB at
+    // the 65k cap, one live instance per gather frame.
     uint16_t tmp[M3_MESH_MAX_TRIS];
     SortAscending(out, count, tmp);
     return count;

@@ -374,11 +374,14 @@ static uint64_t RunEditStorm(void)
     int32_t slot = wp->shapeVoxelIndex[chunkShape.index1 - 1];
     const m3VoxelChunkData* chunk = &wp->voxelData[slot];
     CHECK(chunk->filledCount == PopCount(chunk), "filled count equals the popcount");
-    m3VoxelSurface* fresh = (m3VoxelSurface*)malloc(sizeof(m3VoxelSurface));
+    // Build takes OWNERSHIP semantics since 10-3 (it frees the
+    // previous tree), so the scratch surface must start zeroed.
+    m3VoxelSurface* fresh = (m3VoxelSurface*)calloc(1, sizeof(m3VoxelSurface));
     m3VoxelSurfaceBuild(fresh, chunk);
     CHECK(memcmp(fresh->boxLo, wp->voxelSurface[slot].boxLo, sizeof(fresh->boxLo)) == 0 &&
               fresh->boxCount == wp->voxelSurface[slot].boxCount,
           "the incremental surface equals the from-scratch build");
+    m3MeshBvhFree(&fresh->bvh);
     free(fresh);
 
     uint64_t hash = m3World_Hash(world);

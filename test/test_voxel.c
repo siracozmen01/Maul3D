@@ -10,6 +10,7 @@
 
 #include "world_internal.h"
 
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -55,6 +56,37 @@ static const m3VoxelSurface* SurfaceOf(m3WorldId worldId, m3ShapeId shape)
 {
     m3World* world = m3WorldFromId(worldId);
     return &world->voxelSurface[world->shapeVoxelIndex[shape.index1 - 1]];
+}
+
+// Content equality for the pointer-based BVH (10-3): derived data
+// must match by VALUE, and the struct now carries heap pointers.
+static int VoxBvhSame(const m3MeshBvh* a, const m3MeshBvh* b)
+{
+    if (a->nodeCount != b->nodeCount)
+    {
+        return 0;
+    }
+    if (a->nodeCount == 0)
+    {
+        return 1;
+    }
+    int32_t orderLen = 0;
+    for (int32_t i = 0; i < a->nodeCount; ++i)
+    {
+        if (a->nodes[i].count > 0 && a->nodes[i].start + a->nodes[i].count > orderLen)
+        {
+            orderLen = a->nodes[i].start + a->nodes[i].count;
+        }
+    }
+    return memcmp(a->nodes, b->nodes, (size_t)a->nodeCount * sizeof(m3MeshBvhNode)) == 0 &&
+           memcmp(a->order, b->order, (size_t)orderLen * sizeof(uint16_t)) == 0;
+}
+
+// Surfaces embed the pointer-based BVH now: compare the value
+// region up to the tree, then the tree by content.
+static int SurfaceSame(const m3VoxelSurface* a, const m3VoxelSurface* b)
+{
+    return memcmp(a, b, offsetof(m3VoxelSurface, bvh)) == 0 && VoxBvhSame(&a->bvh, &b->bvh);
 }
 
 static void TestGreedyMergeAnalytics(void)
@@ -189,8 +221,7 @@ static void TestSnapshotJournalAndDerivedRebuild(void)
     m3WorldId replayed = SmallWorld();
     CHECK(m3World_JournalReplay(replayed, journal, bytes), "the voxel session replays");
     CHECK(m3World_Hash(replayed) == m3World_Hash(world), "the replay is bit-identical");
-    CHECK(memcmp(SurfaceOf(replayed, chunkShape), SurfaceOf(world, chunkShape),
-                 sizeof(m3VoxelSurface)) == 0,
+    CHECK(SurfaceSame(SurfaceOf(replayed, chunkShape), SurfaceOf(world, chunkShape)),
           "the replayed surface is byte-identical");
     m3DestroyWorld(replayed);
 
@@ -204,6 +235,9 @@ static void TestSnapshotJournalAndDerivedRebuild(void)
     uint64_t hashBefore = m3World_Hash(world);
 
     m3World* wp = m3WorldFromId(world);
+    // The scrub must FREE the embedded tree first (10-3 ownership):
+    // a raw memset wipes live pointers and LSAN convicts the leak.
+    m3MeshBvhFree(&wp->voxelSurface[wp->shapeVoxelIndex[chunkShape.index1 - 1]].bvh);
     memset(&wp->voxelSurface[wp->shapeVoxelIndex[chunkShape.index1 - 1]], 0,
            sizeof(m3VoxelSurface));
     for (int32_t i = 0; i < 30; ++i)
@@ -212,7 +246,10 @@ static void TestSnapshotJournalAndDerivedRebuild(void)
     }
     CHECK(m3World_Restore(world, snap, snapBytes), "the voxel snapshot restores");
     CHECK(m3World_Hash(world) == hashBefore, "the restore is bit-identical");
-    CHECK(memcmp(SurfaceOf(world, chunkShape), before, sizeof(m3VoxelSurface)) == 0,
+    // The value region IS the surface; the embedded tree is its
+    // pure function (build determinism holds elsewhere in this
+    // suite), and saved copies must not chase stale pointers.
+    CHECK(memcmp(SurfaceOf(world, chunkShape), before, offsetof(m3VoxelSurface, bvh)) == 0,
           "the restore re-derives a byte-identical surface");
     free(before);
     free(snap);
@@ -358,7 +395,7 @@ static void TestEditsCarveAndWake(void)
     uint64_t hashBefore = m3World_Hash(world);
     CHECK(m3VoxelChunk_SetVoxel(chunkShape, 6, 3, 6, 43), "the payload update lands");
     CHECK(m3World_Hash(world) != hashBefore, "payload is state: the hash moves");
-    CHECK(memcmp(&surfBefore, SurfaceOf(world, chunkShape), sizeof(m3VoxelSurface)) == 0,
+    CHECK(memcmp(&surfBefore, SurfaceOf(world, chunkShape), offsetof(m3VoxelSurface, bvh)) == 0,
           "payload is not geometry: the surface does not move");
     m3DestroyWorld(world);
 }
@@ -432,7 +469,8 @@ static void TestEditRollbackReedit(void)
         {
             CHECK(m3World_Hash(world) == firstTimeline,
                   "edit, roll back, reedit: bit-identical timelines");
-            CHECK(memcmp(&firstSurface, SurfaceOf(world, chunkShape), sizeof(m3VoxelSurface)) == 0,
+            CHECK(memcmp(&firstSurface, SurfaceOf(world, chunkShape),
+                         offsetof(m3VoxelSurface, bvh)) == 0,
                   "the re-derived surface is byte-identical");
         }
     }
@@ -960,7 +998,7 @@ static void TestSetFillContracts(void)
     uint64_t hashBefore = m3World_Hash(world);
     CHECK(m3VoxelChunk_SetFill(chunkShape, 3, 1, 3, 77), "the fill lands");
     CHECK(m3World_Hash(world) != hashBefore, "fill is state: the hash moves");
-    CHECK(memcmp(&before, SurfaceOf(world, chunkShape), sizeof(m3VoxelSurface)) == 0,
+    CHECK(memcmp(&before, SurfaceOf(world, chunkShape), offsetof(m3VoxelSurface, bvh)) == 0,
           "fill is not geometry: the surface is untouched");
 
     // And it rides the snapshot like every other bit of state.

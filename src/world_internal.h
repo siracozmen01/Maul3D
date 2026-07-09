@@ -199,23 +199,32 @@ _Static_assert(sizeof(m3HullData) == 5808, "hull data must be padding-free");
 // reference's variable allocations, argued in the 2b-9 slice). The
 // midphase in 2b-9a is a bounded per-triangle scan; the static BVH
 // arrives in 2b-9b behind the same query contract.
-#define M3_MESH_MAX_VERTS 1024
-#define M3_MESH_MAX_TRIS  2048
+// 10-3: the 16-bit ceiling. Content arrays went count-derived
+// (heap per slot, variable snapshot blocks): a fixed block at 65k
+// triangles would cost megabytes per EMPTY slot, so the 2b-9
+// fixed-block deviation is reversed here, argued in the plan.
+#define M3_MESH_MAX_VERTS 65535
+#define M3_MESH_MAX_TRIS  65535
 
 typedef struct m3MeshData
 {
     int32_t vertexCount;
     int32_t triangleCount;
-    m3Vec3 vertices[M3_MESH_MAX_VERTS];
-    uint16_t indices[3 * M3_MESH_MAX_TRIS]; // CCW from outside
+    m3Vec3* vertices;
+    uint16_t* indices; // CCW from outside
     // Bit k set = triangle edge k (vertex k to k+1) is CONVEX or a
     // boundary: a REAL contact feature. Clear = flat or concave: a
     // ghost candidate the welding filter may silence. Baked at
     // create time (2b-9d), deterministic.
-    uint8_t edgeFlags[M3_MESH_MAX_TRIS];
+    uint8_t* edgeFlags;
 } m3MeshData;
 
-_Static_assert(sizeof(m3MeshData) == 26632, "mesh data must be padding-free");
+// Count-derived ownership (10-3): Alloc frees any old arrays and
+// sizes new ones from the counts already in the struct; Free
+// releases and zeroes. The snapshot read pass and every create
+// and destroy path share these two gates.
+bool m3MeshDataAlloc(m3MeshData* mesh);
+void m3MeshDataFree(m3MeshData* mesh);
 
 // Bake the edge-convexity flags (a bounded pair scan; the BVH slice
 // will speed it up if profiles ever ask).
@@ -226,8 +235,8 @@ void m3BakeMeshEdgeFlags(m3MeshData* mesh);
 // triangles. Derived acceleration data: NEVER snapshotted, never
 // hashed; rebuilt deterministically wherever mesh content lands
 // (create, journal replay, restore).
-#define M3_MESH_BVH_LEAF  4
-#define M3_MESH_BVH_NODES (2 * M3_MESH_MAX_TRIS)
+#define M3_MESH_BVH_LEAF 4
+// Node budget per build: 2 * triCount (allocated exactly, 10-3).
 
 typedef struct m3MeshBvhNode
 {
@@ -241,8 +250,8 @@ typedef struct m3MeshBvhNode
 typedef struct m3MeshBvh
 {
     int32_t nodeCount;
-    m3MeshBvhNode nodes[M3_MESH_BVH_NODES];
-    uint16_t order[M3_MESH_MAX_TRIS];
+    m3MeshBvhNode* nodes; // derived data: built at create and after
+    uint16_t* order;      // restore, sized 2 * triCount and triCount
 } m3MeshBvh;
 
 void m3MeshBvhBuild(m3MeshBvh* bvh, const m3MeshData* mesh);
@@ -254,6 +263,7 @@ void m3MeshBvhBuild(m3MeshBvh* bvh, const m3MeshData* mesh);
 // reject test, so behavior stays bit-identical to the full scan this
 // replaces. `out` must hold M3_MESH_MAX_TRIS entries.
 int32_t m3MeshBvhGather(const m3MeshBvh* bvh, m3Vec3 lo, m3Vec3 hi, uint16_t* out);
+void m3MeshBvhFree(m3MeshBvh* bvh);
 
 // Generalized build: a BVH over caller-supplied bounds (the mesh
 // build wraps this with triangle boxes; the voxel surface feeds

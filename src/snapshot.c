@@ -22,7 +22,9 @@
 #endif
 
 #define M3_SNAPSHOT_MAGIC   0x4D33534Eu // 'M3SN'
-#define M3_SNAPSHOT_VERSION 38u
+#define M3_SNAPSHOT_VERSION 39u
+// v39: mesh content went count-derived (10-3): variable blocks
+//      replace the fixed mesh slab, reversing the 2b-9 deviation.
 // v38: hull capacity 64 (10-2): bigger hull blocks, same law.
 // v37: compound shape offsets (10-1).
 // v36: joint drive springs and targets (8-6b).
@@ -138,7 +140,8 @@ typedef enum m3WalkMode
 // persistent array appears here exactly once, in canonical order.
 // Measure returns the byte total; write and read stream against the
 // caller's buffer at the returned running offset.
-static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3WalkMode mode)
+static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3WalkMode mode,
+                          int includeMesh)
 {
     int32_t cursor = 0;
     int32_t cap = world->bodyCapacity;
@@ -233,7 +236,7 @@ static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3Wal
     M3_BLOCK(world->shapeCategory, shapeCap * (int32_t)sizeof(uint64_t));
     M3_BLOCK(world->shapeMask, shapeCap * (int32_t)sizeof(uint64_t));
     M3_BLOCK(world->shapeGroup, shapeCap * (int32_t)sizeof(int32_t));
-    M3_BLOCK(world->meshData, world->meshCapacity * (int32_t)sizeof(m3MeshData));
+
     M3_BLOCK(world->voxelData, world->voxelCapacity * (int32_t)sizeof(m3VoxelChunkData));
     M3_BLOCK(world->voxelRefCounts, world->voxelCapacity * (int32_t)sizeof(int32_t));
     M3_BLOCK(world->voxelPool.generations, world->voxelCapacity * (int32_t)sizeof(uint16_t));
@@ -361,6 +364,35 @@ static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3Wal
     M3_BLOCK(world->jointPool.freeQueue, world->jointCapacity * (int32_t)sizeof(int32_t));
     M3_BLOCK(world->manifolds, world->pairCapacity * (int32_t)sizeof(m3Manifold));
 
+    // Mesh content LAST (10-3): the only variable-size section, so
+    // the fixed prefix above stays state-independent and the
+    // restore can pre-validate sizes straight from the buffer.
+    // Counts land first; the read pass sizes the slot through the
+    // alloc gate before its content arrives. The BVH stays derived
+    // and rebuilds after restore.
+    if (includeMesh)
+    {
+        for (int32_t m = 0; m < world->meshCapacity; ++m)
+        {
+            m3MeshData* mesh = &world->meshData[m];
+            M3_BLOCK(&mesh->vertexCount, 4);
+            M3_BLOCK(&mesh->triangleCount, 4);
+            if (mode == m3_walkRead)
+            {
+                if (!m3MeshDataAlloc(mesh))
+                {
+                    return -1; // corrupt counts or no memory: refuse
+                }
+            }
+            if (mesh->triangleCount > 0)
+            {
+                M3_BLOCK(mesh->vertices, mesh->vertexCount * (int32_t)sizeof(m3Vec3));
+                M3_BLOCK(mesh->indices, 3 * mesh->triangleCount * (int32_t)sizeof(uint16_t));
+                M3_BLOCK(mesh->edgeFlags, mesh->triangleCount);
+            }
+        }
+    }
+
 #undef M3_BLOCK
     return cursor;
 }
@@ -372,7 +404,7 @@ int32_t m3World_SnapshotSize(m3WorldId worldId)
     {
         return -1;
     }
-    return (int32_t)sizeof(m3SnapshotHeader) + WalkBlocks(world, NULL, NULL, m3_walkMeasure);
+    return (int32_t)sizeof(m3SnapshotHeader) + WalkBlocks(world, NULL, NULL, m3_walkMeasure, 1);
 }
 
 int32_t m3World_Snapshot(m3WorldId worldId, void* out, int32_t capacity)
@@ -383,7 +415,7 @@ int32_t m3World_Snapshot(m3WorldId worldId, void* out, int32_t capacity)
         return -1;
     }
     int32_t size =
-        (int32_t)sizeof(m3SnapshotHeader) + WalkBlocks(world, NULL, NULL, m3_walkMeasure);
+        (int32_t)sizeof(m3SnapshotHeader) + WalkBlocks(world, NULL, NULL, m3_walkMeasure, 1);
     if (capacity < size)
     {
         return -1; // loud: the caller sized with m3World_SnapshotSize
@@ -438,7 +470,7 @@ int32_t m3World_Snapshot(m3WorldId worldId, void* out, int32_t capacity)
 
     uint8_t* bytes = (uint8_t*)out;
     memcpy(bytes, &header, sizeof(header));
-    WalkBlocks(world, bytes + sizeof(header), NULL, m3_walkWrite);
+    WalkBlocks(world, bytes + sizeof(header), NULL, m3_walkWrite, 1);
     return size;
 }
 
@@ -463,9 +495,41 @@ bool m3World_Restore(m3WorldId worldId, const void* data, int32_t size)
         // never a partial restore.
         return false;
     }
-    int32_t expected =
-        (int32_t)sizeof(m3SnapshotHeader) + WalkBlocks(world, NULL, NULL, m3_walkMeasure);
-    if (size != expected)
+    // Two-phase size validation (10-3): the fixed prefix is
+    // state-independent, and the variable mesh tail is parsed
+    // straight from the buffer BEFORE any byte lands in the world,
+    // so refusal stays atomic.
+    int32_t fixed =
+        (int32_t)sizeof(m3SnapshotHeader) + WalkBlocks(world, NULL, NULL, m3_walkMeasure, 0);
+    int32_t cursor = fixed;
+    const uint8_t* raw = (const uint8_t*)data;
+    for (int32_t m = 0; m < world->meshCapacity; ++m)
+    {
+        if (size - cursor < 8)
+        {
+            return false;
+        }
+        int32_t vc;
+        int32_t tc;
+        memcpy(&vc, raw + cursor, 4);
+        memcpy(&tc, raw + cursor + 4, 4);
+        cursor += 8;
+        if (vc < 0 || vc > M3_MESH_MAX_VERTS || tc < 0 || tc > M3_MESH_MAX_TRIS ||
+            (vc == 0) != (tc == 0))
+        {
+            return false; // corrupt counts refuse before any write
+        }
+        if (tc > 0)
+        {
+            int64_t content = (int64_t)vc * (int64_t)sizeof(m3Vec3) + 6LL * tc + (int64_t)tc;
+            if ((int64_t)size - cursor < content)
+            {
+                return false;
+            }
+            cursor += (int32_t)content;
+        }
+    }
+    if (size != cursor)
     {
         return false;
     }
@@ -516,7 +580,11 @@ bool m3World_Restore(m3WorldId worldId, const void* data, int32_t size)
     world->hullPool.freeHead = header.hullFreeHead;
     world->hullPool.freeCount = header.hullFreeCount;
     world->hullPool.retiredCount = header.hullRetiredCount;
-    WalkBlocks(world, NULL, (const uint8_t*)data + sizeof(header), m3_walkRead);
+    if (WalkBlocks(world, NULL, (const uint8_t*)data + sizeof(header), m3_walkRead, 1) < 0)
+    {
+        return false; // the pre-parse above makes this unreachable,
+                      // except for exhausted memory in the alloc gate
+    }
     // Derived data follows content: the per-mesh BVHs are rebuilt
     // from the restored triangle sets (a pure function, so the tree
     // a restore produces is byte-identical to the one the original

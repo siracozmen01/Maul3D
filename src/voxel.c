@@ -58,6 +58,11 @@ int32_t m3VoxelPack(m3VoxelChunkData* chunk, const uint8_t* voxels, const uint16
 // unnecessary).
 void m3VoxelSurfaceBuild(m3VoxelSurface* surface, const m3VoxelChunkData* chunk)
 {
+    // The embedded BVH owns heap arrays now (10-3): release them
+    // before the wipe or the rebuild leaks the previous build.
+    // CONTRACT: the surface must be zeroed or a previous build;
+    // garbage pointers here are the caller's crash.
+    m3MeshBvhFree(&surface->bvh);
     memset(surface, 0, sizeof(*surface));
     uint8_t claimed[M3_VOXEL_COUNT];
     memset(claimed, 0, sizeof(claimed));
