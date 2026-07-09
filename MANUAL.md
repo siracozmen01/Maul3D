@@ -564,6 +564,28 @@ destroys the joint at the end of the step and emits the break
 event. Breakage is an in-step deterministic transition on
 purpose: a host poll would race the journal under rollback.
 
+## Soft interactions and fields
+
+Lattices collide with EACH OTHER (canonical particle pairs behind
+lattice-bound gates; self-collision stays out, the structure rods
+hold a lattice apart), and they hold hands:
+m3SoftBody_AnchorToSoft pins particle to particle across lattices
+with silent release when either side dies. Wind
+(m3World_SetWind) drives particles with proportional drag toward
+a gusted velocity whose phase ACCUMULATES in the snapshot: a
+rollback resumes the exact same wave. Conveyors
+(m3Shape_SetSurfaceVelocity) feed the contact solver's tangential
+target: crates ride belts at belt speed, and a belt on a dynamic
+deck recoils by Newton. All of it journals, snapshots, and twins.
+
+Particle cloth is POROUS to rigid bodies of comparable radius
+under load: a lattice sheet is a grid of contact spheres, and a
+sphere the size of the grid gaps can press between them when the
+span stretches. Densify the particles, thicken their radius, or
+back the sheet with a thin box when you need a true barrier (a v1
+bound of the box-lattice substrate, recorded here so nobody
+relearns it).
+
 ## The replay studio
 
 An M3J1 file is [header | initial snapshot | journal], encoded

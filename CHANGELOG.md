@@ -4,6 +4,32 @@ All notable changes to Maul3D. Versions are tags on green CI SHAs;
 every entry's determinism gates were verified across all CI cells at
 tag time.
 
+## v1.8 (2026-07-09)
+
+The admitted gaps, closed: the three capabilities the
+competitors' own documentation concedes, all under the bit
+contract.
+
+- Soft-vs-soft collision: canonical particle pairs between
+  lattices, XPBD split projection, zero new snapshot state.
+- Soft-to-soft anchors: particle-to-particle pins across
+  lattices, lower-slot canonical ownership, silent two-way
+  liveness release; a rope bridges two cloths and carries a ball.
+- Wind: gusts from an ACCUMULATED phase in the snapshot, so
+  rollbacks resume the same wave; no host randomness anywhere.
+- Conveyors: surface velocities feed the reference
+  tangentVelocity slots; belts drive riders, dynamic decks
+  recoil by Newton.
+- The road paid twice, both on the ledger: V-LAYOUT (the scratch
+  pre-flight's one-step pair-count lag made silent stall ticks
+  sizeof-dependent; fixed, cityblock and smoke10k re-pinned as a
+  correctness fix) and the minus-zero relabeling from zero belt
+  targets (benign, deterministic, pad-probe proven; one argued
+  re-pin).
+- MANUAL: soft interactions and fields, including the honest
+  porosity bound of particle sheets.
+- Snapshot v40 and v41; ops 59 through 61; suites 33 and 34.
+
 ## v1.7 (2026-07-09)
 
 Geometry scale: the ceilings the July deep dive flagged, raised

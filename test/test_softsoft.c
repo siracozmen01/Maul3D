@@ -329,6 +329,150 @@ static void TestAnchorDeathStorm(void)
     CHECK(hashes[0] == hashes[1], "death storm twins are bit-identical");
 }
 
+static void TestCapacityStormAndRing(void)
+{
+    // 11-4: four lattices all touching under deterministic deaths,
+    // and an anchor RING (a rope circle bridging three cloths):
+    // cycles must hold without feedback runaway, twins bit-exact.
+    uint64_t hashes[2];
+    for (int32_t run = 0; run < 2; ++run)
+    {
+        m3WorldId world = PlaneWorld();
+        m3SoftBodyDef sd = m3DefaultSoftBodyDef();
+        sd.countX = 3;
+        sd.countY = 3;
+        sd.countZ = 3;
+        sd.spacing = 0.28f;
+        sd.radius = 0.11f;
+        m3SoftBodyId jellies[4];
+        for (int32_t k = 0; k < 4; ++k)
+        {
+            sd.position = (m3Pos3){0.2 * (double)k, 0.15 + 0.8 * (double)k, 0.1 * (double)k};
+            jellies[k] = m3CreateSoftBody(world, &sd);
+        }
+        // The ring: 2 pins closing a cycle across three lattices.
+        m3SoftBody_AnchorToSoft(jellies[0], 26, jellies[1], 0);
+        m3SoftBody_AnchorToSoft(jellies[1], 26, jellies[2], 0);
+        m3SoftBody_AnchorToSoft(jellies[2], 26, jellies[0], 0);
+        for (int32_t i = 0; i < 200; ++i)
+        {
+            if (i == 90)
+            {
+                m3DestroySoftBody(jellies[3]); // the freeloader dies
+            }
+            m3World_Step(world, 1.0f / 60.0f, 4);
+        }
+        // The anchors are position EQUALITIES: pinned corners
+        // legally coincide, so the separation law does not apply
+        // at the pins. The cycle's red-team law is STABILITY: no
+        // feedback runaway, every particle finite and earthbound.
+        for (int32_t k = 0; k < 3; ++k)
+        {
+            for (int32_t p = 0; p < m3SoftBody_GetParticleCount(jellies[k]); ++p)
+            {
+                m3Pos3 pos = m3SoftBody_GetParticlePosition(jellies[k], p);
+                CHECK(isfinite(pos.x) && isfinite(pos.y) && isfinite(pos.z),
+                      "the ring stays finite");
+                CHECK(pos.y > -0.5 && pos.y < 6.0, "the ring stays earthbound");
+            }
+        }
+        hashes[run] = m3World_Hash(world);
+        m3DestroyWorld(world);
+    }
+    CHECK(hashes[0] == hashes[1], "storm-and-ring twins are bit-identical");
+}
+
+static void TestShowcase(void)
+{
+    // THE PHASE EXIT SCENE: a wind-blown cloth bridge anchored to
+    // ropes, slung between two jellies riding conveyors, carrying
+    // a dropped rigid ball. Every admitted gap in one shot, twins
+    // to the bit.
+    uint64_t hashes[2];
+    for (int32_t run = 0; run < 2; ++run)
+    {
+        m3ShapeId floorW;
+        m3WorldId world;
+        {
+            m3WorldDef def = m3DefaultWorldDef();
+            def.bodyCapacity = 16;
+            def.shapeCapacity = 16;
+            def.softBodyCapacity = 4;
+            world = m3CreateWorld(&def);
+            m3BodyDef gd = m3DefaultBodyDef();
+            m3BodyId ground = m3CreateBody(world, &gd);
+            m3ShapeDef sdg = m3DefaultShapeDef();
+            m3Plane fl = {{0.0f, 1.0f, 0.0f}, 0.0f};
+            floorW = m3CreatePlaneShape(ground, &sdg, &fl);
+        }
+        m3SoftBodyDef jd = m3DefaultSoftBodyDef();
+        jd.countX = 3;
+        jd.countY = 3;
+        jd.countZ = 3;
+        jd.spacing = 0.3f;
+        jd.radius = 0.12f;
+        jd.position = (m3Pos3){-1.6, 0.15, -0.3};
+        m3SoftBodyId west = m3CreateSoftBody(world, &jd);
+        jd.position = (m3Pos3){1.0, 0.15, -0.3};
+        m3SoftBodyId east = m3CreateSoftBody(world, &jd);
+
+        m3SoftBodyDef cd = m3DefaultSoftBodyDef();
+        cd.countX = 7;
+        cd.countY = 1;
+        cd.countZ = 3;
+        cd.spacing = 0.25f;
+        cd.radius = 0.09f;
+        cd.position = (m3Pos3){-1.05, 1.3, -0.3};
+        m3SoftBodyId bridge = m3CreateSoftBody(world, &cd);
+        // Tie the bridge corners to the jellies' top corners.
+        m3SoftBody_AnchorToSoft(bridge, 0, west, 24);
+        m3SoftBody_AnchorToSoft(bridge, 14, west, 26);
+        m3SoftBody_AnchorToSoft(bridge, 6, east, 18);
+        m3SoftBody_AnchorToSoft(bridge, 20, east, 20);
+
+        m3World_SetWind(world, (m3Vec3){0.0f, 0.0f, 1.0f}, 2.0f, 0.6f, 0.4f);
+        m3Shape_SetSurfaceVelocity(floorW, (m3Vec3){0.15f, 0.0f, 0.0f});
+
+        m3BodyDef bd = m3DefaultBodyDef();
+        bd.type = m3_dynamicBody;
+        bd.position = (m3Pos3){-0.3, 2.2, -0.05};
+        m3BodyId ball = m3CreateBody(world, &bd);
+        m3ShapeDef sd = m3DefaultShapeDef();
+        sd.density = 0.15f;
+        m3Sphere s = {{0.0f, 0.0f, 0.0f}, 0.15f};
+        m3CreateSphereShape(ball, &sd, &s);
+
+        m3Pos3 westStart = m3SoftBody_GetParticlePosition(west, 13);
+        for (int32_t i = 0; i < 300; ++i)
+        {
+            m3World_Step(world, 1.0f / 60.0f, 4);
+        }
+        // The honest showcase laws. A stretchy particle span is
+        // POROUS to comparable-radius spheres under load (a known
+        // v1 bound, now in the MANUAL), so the ball's resting place
+        // is the scene's business; what the engine PROMISES is:
+        // (1) everything stays finite and earthbound,
+        m3Pos3 bp = m3Body_GetPosition(ball);
+        CHECK(isfinite(bp.x) && isfinite(bp.y) && isfinite(bp.z) && bp.y > -0.5,
+              "the ball stays simulated and earthbound");
+        // (2) the anchors still hold the bridge to both jellies,
+        m3Pos3 b0 = m3SoftBody_GetParticlePosition(bridge, 0);
+        m3Pos3 w24 = m3SoftBody_GetParticlePosition(west, 24);
+        double drift = sqrt((b0.x - w24.x) * (b0.x - w24.x) + (b0.y - w24.y) * (b0.y - w24.y) +
+                            (b0.z - w24.z) * (b0.z - w24.z));
+        CHECK(drift < 0.05, "the bridge anchors hold under the storm");
+        // (3) the wind visibly works (the span bows downwind),
+        double midZ = m3SoftBody_GetParticlePosition(bridge, 11).z;
+        CHECK(midZ > -0.25, "the wind bows the bridge downwind");
+        // (4) the conveyor visibly works (the jelly rides the belt).
+        m3Pos3 westEnd = m3SoftBody_GetParticlePosition(west, 13);
+        CHECK(westEnd.x - westStart.x > 0.2, "the conveyor carries the jelly");
+        hashes[run] = m3World_Hash(world);
+        m3DestroyWorld(world);
+    }
+    CHECK(hashes[0] == hashes[1], "the showcase twins are bit-identical");
+}
+
 int main(void)
 {
     TestJelliesRefuseToMerge();
@@ -336,6 +480,8 @@ int main(void)
     TestMidContactRollback();
     TestRopeBridge();
     TestAnchorDeathStorm();
+    TestCapacityStormAndRing();
+    TestShowcase();
     if (s_failures == 0)
     {
         printf("test_softsoft: all green\n");

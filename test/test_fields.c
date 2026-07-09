@@ -203,6 +203,40 @@ static void TestFieldsReplay(void)
     CHECK(hashes[0] == hashes[1], "field twins are bit-identical");
 }
 
+static void TestConveyorOnDynamicDeck(void)
+{
+    // 11-4: a conveyor surface on a DYNAMIC platform still drives
+    // riders, and Newton collects: the deck recoils the other way.
+    m3WorldId world = PlaneWorld(NULL);
+    m3BodyDef dd = m3DefaultBodyDef();
+    dd.type = m3_dynamicBody;
+    dd.position = (m3Pos3){0.0, 0.3, 0.0};
+    m3BodyId deck = m3CreateBody(world, &dd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    sd.density = 8.0f; // heavy barge
+    m3ShapeId deckTop = m3CreateBoxShape(deck, &sd, (m3Vec3){1.6f, 0.3f, 1.0f});
+    m3BodyDef bd = m3DefaultBodyDef();
+    bd.type = m3_dynamicBody;
+    bd.position = (m3Pos3){0.0, 1.0, 0.0};
+    m3BodyId crate = m3CreateBody(world, &bd);
+    m3ShapeDef cs = m3DefaultShapeDef();
+    m3CreateBoxShape(crate, &cs, (m3Vec3){0.25f, 0.25f, 0.25f});
+    for (int32_t i = 0; i < 60; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+    }
+    m3Shape_SetSurfaceVelocity(deckTop, (m3Vec3){1.0f, 0.0f, 0.0f});
+    for (int32_t i = 0; i < 120; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+    }
+    m3Vec3 vCrate = m3Body_GetLinearVelocity(crate);
+    m3Vec3 vDeck = m3Body_GetLinearVelocity(deck);
+    CHECK(vCrate.x > 0.3f, "the deck belt drives the rider forward");
+    CHECK(vDeck.x < -0.005f, "and Newton collects the recoil");
+    m3DestroyWorld(world);
+}
+
 static void TestHostileFields(void)
 {
     m3ShapeId floor;
@@ -227,6 +261,7 @@ int main(void)
     TestWindStreamsTheFlag();
     TestConveyorCarries();
     TestFieldsReplay();
+    TestConveyorOnDynamicDeck();
     TestHostileFields();
     if (s_failures == 0)
     {
