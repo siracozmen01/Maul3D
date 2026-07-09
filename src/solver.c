@@ -84,6 +84,8 @@ typedef struct m3ContactConstraint
     m3real frictionImpulse2;
     m3real twistMass;
     m3real twistImpulse;
+    m3real tangentVelocity1; // conveyor target (11-3), reference field
+    m3real tangentVelocity2;
     m3real friction;
     m3real restitution;
     m3real invMassA;
@@ -302,6 +304,13 @@ static int32_t PrepareContacts(m3World* world, m3ContactConstraint* constraints,
         }
         c->frictionImpulse1 = m3Dot3(manifold->frictionImpulse, c->t1);
         c->frictionImpulse2 = m3Dot3(manifold->frictionImpulse, c->t2);
+        // Conveyor targets (11-3): the reference tangentVelocity,
+        // finally fed. Sign law: friction drives the pair's B-minus-A
+        // tangential speed TOWARD this target, so a belt at shape A
+        // carries the other body along its surface velocity.
+        m3Vec3 surf = m3Sub3(world->shapeSurfaceVel[shapeA], world->shapeSurfaceVel[shapeB]);
+        c->tangentVelocity1 = m3Dot3(surf, c->t1);
+        c->tangentVelocity2 = m3Dot3(surf, c->t2);
 
         m3Vec3 iSumN = m3Add3(m3MulMV3(c->invIA, c->normal), m3MulMV3(c->invIB, c->normal));
         m3real twistK = m3Dot3(c->normal, iSumN);
@@ -457,8 +466,8 @@ static void SolveOneContact(m3World* world, m3ContactConstraint* c, const m3Vec3
         {
             m3Vec3 vrel = m3Sub3(VelocityAt(world, c->bodyB, c->originB),
                                  VelocityAt(world, c->bodyA, c->originA));
-            m3real vt1 = m3Dot3(vrel, c->t1);
-            m3real vt2 = m3Dot3(vrel, c->t2);
+            m3real vt1 = m3Dot3(vrel, c->t1) - c->tangentVelocity1;
+            m3real vt2 = m3Dot3(vrel, c->t2) - c->tangentVelocity2;
             m3real f1 = c->frictionImpulse1 - (c->frictionK11 * vt1 + c->frictionK12 * vt2);
             m3real f2 = c->frictionImpulse2 - (c->frictionK12 * vt1 + c->frictionK22 * vt2);
             m3real maxFriction = c->friction * passNormal;
@@ -3202,6 +3211,17 @@ void m3StepInternal(m3World* world, float dt, int32_t substeps)
     StoreImpulses(world, constraints, constraintCount);
     StoreJointImpulses(world, jointConstraints, jointCount);
     world->lastInvH = invH;
+
+    // Wind phase (11-3): accumulated STATE, so a rollback resumes
+    // the exact same gust wave. Wrapped to keep the float honest.
+    if (world->windGustHertz > 0.0f)
+    {
+        world->windPhase += 2.0f * M3_PI * world->windGustHertz * dt;
+        if (world->windPhase > 2.0f * M3_PI)
+        {
+            world->windPhase -= 2.0f * M3_PI * (m3real)(int32_t)(world->windPhase / (2.0f * M3_PI));
+        }
+    }
 
     // Joint breakage (8-6a): reactions over threshold destroy the
     // joint and emit the break event, serially in ascending joint

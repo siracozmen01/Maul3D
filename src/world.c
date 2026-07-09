@@ -125,6 +125,11 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     world->preSolveFn = NULL;
     world->preSolveContext = NULL;
     world->lastInvH = 0.0f;
+    world->windDir = (m3Vec3){0.0f, 0.0f, 0.0f};
+    world->windSpeed = 0.0f;
+    world->windGustHertz = 0.0f;
+    world->windGustScale = 0.0f;
+    world->windPhase = 0.0f;
     world->bodyCapacity = cap;
     world->shapeCapacity = def->shapeCapacity;
     world->meshCapacity = def->meshCapacity;
@@ -341,6 +346,7 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     M3_ALLOC(world->shapeLocalPos, shapeCap, m3Vec3);
     M3_ALLOC(world->shapeLocalRot, shapeCap, m3Quat);
     M3_ALLOC(world->shapeHasOffset, shapeCap, uint8_t);
+    M3_ALLOC(world->shapeSurfaceVel, shapeCap, m3Vec3);
     for (int32_t i = 0; i < shapeCap; ++i)
     {
         world->shapeMeshIndex[i] = -1;
@@ -552,6 +558,7 @@ void m3DestroyWorld(m3WorldId worldId)
     m3Free(world->shapeLocalPos);
     m3Free(world->shapeLocalRot);
     m3Free(world->shapeHasOffset);
+    m3Free(world->shapeSurfaceVel);
     m3Free(world->hitEvents);
     m3Free(world->moveEvents);
     m3Free(world->jointBreakEvents);
@@ -801,6 +808,51 @@ const m3JointBreakEvent* m3World_JointBreakEvents(m3WorldId worldId, int32_t* co
     }
     *count = world->jointBreakEventCount;
     return world->jointBreakEvents;
+}
+
+void m3SetWindInternal(m3World* world, m3Vec3 dir, float speed, float gustHertz, float gustScale)
+{
+    world->windDir = dir;
+    world->windSpeed = speed;
+    world->windGustHertz = gustHertz;
+    world->windGustScale = gustScale;
+    // The phase deliberately SURVIVES a retune: the wave continues.
+}
+
+void m3World_SetWind(m3WorldId worldId, m3Vec3 direction, float speed, float gustHertz,
+                     float gustScale)
+{
+    m3World* world = m3WorldFromId(worldId);
+    if (world == NULL || !m3FiniteV3(direction) || !m3FiniteF(speed) || speed < 0.0f ||
+        !m3FiniteF(gustHertz) || gustHertz < 0.0f || !m3FiniteF(gustScale) || gustScale < 0.0f)
+    {
+        return;
+    }
+    if (speed > 0.0f)
+    {
+        m3real len2 = m3Dot3(direction, direction);
+        if (len2 < 0.99f || len2 > 1.01f)
+        {
+            return; // a blowing wind demands a near-unit direction
+        }
+    }
+    if (world->journalActive != 0)
+    {
+        struct
+        {
+            m3Vec3 dir;
+            float speed;
+            float gustHertz;
+            float gustScale;
+        } record;
+        memset(&record, 0, sizeof(record));
+        record.dir = direction;
+        record.speed = speed;
+        record.gustHertz = gustHertz;
+        record.gustScale = gustScale;
+        m3JournalRecord(world, m3_opSetWind, &record, (int32_t)sizeof(record));
+    }
+    m3SetWindInternal(world, direction, speed, gustHertz, gustScale);
 }
 
 void m3AppendJointBreakEvent(m3World* world, m3JointId joint)
@@ -1966,6 +2018,44 @@ static bool JournalReplayApply(m3World* world, const void* data, int32_t size)
             {
                 m3EnableContinuousInternal(world, on);
             }
+            break;
+        }
+        case m3_opSetWind:
+        {
+            struct
+            {
+                m3Vec3 dir;
+                float speed;
+                float gustHertz;
+                float gustScale;
+            } record;
+            if (bytes != (int32_t)sizeof(record))
+            {
+                return false;
+            }
+            memcpy(&record, payload, sizeof(record));
+            m3SetWindInternal(world, record.dir, record.speed, record.gustHertz, record.gustScale);
+            break;
+        }
+        case m3_opSetSurfaceVelocity:
+        {
+            struct
+            {
+                m3ShapeId id;
+                m3Vec3 v;
+            } record;
+            if (bytes != (int32_t)sizeof(record))
+            {
+                return false;
+            }
+            memcpy(&record, payload, sizeof(record));
+            record.id.world0 = world->worldIndex0;
+            int32_t slot = m3ShapeSlot(world, record.id);
+            if (slot < 0)
+            {
+                return false;
+            }
+            m3SetSurfaceVelocityInternal(world, slot, record.v);
             break;
         }
         case m3_opSetHitEventThreshold:

@@ -232,6 +232,13 @@ extern "C"
     M3_API void m3Shape_EnablePreSolve(m3ShapeId shapeId, bool flag);
     M3_API bool m3Shape_IsPreSolveEnabled(m3ShapeId shapeId);
 
+    /// Conveyor (11-3): a world-frame surface velocity on the
+    /// shape. Contacts drive the tangential target toward it, the
+    /// reference tangentVelocity semantic the central-friction port
+    /// carried at zero until now. Journaled; state, hashed when
+    /// nonzero.
+    M3_API void m3Shape_SetSurfaceVelocity(m3ShapeId shapeId, m3Vec3 velocity);
+
     static const m3ShapeId m3_nullShapeId = {0, 0, 0};
 
 #ifdef __cplusplus

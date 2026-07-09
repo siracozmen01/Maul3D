@@ -310,6 +310,11 @@ target_link_libraries(test_softsoft PRIVATE maul3d)
 maul3d_apply_flags(test_softsoft)
 add_test(NAME softsoft COMMAND test_softsoft)
 
+add_executable(test_fields test/test_fields.c)
+target_link_libraries(test_fields PRIVATE maul3d)
+maul3d_apply_flags(test_fields)
+add_test(NAME fields COMMAND test_fields)
+
 add_executable(test_fuzz test/test_fuzz.c)
 target_link_libraries(test_fuzz PRIVATE maul3d)
 maul3d_apply_flags(test_fuzz)

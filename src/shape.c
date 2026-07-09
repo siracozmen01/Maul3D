@@ -369,6 +369,7 @@ int32_t m3CreateShapeInternal(m3World* world, int32_t bodyIndex, uint8_t type,
     world->shapeSensor[index] = def->isSensor ? 1 : 0;
     world->shapeHitEvents[index] = def->enableHitEvents ? 1 : 0;
     world->shapePreSolve[index] = def->enablePreSolveEvents ? 1 : 0;
+    world->shapeSurfaceVel[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
     world->shapeLocalPos[index] = def->localPosition;
     world->shapeLocalRot[index] = def->localRotation;
     world->shapeHasOffset[index] = (def->localPosition.x != 0.0f || def->localPosition.y != 0.0f ||
@@ -503,6 +504,7 @@ void m3DestroyShapeInternal(m3World* world, int32_t index)
     world->shapeSensor[index] = 0;
     world->shapeHitEvents[index] = 0;
     world->shapePreSolve[index] = 0;
+    world->shapeSurfaceVel[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
     world->shapeLocalPos[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
     world->shapeLocalRot[index] = (m3Quat){0.0f, 0.0f, 0.0f, 1.0f};
     world->shapeHasOffset[index] = 0;
@@ -1174,6 +1176,39 @@ bool m3Shape_IsPreSolveEnabled(m3ShapeId shapeId)
     int32_t slot;
     m3World* world = ResolveShape(shapeId, &slot);
     return world != NULL && world->shapePreSolve[slot] != 0;
+}
+
+void m3SetSurfaceVelocityInternal(m3World* world, int32_t slot, m3Vec3 v)
+{
+    world->shapeSurfaceVel[slot] = v;
+    int32_t body = world->shapeBody[slot];
+    if (world->types[body] == (uint8_t)m3_dynamicBody)
+    {
+        m3SetAwakeInternal(world, body, 1);
+    }
+}
+
+void m3Shape_SetSurfaceVelocity(m3ShapeId shapeId, m3Vec3 velocity)
+{
+    int32_t slot;
+    m3World* world = ResolveShape(shapeId, &slot);
+    if (world == NULL || !m3FiniteV3(velocity))
+    {
+        return;
+    }
+    if (world->journalActive != 0)
+    {
+        struct
+        {
+            m3ShapeId id;
+            m3Vec3 v;
+        } record;
+        memset(&record, 0, sizeof(record));
+        record.id = shapeId;
+        record.v = velocity;
+        m3JournalRecord(world, m3_opSetSurfaceVelocity, &record, (int32_t)sizeof(record));
+    }
+    m3SetSurfaceVelocityInternal(world, slot, velocity);
 }
 
 // --- Mesh content ownership (10-3) ------------------------------------------

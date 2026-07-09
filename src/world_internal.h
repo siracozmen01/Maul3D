@@ -146,7 +146,9 @@ typedef enum m3Op
     m3_opDestroyShape = 58,         // shape id (10-4: the red team
                                     // found bodies could shed shapes
                                     // only by dying)
-    m3_opSoftBodyAnchorSoft = 59,   // lattice<->lattice pin (11-2)        // world toggle
+    m3_opSoftBodyAnchorSoft = 59,   // lattice<->lattice pin (11-2)
+    m3_opSetWind = 60,              // world wind field (11-3)
+    m3_opSetSurfaceVelocity = 61,   // shape conveyor velocity        // world toggle
 } m3Op;
 
 // Immutable interned hull data (lifetime 3): vertices, face planes,
@@ -432,6 +434,14 @@ typedef struct m3World
     uint8_t sleepEnabled;
     uint8_t continuousEnabled;
     float hitEventThreshold; // approach speed gate for hit events (8-5)
+    // Wind (11-3): a deterministic field. The gust phase
+    // ACCUMULATES as state so a rollback resumes the same wave;
+    // speed zero means no wind and nothing folds into the hash.
+    m3Vec3 windDir;
+    float windSpeed;
+    float windGustHertz;
+    float windGustScale;
+    float windPhase;
     uint64_t stepCount;
     int32_t bodyCapacity;
     int32_t shapeCapacity;
@@ -487,6 +497,7 @@ typedef struct m3World
     m3Vec3* shapeLocalPos;         // 10-1 compound offset (default zero)
     m3Quat* shapeLocalRot;         // 10-1 compound rotation (default identity)
     uint8_t* shapeHasOffset;       // fast identity short-circuit
+    m3Vec3* shapeSurfaceVel;       // 11-3 conveyor (default zero)
     uint8_t* shapePreSolve;        // 8-5: run the pre-solve veto (default 0)
     float* shapeRollingResistance; // hashed only when nonzero (the
                                    // additive-state golden rule)
@@ -1067,6 +1078,8 @@ void m3SoftBodyPass(m3World* world, float dt, int32_t substeps);
 void m3SoftBodyAnchorInternal(m3World* world, int32_t slot, int32_t particle, int32_t body);
 void m3SoftBodyAnchorSoftInternal(m3World* world, int32_t slotA, int32_t particleA, int32_t slotB,
                                   int32_t particleB);
+void m3SetWindInternal(m3World* world, m3Vec3 dir, float speed, float gustHertz, float gustScale);
+void m3SetSurfaceVelocityInternal(m3World* world, int32_t slot, m3Vec3 v);
 m3RayHit m3RayClosestInternalEx(m3World* world, m3Pos3 origin, m3Vec3 translation,
                                 int32_t ignoreBody);
 m3RayHit m3RayClosestFiltered(m3World* world, m3Pos3 origin, m3Vec3 translation, int32_t ignoreBody,

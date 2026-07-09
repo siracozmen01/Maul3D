@@ -508,6 +508,17 @@ void m3SoftBodyPass(m3World* world, float dt, int32_t substeps)
             // Integrate: velocity from the previous position pair,
             // gravity, then the predicted position.
             m3Vec3 g = m3MulSV3(world->softGravityScale[slot], world->gravity);
+            // Wind (11-3): proportional drag toward the wind
+            // velocity, gusted by the accumulated phase. Soft-only
+            // by design (rigid bodies already have the force API).
+            m3Vec3 windVel = {0.0f, 0.0f, 0.0f};
+            m3real windDrag = 0.0f;
+            if (world->windSpeed > 0.0f)
+            {
+                m3real gust = 1.0f + world->windGustScale * sinf(world->windPhase);
+                windVel = m3MulSV3(world->windSpeed * gust, world->windDir);
+                windDrag = 0.5f; // documented fixed coefficient (v1)
+            }
             for (int32_t i = 0; i < count; ++i)
             {
                 int32_t k = base + i;
@@ -521,6 +532,10 @@ void m3SoftBodyPass(m3World* world, float dt, int32_t substeps)
                             (m3real)(world->softPos[k].y - world->softPrev[k].y) * invH,
                             (m3real)(world->softPos[k].z - world->softPrev[k].z) * invH};
                 v = m3Add3(v, m3MulSV3(h, g));
+                if (windDrag > 0.0f)
+                {
+                    v = m3Add3(v, m3MulSV3(h * windDrag, m3Sub3(windVel, v)));
+                }
                 world->softPrev[k] = world->softPos[k];
                 world->softPos[k].x += (double)(v.x * h);
                 world->softPos[k].y += (double)(v.y * h);

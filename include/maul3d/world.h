@@ -115,6 +115,17 @@ extern "C"
     /// Whether the continuous phase is enabled.
     M3_API bool m3World_IsContinuousEnabled(m3WorldId worldId);
 
+    /// Wind (11-3): a deterministic field applied to soft-body
+    /// particles as proportional drag toward the wind velocity.
+    /// The gust is a sine of an ACCUMULATED phase (state, in the
+    /// snapshot), so rollbacks resume the exact same wave: no host
+    /// randomness exists anywhere in it. speed zero disables.
+    /// direction must be near-unit when speed is nonzero. Rigid
+    /// bodies are not wind-blown in v1 (documented: the force API
+    /// already serves them); journaled.
+    M3_API void m3World_SetWind(m3WorldId worldId, m3Vec3 direction, float speed, float gustHertz,
+                                float gustScale);
+
     /// Advance the simulation: collide, then the Soft Step solver
     /// with the given substep count. Deterministic: same inputs, same
     /// bits, on every platform and backend. Journaled.

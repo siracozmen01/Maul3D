@@ -22,7 +22,8 @@
 #endif
 
 #define M3_SNAPSHOT_MAGIC   0x4D33534Eu // 'M3SN'
-#define M3_SNAPSHOT_VERSION 40u
+#define M3_SNAPSHOT_VERSION 41u
+// v41: wind field and conveyor surface velocities (11-3).
 // v40: soft-to-soft anchors (11-2).
 // v39: mesh content went count-derived (10-3): variable blocks
 //      replace the fixed mesh slab, reversing the 2b-9 deviation.
@@ -195,6 +196,11 @@ static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3Wal
     M3_BLOCK(&world->sleepEnabled, 1);
     M3_BLOCK(&world->continuousEnabled, 1);
     M3_BLOCK(&world->hitEventThreshold, (int32_t)sizeof(float));
+    M3_BLOCK(&world->windDir, (int32_t)sizeof(m3Vec3));
+    M3_BLOCK(&world->windSpeed, (int32_t)sizeof(float));
+    M3_BLOCK(&world->windGustHertz, (int32_t)sizeof(float));
+    M3_BLOCK(&world->windGustScale, (int32_t)sizeof(float));
+    M3_BLOCK(&world->windPhase, (int32_t)sizeof(float));
     // Identity is state: generations, liveness, and the FIFO queue
     // restore exactly, so post-rollback id minting cannot diverge.
     M3_BLOCK(world->bodyPool.generations, cap * (int32_t)sizeof(uint16_t));
@@ -231,6 +237,7 @@ static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3Wal
     M3_BLOCK(world->shapeRollingResistance, shapeCap * (int32_t)sizeof(float));
     M3_BLOCK(world->shapeHitEvents, shapeCap * (int32_t)sizeof(uint8_t));
     M3_BLOCK(world->shapePreSolve, shapeCap * (int32_t)sizeof(uint8_t));
+    M3_BLOCK(world->shapeSurfaceVel, shapeCap * (int32_t)sizeof(m3Vec3));
     M3_BLOCK(world->shapeLocalPos, shapeCap * (int32_t)sizeof(m3Vec3));
     M3_BLOCK(world->shapeLocalRot, shapeCap * (int32_t)sizeof(m3Quat));
     M3_BLOCK(world->shapeHasOffset, shapeCap * (int32_t)sizeof(uint8_t));
@@ -664,6 +671,16 @@ uint64_t m3World_Hash(m3WorldId worldId)
         h = m3Hash64(h, &world->continuousEnabled, 1);
         h = m3Hash64(h, &world->hitEventThreshold, 4);
     }
+    if (world->windSpeed != 0.0f)
+    {
+        // Wind folds only when it blows (additive rule), phase
+        // included: the gust wave is trajectory-shaping state.
+        h = m3Hash64(h, &world->windDir, (int32_t)sizeof(m3Vec3));
+        h = m3Hash64(h, &world->windSpeed, 4);
+        h = m3Hash64(h, &world->windGustHertz, 4);
+        h = m3Hash64(h, &world->windGustScale, 4);
+        h = m3Hash64(h, &world->windPhase, 4);
+    }
     int32_t maxIndex = world->bodyPool.maxIndex;
     for (int32_t i = 0; i < maxIndex; ++i)
     {
@@ -728,6 +745,11 @@ uint64_t m3World_Hash(m3WorldId worldId)
             // off-default (additive rule, seventh use).
             h = m3Hash64(h, &world->shapeHitEvents[i], 1);
             h = m3Hash64(h, &world->shapePreSolve[i], 1);
+        }
+        if (world->shapeSurfaceVel[i].x != 0.0f || world->shapeSurfaceVel[i].y != 0.0f ||
+            world->shapeSurfaceVel[i].z != 0.0f)
+        {
+            h = m3Hash64(h, &world->shapeSurfaceVel[i], (int32_t)sizeof(m3Vec3));
         }
         if (world->shapeHasOffset[i] != 0)
         {
