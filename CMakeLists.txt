@@ -320,6 +320,11 @@ target_link_libraries(test_drivetrain PRIVATE maul3d)
 maul3d_apply_flags(test_drivetrain)
 add_test(NAME drivetrain COMMAND test_drivetrain)
 
+add_executable(test_wheeljoint test/test_wheeljoint.c)
+target_link_libraries(test_wheeljoint PRIVATE maul3d)
+maul3d_apply_flags(test_wheeljoint)
+add_test(NAME wheeljoint COMMAND test_wheeljoint)
+
 add_executable(test_fuzz test/test_fuzz.c)
 target_link_libraries(test_fuzz PRIVATE maul3d)
 maul3d_apply_flags(test_fuzz)

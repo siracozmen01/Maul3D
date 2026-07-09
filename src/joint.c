@@ -24,15 +24,10 @@ m3JointDef m3DefaultJointDef(void)
     return def;
 }
 
-// Quaternion whose z-axis is the given unit axis, with the tangent
-// basis rule fixing the other two columns (deterministic: Shepperd's
-// branch on the largest diagonal).
-static m3Quat QuatFromAxisZ(m3Vec3 axis)
+// Quaternion from an orthonormal right-handed column basis
+// (deterministic: Shepperd's branch on the largest diagonal).
+static m3Quat QuatFromBasis(m3Vec3 t1, m3Vec3 t2, m3Vec3 axis)
 {
-    m3Vec3 t1;
-    m3Vec3 t2;
-    m3MakeTangentBasis(axis, &t1, &t2);
-    // Columns: x = t1, y = t2, z = axis (right-handed by the basis rule).
     m3real m00 = t1.x, m01 = t2.x, m02 = axis.x;
     m3real m10 = t1.y, m11 = t2.y, m12 = axis.y;
     m3real m20 = t1.z, m21 = t2.z, m22 = axis.z;
@@ -73,6 +68,16 @@ static m3Quat QuatFromAxisZ(m3Vec3 axis)
     return m3NormalizeQuat(q);
 }
 
+// Quaternion whose z-axis is the given unit axis, with the tangent
+// basis rule fixing the other two columns.
+static m3Quat QuatFromAxisZ(m3Vec3 axis)
+{
+    m3Vec3 t1;
+    m3Vec3 t2;
+    m3MakeTangentBasis(axis, &t1, &t2);
+    return QuatFromBasis(t1, t2, axis);
+}
+
 int32_t m3JointSlot(const m3World* world, m3JointId jointId)
 {
     int32_t index = jointId.index1 - 1;
@@ -86,6 +91,33 @@ int32_t m3JointSlot(const m3World* world, m3JointId jointId)
 
 int32_t m3CreateJointInternal(m3World* world, const m3JointDef* def, int32_t bodyA, int32_t bodyB)
 {
+    // The wheel frame (12-2), built BEFORE the slot is taken so a
+    // refused geometry leaks nothing. Frame x = the suspension axis
+    // (from A), frame z = the axle captured from B's world image and
+    // snapped exactly perpendicular; real skew refuses loudly. This
+    // validation lives here, not in the public wall, because replay
+    // hands this function raw journal bytes.
+    m3Quat wheelQA = {0.0f, 0.0f, 0.0f, 1.0f};
+    m3Quat wheelQB = {0.0f, 0.0f, 0.0f, 1.0f};
+    if (def->type == (int32_t)m3_wheelJoint)
+    {
+        const m3Transform* xfA = &world->transforms[bodyA];
+        const m3Transform* xfB = &world->transforms[bodyB];
+        m3Vec3 susp = m3Normalize3(def->localAxisA);
+        m3Vec3 axleWorld = m3RotateVec3(xfB->q, m3Normalize3(def->localAxisB));
+        m3Quat conjA = {-xfA->q.x, -xfA->q.y, -xfA->q.z, xfA->q.w};
+        m3Vec3 axleA = m3RotateVec3(conjA, axleWorld);
+        m3real skew = m3Dot3(axleA, susp);
+        if (skew > 0.1f || skew < -0.1f)
+        {
+            return -1; // an axle along the strut is not a wheel
+        }
+        m3Vec3 z = m3Normalize3(m3Sub3(axleA, m3MulSV3(skew, susp)));
+        m3Vec3 y = m3Cross3(z, susp); // x cross y = z, right-handed
+        wheelQA = QuatFromBasis(susp, y, z);
+        m3Quat conjB = {-xfB->q.x, -xfB->q.y, -xfB->q.z, xfB->q.w};
+        wheelQB = m3NormalizeQuat(m3MulQuat(conjB, m3MulQuat(xfA->q, wheelQA)));
+    }
     int32_t index = m3IdPoolAlloc(&world->jointPool);
     if (index < 0)
     {
@@ -119,6 +151,13 @@ int32_t m3CreateJointInternal(m3World* world, const m3JointDef* def, int32_t bod
         // stored state canonical and the hash honest.
         world->jointFrameQA[index] = (m3Quat){0.0f, 0.0f, 0.0f, 1.0f};
         world->jointFrameQB[index] = (m3Quat){0.0f, 0.0f, 0.0f, 1.0f};
+    }
+    else if (def->type == (int32_t)m3_wheelJoint)
+    {
+        // Built above: relQ is identity at create, so the spin
+        // angle and the collinearity error both start at zero.
+        world->jointFrameQA[index] = wheelQA;
+        world->jointFrameQB[index] = wheelQB;
     }
     else
     {
@@ -250,15 +289,17 @@ m3JointId m3CreateJoint(const m3JointDef* def)
     if (def == NULL || def->internalValue != M3_JOINT_COOKIE ||
         (def->type != (int32_t)m3_sphericalJoint && def->type != (int32_t)m3_revoluteJoint &&
          def->type != (int32_t)m3_prismaticJoint && def->type != (int32_t)m3_fixedJoint &&
-         def->type != (int32_t)m3_distanceJoint && def->type != (int32_t)m3_genericJoint))
+         def->type != (int32_t)m3_distanceJoint && def->type != (int32_t)m3_genericJoint &&
+         def->type != (int32_t)m3_wheelJoint))
     {
         return m3_nullJointId;
     }
-    if ((def->type == (int32_t)m3_revoluteJoint || def->type == (int32_t)m3_prismaticJoint) &&
+    if ((def->type == (int32_t)m3_revoluteJoint || def->type == (int32_t)m3_prismaticJoint ||
+         def->type == (int32_t)m3_wheelJoint) &&
         (!(m3Dot3(def->localAxisA, def->localAxisA) > 0.0f) ||
          !(m3Dot3(def->localAxisB, def->localAxisB) > 0.0f)))
     {
-        return m3_nullJointId; // a hinge or slider needs real axes
+        return m3_nullJointId; // a hinge, slider, or wheel needs real axes
     }
     if (def->type == (int32_t)m3_genericJoint)
     {
@@ -502,6 +543,16 @@ void m3JointReactionMagnitudes(const m3World* world, int32_t j, m3real invH, m3r
         force += sqrtf(perp.x * perp.x + perp.y * perp.y) + fabsf(lim.x) + fabsf(lim.y);
         torque = m3Length3(ang) + fabsf(lim.x) + fabsf(lim.y);
         break;
+    case (uint8_t)m3_wheelJoint:
+        // The composed split (12-2): lin carries the two point-to-
+        // line rows and the suspension limits are linear (force);
+        // perp x, y are the axle collinearity locks and the spin
+        // motor rides perp.z (torque). The BREAK CONTRACT for an
+        // axle: the force cap snaps a wheel torn sideways, the
+        // torque cap snaps a drive axle over-driven.
+        force += fabsf(lim.x) + fabsf(lim.y);
+        torque = sqrtf(perp.x * perp.x + perp.y * perp.y) + fabsf(perp.z);
+        break;
     default: // fixed: weld rows
         torque = m3Length3(ang);
         break;
@@ -668,9 +719,10 @@ m3real m3Joint_GetAngle(m3JointId jointId)
 {
     int32_t slot;
     m3World* world = ResolveJoint(jointId, &slot);
-    if (world == NULL || world->jointType[slot] != (uint8_t)m3_revoluteJoint)
+    if (world == NULL || (world->jointType[slot] != (uint8_t)m3_revoluteJoint &&
+                          world->jointType[slot] != (uint8_t)m3_wheelJoint))
     {
-        return 0.0f;
+        return 0.0f; // the wheel's frame z is its axle: same twist read
     }
     m3Quat qA = m3MulQuat(world->transforms[world->jointBodyA[slot]].q, world->jointFrameQA[slot]);
     m3Quat qB = m3MulQuat(world->transforms[world->jointBodyB[slot]].q, world->jointFrameQB[slot]);
@@ -684,7 +736,8 @@ m3real m3Joint_GetTranslation(m3JointId jointId)
 {
     int32_t slot;
     m3World* world = ResolveJoint(jointId, &slot);
-    if (world == NULL || world->jointType[slot] != (uint8_t)m3_prismaticJoint)
+    if (world == NULL || (world->jointType[slot] != (uint8_t)m3_prismaticJoint &&
+                          world->jointType[slot] != (uint8_t)m3_wheelJoint))
     {
         return 0.0f;
     }
@@ -698,7 +751,11 @@ m3real m3Joint_GetTranslation(m3JointId jointId)
                 (m3real)(xfB->p.y + (double)pB.y - xfA->p.y - (double)pA.y),
                 (m3real)(xfB->p.z + (double)pB.z - xfA->p.z - (double)pA.z)};
     m3Quat frameQ = m3MulQuat(xfA->q, world->jointFrameQA[slot]);
-    m3Vec3 axis = m3RotateVec3(frameQ, (m3Vec3){0.0f, 0.0f, 1.0f});
+    // The slide axis is frame z for the prismatic and frame x for
+    // the wheel (whose z is the axle).
+    m3Vec3 local = world->jointType[slot] == (uint8_t)m3_wheelJoint ? (m3Vec3){1.0f, 0.0f, 0.0f}
+                                                                    : (m3Vec3){0.0f, 0.0f, 1.0f};
+    m3Vec3 axis = m3RotateVec3(frameQ, local);
     return m3Dot3(d, axis);
 }
 
@@ -724,7 +781,7 @@ void m3JointSetTargetInternal(m3World* world, int32_t j, float scalar, m3Quat q)
 static int JointTypeDrives(uint8_t type)
 {
     return type == (uint8_t)m3_revoluteJoint || type == (uint8_t)m3_prismaticJoint ||
-           type == (uint8_t)m3_sphericalJoint;
+           type == (uint8_t)m3_sphericalJoint || type == (uint8_t)m3_wheelJoint;
 }
 
 void m3Joint_SetSpring(m3JointId jointId, bool enable, float hertz, float dampingRatio)
@@ -790,9 +847,12 @@ void m3Joint_SetTargetTranslation(m3JointId jointId, float meters)
 {
     int32_t slot;
     m3World* world = ResolveJoint(jointId, &slot);
-    if (world == NULL || world->jointType[slot] != (uint8_t)m3_prismaticJoint || !m3FiniteF(meters))
+    if (world == NULL ||
+        (world->jointType[slot] != (uint8_t)m3_prismaticJoint &&
+         world->jointType[slot] != (uint8_t)m3_wheelJoint) ||
+        !m3FiniteF(meters))
     {
-        return;
+        return; // the wheel's drive is its suspension spring (12-2)
     }
     JointTargetOp(world, jointId, slot, meters, (m3Quat){0.0f, 0.0f, 0.0f, 1.0f});
 }

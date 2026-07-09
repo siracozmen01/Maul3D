@@ -23,6 +23,7 @@ extern "C"
         m3_fixedJoint = 3,     // weld: full 6-DOF lock at the create pose
         m3_distanceJoint = 4,  // rope/rod: anchor distance in [lower, upper]
         m3_genericJoint = 5,   // 6-DOF: per-axis lock/free/limit + one motor
+        m3_wheelJoint = 6,     // suspension slide + free spin (12-2)
     } m3JointType;
 
     /// Per-axis behavior of the generic joint, in the joint frame
@@ -87,6 +88,22 @@ extern "C"
         /// ball); anything else refuses loudly. Growing this def
         /// bumps the cookie: stale-compiled callers are refused
         /// loudly instead of misread (the freeze's mechanism).
+        /// The wheel joint (12-2), the OPTIONAL rigid-wheel path for
+        /// vehicles (the raycast vehicle stays the default): the
+        /// wheel body B slides along a suspension axis fixed in the
+        /// chassis A and spins freely about its axle. localAxisA is
+        /// the SUSPENSION axis (chassis frame, usually down);
+        /// localAxisB is the AXLE (wheel frame, its spin axis). The
+        /// axle is captured at create, snapped exactly perpendicular
+        /// to the suspension axis; more than a small skew (|dot| >
+        /// 0.1) refuses loudly. enableLimit bounds the suspension
+        /// translation in meters; enableMotor drives the SPIN
+        /// (rad/s, torque cap): the drive axle. The suspension
+        /// spring is the 8-6b drive: m3Joint_SetSpring plus
+        /// m3Joint_SetTargetTranslation. m3Joint_GetAngle reads the
+        /// spin angle, m3Joint_GetTranslation the suspension travel.
+        /// Breakage (8-6a) applies unchanged: a capped axle snaps
+        /// deterministically and the wheel body rolls away.
         uint8_t genericLinear[3];
         uint8_t genericAngular[3];
         uint8_t genericMotorAxis;
