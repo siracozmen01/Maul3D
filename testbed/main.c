@@ -514,7 +514,7 @@ static tbScene SceneWalker(void)
     {
         m3BodyDef bd = m3DefaultBodyDef();
         bd.type = m3_dynamicBody;
-        bd.position = (m3Pos3){-2.0 + (double)k * 1.6, 0.45, -3.0};
+        bd.position = (m3Pos3){-2.0 + (double)k * 1.6, 1.46, -3.0};
         m3BodyId crate = m3CreateBody(scene.world, &bd);
         m3CreateBoxShape(crate, &crateShape, (m3Vec3){0.45f, 0.45f, 0.45f});
     }
@@ -530,7 +530,10 @@ static tbScene SceneWalker(void)
     m3Body_SetLinearVelocity(scene.ferry, (m3Vec3){0.0f, 0.0f, 1.2f});
 
     m3CharacterDef cd = m3DefaultCharacterDef();
-    cd.position = (m3Pos3){0.0, 1.0, 4.0};
+    // The keep's voxel floor slab tops at y = 1: the spawn stands ON
+    // it (the old y = 1.0 buried the capsule to the waist, invisible
+    // in wireframe, obvious the moment the renderer went solid).
+    cd.position = (m3Pos3){0.0, 2.2, 4.0};
     scene.hero = m3CreateCharacter(scene.world, &cd);
     return scene;
 }
@@ -669,13 +672,16 @@ static tbScene SceneJelly(void)
     scene.chunk = m3CreateVoxelChunkShape(keep, &sd, voxels, NULL, 1.0f);
 
     m3SoftBodyDef sb = m3DefaultSoftBodyDef();
-    sb.position = (m3Pos3){-5.6, 8.5, -0.6};
+    // A GENTLE drop onto the rampart: particles are not bullets, and
+    // a long fall moves them further per step than their own radius
+    // (the Windows run watched the custard sink into the wall).
+    sb.position = (m3Pos3){-5.6, 7.5, -0.6};
     sb.countX = 7;
     sb.countY = 7;
     sb.countZ = 7;
     sb.spacing = 0.22f;
     sb.compliance = 2.0e-4f;
-    sb.radius = 0.09f;
+    sb.radius = 0.1f;
     sb.particleMass = 0.08f;
     scene.jelly = m3CreateSoftBody(scene.world, &sb);
     return scene;
@@ -1048,29 +1054,35 @@ static void SpawnFragments(m3WorldId world)
                        0.5f * (m3real)(ev->boundsHi[2] - ev->boundsLo[2] + 1)};
         m3ShapeDef fd = m3DefaultShapeDef();
         fd.friction = 0.6f;
-        fd.density = ev->mass / (8.0f * half.x * half.y * half.z);
-        if (ev->voxelCount <= 8 && ev->recipeStart >= 0)
+        if (ev->recipeCount > 0 && ev->recipeStart >= 0 && ev->voxelCount <= 32)
         {
-            m3Vec3 cloud[64];
-            int32_t points = 0;
+            // A COMPOUND of unit boxes, one per voxel (10-1 offsets):
+            // the fragment keeps its true silhouette. The old recipe
+            // hulled small islands (a convex hull bevels an L into a
+            // chipped cube) and boxed big ones (an L became a slab);
+            // the Windows run caught both in one carve.
+            fd.density = ev->mass / (m3real)ev->voxelCount;
+            int32_t made = 0;
             for (int32_t k = 0; k < ev->recipeCount; ++k)
             {
                 uint16_t v = recipe[ev->recipeStart + k];
                 m3real x = (m3real)(v % 16);
                 m3real y = (m3real)((v / 16) % 16);
                 m3real z = (m3real)(v / 256);
-                for (int32_t c = 0; c < 8; ++c)
+                m3ShapeDef cell = fd;
+                cell.localPosition = (m3Vec3){x + 0.5f - ev->comChunk.x, y + 0.5f - ev->comChunk.y,
+                                              z + 0.5f - ev->comChunk.z};
+                if (m3Shape_IsValid(m3CreateBoxShape(body, &cell, (m3Vec3){0.5f, 0.5f, 0.5f})))
                 {
-                    cloud[points++] = (m3Vec3){x + ((c & 1) != 0 ? 1.0f : 0.0f) - ev->comChunk.x,
-                                               y + ((c & 2) != 0 ? 1.0f : 0.0f) - ev->comChunk.y,
-                                               z + ((c & 4) != 0 ? 1.0f : 0.0f) - ev->comChunk.z};
+                    made += 1;
                 }
             }
-            if (m3Shape_IsValid(m3CreateHullShape(body, &fd, cloud, points)))
+            if (made > 0)
             {
                 continue;
             }
         }
+        fd.density = ev->mass / (8.0f * half.x * half.y * half.z);
         m3CreateBoxShape(body, &fd, half);
     }
 }
