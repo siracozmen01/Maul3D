@@ -116,19 +116,19 @@ extern "C"
     /// gears only and waits for the clutch to close between shifts.
     typedef struct m3DrivetrainDef
     {
-        int32_t curveCount;                       // 2..8 control points
-        m3real curveRpm[M3_DRIVETRAIN_MAX_CURVE]; // strictly ascending,
-                                                  // nonnegative
+        int32_t curveCount;                          // 2..8 control points
+        m3real curveRpm[M3_DRIVETRAIN_MAX_CURVE];    // strictly ascending,
+                                                     // nonnegative
         m3real curveTorque[M3_DRIVETRAIN_MAX_CURVE]; // newton meters at
                                                      // the crank
-        int32_t gearCount;                         // 1..6 forward gears
-        m3real gearRatio[M3_DRIVETRAIN_MAX_GEARS]; // crank turns per
-                                                   // wheel turn
-        m3real reverseRatio; // positive magnitude; 0 forbids reverse
-        m3real finalDrive;   // multiplies every gear
-        m3real shiftUpRpm;   // auto shift climbs above this
-        m3real shiftDownRpm; // auto shift drops below this
-        int32_t clutchSteps; // steps of torque cut per shift
+        int32_t gearCount;                           // 1..6 forward gears
+        m3real gearRatio[M3_DRIVETRAIN_MAX_GEARS];   // crank turns per
+                                                     // wheel turn
+        m3real reverseRatio;                         // positive magnitude; 0 forbids reverse
+        m3real finalDrive;                           // multiplies every gear
+        m3real shiftUpRpm;                           // auto shift climbs above this
+        m3real shiftDownRpm;                         // auto shift drops below this
+        int32_t clutchSteps;                         // steps of torque cut per shift
         bool autoShift;
         int32_t internalValue;
     } m3DrivetrainDef;

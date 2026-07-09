@@ -16,9 +16,8 @@
 #include <math.h>
 #include <string.h>
 
-#define M3_VEHICLE_COOKIE ((int32_t)(M3_COOKIE ^ ((int32_t)sizeof(m3VehicleDef) << 8) ^ 8))
-#define M3_DRIVETRAIN_COOKIE                                                                       \
-    ((int32_t)(M3_COOKIE ^ ((int32_t)sizeof(m3DrivetrainDef) << 8) ^ 12))
+#define M3_VEHICLE_COOKIE    ((int32_t)(M3_COOKIE ^ ((int32_t)sizeof(m3VehicleDef) << 8) ^ 8))
+#define M3_DRIVETRAIN_COOKIE ((int32_t)(M3_COOKIE ^ ((int32_t)sizeof(m3DrivetrainDef) << 8) ^ 12))
 
 // Freed and freshly created vehicles carry no drivetrain: the flat
 // force model is the default, and the hash walk skips these fields
@@ -272,7 +271,8 @@ void m3VehicleApplySuspension(m3World* world, float dt)
             // which is also the thrash brake.
             if (world->vehDtAutoShift[slot] != 0 && gear >= 1 && world->vehDtClutch[slot] == 0)
             {
-                if (rawRpm > world->vehDtShiftUp[slot] && gear < (int8_t)world->vehDtGearCount[slot])
+                if (rawRpm > world->vehDtShiftUp[slot] &&
+                    gear < (int8_t)world->vehDtGearCount[slot])
                 {
                     gear += 1;
                     world->vehDtGear[slot] = gear;
@@ -700,8 +700,7 @@ m3DrivetrainDef m3DefaultDrivetrainDef(void)
 bool m3VehicleDrivetrainInternal(m3World* world, int32_t slot, const m3DrivetrainDef* def)
 {
     if (def->curveCount < 2 || def->curveCount > M3_DRIVETRAIN_MAX_CURVE || def->gearCount < 1 ||
-        def->gearCount > M3_DRIVETRAIN_MAX_GEARS || def->clutchSteps < 0 ||
-        def->clutchSteps > 600)
+        def->gearCount > M3_DRIVETRAIN_MAX_GEARS || def->clutchSteps < 0 || def->clutchSteps > 600)
     {
         return false;
     }
@@ -724,10 +723,9 @@ bool m3VehicleDrivetrainInternal(m3World* world, int32_t slot, const m3Drivetrai
             return false;
         }
     }
-    if (!m3FiniteF(def->reverseRatio) || def->reverseRatio < 0.0f ||
-        !m3FiniteF(def->finalDrive) || def->finalDrive <= 0.0f || !m3FiniteF(def->shiftUpRpm) ||
-        !m3FiniteF(def->shiftDownRpm) || def->shiftDownRpm < 0.0f ||
-        def->shiftUpRpm <= def->shiftDownRpm)
+    if (!m3FiniteF(def->reverseRatio) || def->reverseRatio < 0.0f || !m3FiniteF(def->finalDrive) ||
+        def->finalDrive <= 0.0f || !m3FiniteF(def->shiftUpRpm) || !m3FiniteF(def->shiftDownRpm) ||
+        def->shiftDownRpm < 0.0f || def->shiftUpRpm <= def->shiftDownRpm)
     {
         return false;
     }
