@@ -555,3 +555,92 @@ m3BodyId m3Character_GetGroundBody(m3CharacterId characterId)
     }
     return (m3BodyId){under + 1, world->worldIndex0, world->bodyPool.generations[under]};
 }
+
+// The stance change (12-3): resize the capsule FEET ANCHORED. The
+// veto casts the GROWN capsule at its new pose through the exact
+// core every move uses (m3CastConvexClosestEx reports an initial
+// overlap as a fraction-zero hit, so a wall against a wider radius
+// refuses just like a pressing ceiling); the cast reaches one skin
+// upward so the standing gap survives the change. Shrinks skip the
+// veto by law: removing volume cannot create contact.
+bool m3CharacterStanceInternal(m3World* world, int32_t slot, m3real halfHeight, m3real radius)
+{
+    if (!m3FiniteF(halfHeight) || !m3FiniteF(radius) || halfHeight < 0.05f || radius < 0.05f ||
+        halfHeight > 10.0f || radius > 10.0f)
+    {
+        return false; // hostile dimensions never touch state
+    }
+    int32_t body = world->charBody[slot];
+    m3real oldHh = world->charHalfHeight[slot];
+    m3real oldR = world->charRadius[slot];
+    m3real rise = (halfHeight + radius) - (oldHh + oldR); // feet anchor
+    m3Pos3 newCenter = world->transforms[body].p;
+    newCenter.y += (double)rise;
+    int grows = halfHeight > oldHh || radius > oldR;
+    if (grows)
+    {
+        m3Vec3 points[2] = {{0.0f, halfHeight, 0.0f}, {0.0f, -halfHeight, 0.0f}};
+        m3RayHit hit = m3CastConvexClosestEx(world, newCenter, points, 2, radius,
+                                             (m3Vec3){0.0f, world->charSkin[slot], 0.0f}, body);
+        if (hit.hit)
+        {
+            return false; // the stand-up veto: something presses
+        }
+    }
+    world->charHalfHeight[slot] = halfHeight;
+    world->charRadius[slot] = radius;
+    int32_t shape = world->bodyShapeHead[body]; // the capsule is the
+                                                // character's only shape
+    world->shapeGeom[shape].v = (m3Vec3){0.0f, halfHeight, 0.0f};
+    world->shapeGeom[shape].v2 = (m3Vec3){0.0f, -halfHeight, 0.0f};
+    world->shapeGeom[shape].s = radius;
+    world->transforms[body].p = newCenter;
+    world->sleepTimes[body] = 0.0f;
+    // The grounded story stays honest through the resize (the same
+    // refresh a restore runs).
+    RefreshGroundingCore(world, slot);
+    return true;
+}
+
+bool m3Character_SetStance(m3CharacterId characterId, m3real halfHeight, m3real radius)
+{
+    m3World* world = m3WorldFromIndex0(characterId.world0);
+    int32_t slot = world != NULL ? m3CharacterSlot(world, characterId) : -1;
+    if (slot < 0)
+    {
+        return false;
+    }
+    if (!m3CharacterStanceInternal(world, slot, halfHeight, radius))
+    {
+        return false; // vetoed or hostile: never journals
+    }
+    if (world->journalActive != 0)
+    {
+        struct
+        {
+            m3CharacterId id;
+            m3real halfHeight;
+            m3real radius;
+        } record;
+        memset(&record, 0, sizeof(record));
+        record.id = characterId;
+        record.halfHeight = halfHeight;
+        record.radius = radius;
+        m3JournalRecord(world, m3_opCharacterStance, &record, (int32_t)sizeof(record));
+    }
+    return true;
+}
+
+void m3Character_GetStance(m3CharacterId characterId, m3real* halfHeight, m3real* radius)
+{
+    m3World* world = m3WorldFromIndex0(characterId.world0);
+    int32_t slot = world != NULL ? m3CharacterSlot(world, characterId) : -1;
+    if (halfHeight != NULL)
+    {
+        *halfHeight = slot >= 0 ? world->charHalfHeight[slot] : 0.0f;
+    }
+    if (radius != NULL)
+    {
+        *radius = slot >= 0 ? world->charRadius[slot] : 0.0f;
+    }
+}

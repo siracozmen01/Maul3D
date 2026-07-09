@@ -325,6 +325,11 @@ target_link_libraries(test_wheeljoint PRIVATE maul3d)
 maul3d_apply_flags(test_wheeljoint)
 add_test(NAME wheeljoint COMMAND test_wheeljoint)
 
+add_executable(test_stance test/test_stance.c)
+target_link_libraries(test_stance PRIVATE maul3d)
+maul3d_apply_flags(test_stance)
+add_test(NAME stance COMMAND test_stance)
+
 add_executable(test_fuzz test/test_fuzz.c)
 target_link_libraries(test_fuzz PRIVATE maul3d)
 maul3d_apply_flags(test_fuzz)

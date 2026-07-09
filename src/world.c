@@ -1554,6 +1554,31 @@ static bool JournalReplayApply(m3World* world, const void* data, int32_t size)
             m3CharacterMoveInternal(world, slot, record.translation);
             break;
         }
+        case m3_opCharacterStance:
+        {
+            struct
+            {
+                m3CharacterId id;
+                m3real halfHeight;
+                m3real radius;
+            } record;
+            if (bytes != (int32_t)sizeof(record))
+            {
+                return false;
+            }
+            memcpy(&record, payload, sizeof(record));
+            record.id.world0 = world->worldIndex0;
+            int32_t slot = m3CharacterSlot(world, record.id);
+            if (slot < 0 ||
+                !m3CharacterStanceInternal(world, slot, record.halfHeight, record.radius))
+            {
+                // A journaled stance was APPLIED at record time; a
+                // replay that cannot re-apply it (fuzzed bytes, a
+                // diverged world) fails loudly.
+                return false;
+            }
+            break;
+        }
         case m3_opCreateVehicle:
         {
             struct

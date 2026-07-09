@@ -151,6 +151,7 @@ typedef enum m3Op
     m3_opSetSurfaceVelocity = 61,   // shape conveyor velocity        // world toggle
     m3_opVehicleDrivetrain = 62,    // vehicle + drivetrain def (12-1)
     m3_opVehicleGear = 63,          // vehicle + gear select
+    m3_opCharacterStance = 64,      // character + halfHeight + radius (12-3)
 } m3Op;
 
 // Immutable interned hull data (lifetime 3): vertices, face planes,
@@ -931,6 +932,7 @@ void m3VoxelBoundsHull(m3Vec3 lo, m3Vec3 hi, m3HullData* out);
 int32_t m3CreateCharacterInternal(m3World* world, const m3CharacterDef* def);
 void m3DestroyCharacterInternal(m3World* world, int32_t slot);
 void m3CharacterMoveInternal(m3World* world, int32_t slot, m3Vec3 translation);
+bool m3CharacterStanceInternal(m3World* world, int32_t slot, m3real halfHeight, m3real radius);
 // Re-evaluate grounding in place (no displacement): the voxel edit
 // path calls this so a carved floor drops its tenants the same
 // step (4-5).

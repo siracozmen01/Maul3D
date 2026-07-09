@@ -78,6 +78,22 @@ extern "C"
     /// dynamic fragments all ferry their riders (4-6).
     M3_API m3BodyId m3Character_GetGroundBody(m3CharacterId characterId);
 
+    /// Stance (12-3): resize the capsule in place, FEET ANCHORED
+    /// (the center moves so the capsule bottom stays level; a mid
+    /// air crouch therefore lands shorter, not higher). Shrinking
+    /// always applies. Growing runs the stand-up veto: the grown
+    /// capsule is cast at its new pose through the same core every
+    /// move uses, and ANY contact within the skin (a pressing
+    /// ceiling, a wall against a wider radius) refuses the whole
+    /// change and returns false; stance is untouched. Journaled
+    /// only when applied; the veto's refusal is bit-deterministic
+    /// so twins and replays refuse together. Stance is state:
+    /// snapshotted, hashed, rolled back like everything else.
+    M3_API bool m3Character_SetStance(m3CharacterId characterId, m3real halfHeight, m3real radius);
+    /// Read the live stance (zeros on a stale id).
+    M3_API void m3Character_GetStance(m3CharacterId characterId, m3real* halfHeight,
+                                      m3real* radius);
+
     static const m3CharacterId m3_nullCharacterId = {0, 0, 0};
 
 #ifdef __cplusplus
