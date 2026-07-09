@@ -145,7 +145,8 @@ typedef enum m3Op
     m3_opJointSetTarget = 57,       // joint + scalar + quat drive target
     m3_opDestroyShape = 58,         // shape id (10-4: the red team
                                     // found bodies could shed shapes
-                                    // only by dying)        // world toggle
+                                    // only by dying)
+    m3_opSoftBodyAnchorSoft = 59,   // lattice<->lattice pin (11-2)        // world toggle
 } m3Op;
 
 // Immutable interned hull data (lifetime 3): vertices, face planes,
@@ -618,6 +619,14 @@ typedef struct m3World
     int32_t* softAnchorBody;
     uint16_t* softAnchorGen;
     m3Vec3* softAnchorLocal;
+    // Soft-to-soft anchors (11-2): lattice A's particle pinned to
+    // lattice B's particle, released silently when EITHER side
+    // dies (the 7-3 liveness lesson, both directions).
+    int32_t* softSoftCount;     // per slot (owner = LOWER slot)
+    int32_t* softSoftParticleA; // cap * M3_SOFTBODY_MAX_ANCHORS
+    int32_t* softSoftSlotB;
+    uint16_t* softSoftGenB;
+    int32_t* softSoftParticleB;
 
     // Generic 6-DOF state (4-3): packed modes (2 bits per axis,
     // linear 0..5, angular 6..11, motor axis 12..15) and per-axis
@@ -1056,6 +1065,8 @@ void m3DestroySoftBodyInternal(m3World* world, int32_t slot);
 void m3SoftBodyPinInternal(m3World* world, int32_t slot, int32_t particle);
 void m3SoftBodyPass(m3World* world, float dt, int32_t substeps);
 void m3SoftBodyAnchorInternal(m3World* world, int32_t slot, int32_t particle, int32_t body);
+void m3SoftBodyAnchorSoftInternal(m3World* world, int32_t slotA, int32_t particleA, int32_t slotB,
+                                  int32_t particleB);
 m3RayHit m3RayClosestInternalEx(m3World* world, m3Pos3 origin, m3Vec3 translation,
                                 int32_t ignoreBody);
 m3RayHit m3RayClosestFiltered(m3World* world, m3Pos3 origin, m3Vec3 translation, int32_t ignoreBody,

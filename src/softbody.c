@@ -74,6 +74,7 @@ int32_t m3CreateSoftBodyInternal(m3World* world, const m3SoftBodyDef* def)
     world->softParticleCount[slot] = count;
     world->softEdgeCount[slot] = 0;
     world->softAnchorCount[slot] = 0;
+    world->softSoftCount[slot] = 0;
     world->softCompliance[slot] = def->compliance;
     world->softRadius[slot] = def->radius;
     world->softGravityScale[slot] = def->gravityScale;
@@ -160,6 +161,7 @@ void m3DestroySoftBodyInternal(m3World* world, int32_t slot)
         world->softEdgeB[k] = 0;
         world->softEdgeRest[k] = 0.0f;
     }
+    world->softSoftCount[slot] = 0;
     for (int32_t a = 0; a < world->softAnchorCount[slot]; ++a)
     {
         int32_t k = slot * M3_SOFTBODY_MAX_ANCHORS + a;
@@ -754,6 +756,50 @@ void m3SoftBodyPass(m3World* world, float dt, int32_t substeps)
                 }
             }
         }
+
+        // Soft-to-soft anchors (11-2): position equality between two
+        // lattices' particles, split by inverse mass, canonical
+        // owner order (the lower slot holds the pin). EITHER side
+        // dying releases the pin silently: the 7-3 liveness lesson
+        // applied in both directions.
+        for (int32_t sa = 0; sa < world->softPool.maxIndex; ++sa)
+        {
+            if (world->softPool.alive[sa] == 0)
+            {
+                continue;
+            }
+            int32_t pins = world->softSoftCount[sa];
+            for (int32_t a = 0; a < pins; ++a)
+            {
+                int32_t ak = sa * M3_SOFTBODY_MAX_ANCHORS + a;
+                int32_t sb = world->softSoftSlotB[ak];
+                if (sb < 0 || world->softPool.alive[sb] == 0 ||
+                    world->softPool.generations[sb] != world->softSoftGenB[ak])
+                {
+                    continue; // the far lattice died: silent release
+                }
+                int32_t ka = sa * M3_SOFTBODY_MAX_PARTICLES + world->softSoftParticleA[ak];
+                int32_t kb = sb * M3_SOFTBODY_MAX_PARTICLES + world->softSoftParticleB[ak];
+                m3real wa = world->softInvMass[ka];
+                m3real wb = world->softInvMass[kb];
+                m3real wSum = wa + wb;
+                if (wSum <= 0.0f)
+                {
+                    continue; // both pinned rigid: nothing to split
+                }
+                m3Vec3 d = {(m3real)(world->softPos[kb].x - world->softPos[ka].x),
+                            (m3real)(world->softPos[kb].y - world->softPos[ka].y),
+                            (m3real)(world->softPos[kb].z - world->softPos[ka].z)};
+                m3Vec3 moveA = m3MulSV3(wa / wSum, d);
+                m3Vec3 moveB = m3MulSV3(-wb / wSum, d);
+                world->softPos[ka].x += (double)moveA.x;
+                world->softPos[ka].y += (double)moveA.y;
+                world->softPos[ka].z += (double)moveA.z;
+                world->softPos[kb].x += (double)moveB.x;
+                world->softPos[kb].y += (double)moveB.y;
+                world->softPos[kb].z += (double)moveB.z;
+            }
+        }
     }
 }
 
@@ -856,6 +902,60 @@ void m3SoftBodyAnchorInternal(m3World* world, int32_t slot, int32_t particle, in
     world->softAnchorGen[ak] = world->bodyPool.generations[body];
     world->softAnchorLocal[ak] = m3InvRotateVec3(bxf->q, rel);
     world->softAnchorCount[slot] = a + 1;
+}
+
+void m3SoftBodyAnchorSoftInternal(m3World* world, int32_t slotA, int32_t particleA, int32_t slotB,
+                                  int32_t particleB)
+{
+    // The LOWER slot owns the pin: one canonical home per pair.
+    if (slotB < slotA)
+    {
+        int32_t ts = slotA;
+        slotA = slotB;
+        slotB = ts;
+        int32_t tp = particleA;
+        particleA = particleB;
+        particleB = tp;
+    }
+    int32_t a = world->softSoftCount[slotA];
+    int32_t ak = slotA * M3_SOFTBODY_MAX_ANCHORS + a;
+    world->softSoftParticleA[ak] = particleA;
+    world->softSoftSlotB[ak] = slotB;
+    world->softSoftGenB[ak] = world->softPool.generations[slotB];
+    world->softSoftParticleB[ak] = particleB;
+    world->softSoftCount[slotA] = a + 1;
+}
+
+void m3SoftBody_AnchorToSoft(m3SoftBodyId softIdA, int32_t particleA, m3SoftBodyId softIdB,
+                             int32_t particleB)
+{
+    m3World* world = m3WorldFromIndex0(softIdA.world0);
+    int32_t slotA = world != NULL ? m3SoftBodySlot(world, softIdA) : -1;
+    int32_t slotB = world != NULL ? m3SoftBodySlot(world, softIdB) : -1;
+    if (slotA < 0 || slotB < 0 || slotA == slotB || particleA < 0 || particleB < 0 ||
+        particleA >= world->softParticleCount[slotA] ||
+        particleB >= world->softParticleCount[slotB] ||
+        world->softSoftCount[slotA < slotB ? slotA : slotB] >= M3_SOFTBODY_MAX_ANCHORS)
+    {
+        return; // stale, self-pin, out of range, or full: quiet no-op
+    }
+    if (world->journalActive != 0)
+    {
+        struct
+        {
+            m3SoftBodyId idA;
+            int32_t particleA;
+            m3SoftBodyId idB;
+            int32_t particleB;
+        } record;
+        memset(&record, 0, sizeof(record));
+        record.idA = softIdA;
+        record.particleA = particleA;
+        record.idB = softIdB;
+        record.particleB = particleB;
+        m3JournalRecord(world, m3_opSoftBodyAnchorSoft, &record, (int32_t)sizeof(record));
+    }
+    m3SoftBodyAnchorSoftInternal(world, slotA, particleA, slotB, particleB);
 }
 
 void m3SoftBody_AnchorParticle(m3SoftBodyId softId, int32_t particle, m3BodyId bodyId)

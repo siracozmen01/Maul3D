@@ -22,7 +22,8 @@
 #endif
 
 #define M3_SNAPSHOT_MAGIC   0x4D33534Eu // 'M3SN'
-#define M3_SNAPSHOT_VERSION 39u
+#define M3_SNAPSHOT_VERSION 40u
+// v40: soft-to-soft anchors (11-2).
 // v39: mesh content went count-derived (10-3): variable blocks
 //      replace the fixed mesh slab, reversing the 2b-9 deviation.
 // v38: hull capacity 64 (10-2): bigger hull blocks, same law.
@@ -324,6 +325,15 @@ static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3Wal
              world->softBodyCapacity * M3_SOFTBODY_MAX_ANCHORS * (int32_t)sizeof(uint16_t));
     M3_BLOCK(world->softAnchorLocal,
              world->softBodyCapacity * M3_SOFTBODY_MAX_ANCHORS * (int32_t)sizeof(m3Vec3));
+    M3_BLOCK(world->softSoftCount, world->softBodyCapacity * (int32_t)sizeof(int32_t));
+    M3_BLOCK(world->softSoftParticleA,
+             world->softBodyCapacity * M3_SOFTBODY_MAX_ANCHORS * (int32_t)sizeof(int32_t));
+    M3_BLOCK(world->softSoftSlotB,
+             world->softBodyCapacity * M3_SOFTBODY_MAX_ANCHORS * (int32_t)sizeof(int32_t));
+    M3_BLOCK(world->softSoftGenB,
+             world->softBodyCapacity * M3_SOFTBODY_MAX_ANCHORS * (int32_t)sizeof(uint16_t));
+    M3_BLOCK(world->softSoftParticleB,
+             world->softBodyCapacity * M3_SOFTBODY_MAX_ANCHORS * (int32_t)sizeof(int32_t));
     M3_BLOCK(world->softPool.generations, world->softBodyCapacity * (int32_t)sizeof(uint16_t));
     M3_BLOCK(world->softPool.alive, world->softBodyCapacity * (int32_t)sizeof(uint8_t));
     M3_BLOCK(world->softPool.freeQueue, world->softBodyCapacity * (int32_t)sizeof(int32_t));
@@ -812,6 +822,16 @@ uint64_t m3World_Hash(m3WorldId worldId)
             h = m3Hash64(h, &world->softAnchorBody[k], 4);
             h = m3Hash64(h, &world->softAnchorGen[k], 2);
             h = m3Hash64(h, &world->softAnchorLocal[k], (int32_t)sizeof(m3Vec3));
+        }
+        // Soft-to-soft anchors fold off-empty (additive rule).
+        int32_t sc = world->softSoftCount[i];
+        for (int32_t a = 0; a < sc; ++a)
+        {
+            int32_t k = i * M3_SOFTBODY_MAX_ANCHORS + a;
+            h = m3Hash64(h, &world->softSoftParticleA[k], 4);
+            h = m3Hash64(h, &world->softSoftSlotB[k], 4);
+            h = m3Hash64(h, &world->softSoftGenB[k], 2);
+            h = m3Hash64(h, &world->softSoftParticleB[k], 4);
         }
     }
     for (int32_t i = 0; i < world->vehPool.maxIndex; ++i)

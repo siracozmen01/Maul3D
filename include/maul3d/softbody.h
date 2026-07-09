@@ -73,6 +73,14 @@ extern "C"
     /// soft body) are quiet no-ops.
     M3_API void m3SoftBody_AnchorParticle(m3SoftBodyId softId, int32_t particle, m3BodyId bodyId);
 
+    /// Pin a particle of one lattice to a particle of ANOTHER
+    /// lattice (11-2): a position equality split by inverse mass,
+    /// solved each substep after soft-vs-soft contact. Released
+    /// silently when EITHER lattice dies. Journaled; the pin lives
+    /// in the lower slot's table (one canonical home per pair).
+    M3_API void m3SoftBody_AnchorToSoft(m3SoftBodyId softIdA, int32_t particleA,
+                                        m3SoftBodyId softIdB, int32_t particleB);
+
     M3_API int32_t m3SoftBody_GetParticleCount(m3SoftBodyId softId);
     M3_API m3Pos3 m3SoftBody_GetParticlePosition(m3SoftBodyId softId, int32_t particle);
 

@@ -280,6 +280,11 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     M3_ALLOC(world->softAnchorBody, def->softBodyCapacity * M3_SOFTBODY_MAX_ANCHORS, int32_t);
     M3_ALLOC(world->softAnchorGen, def->softBodyCapacity * M3_SOFTBODY_MAX_ANCHORS, uint16_t);
     M3_ALLOC(world->softAnchorLocal, def->softBodyCapacity * M3_SOFTBODY_MAX_ANCHORS, m3Vec3);
+    M3_ALLOC(world->softSoftCount, def->softBodyCapacity, int32_t);
+    M3_ALLOC(world->softSoftParticleA, def->softBodyCapacity * M3_SOFTBODY_MAX_ANCHORS, int32_t);
+    M3_ALLOC(world->softSoftSlotB, def->softBodyCapacity * M3_SOFTBODY_MAX_ANCHORS, int32_t);
+    M3_ALLOC(world->softSoftGenB, def->softBodyCapacity * M3_SOFTBODY_MAX_ANCHORS, uint16_t);
+    M3_ALLOC(world->softSoftParticleB, def->softBodyCapacity * M3_SOFTBODY_MAX_ANCHORS, int32_t);
     for (int32_t v = 0; v < def->vehicleCapacity; ++v)
     {
         world->vehChassis[v] = -1;
@@ -508,6 +513,11 @@ void m3DestroyWorld(m3WorldId worldId)
     m3Free(world->softAnchorBody);
     m3Free(world->softAnchorGen);
     m3Free(world->softAnchorLocal);
+    m3Free(world->softSoftCount);
+    m3Free(world->softSoftParticleA);
+    m3Free(world->softSoftSlotB);
+    m3Free(world->softSoftGenB);
+    m3Free(world->softSoftParticleB);
     m3Free(world->charGrounded);
     m3Free(world->charGroundNormal);
     m3Free(world->jointNextA);
@@ -1612,6 +1622,31 @@ static bool JournalReplayApply(m3World* world, const void* data, int32_t size)
                 return false;
             }
             m3SoftBodyAnchorInternal(world, slot, record.particle, body);
+            break;
+        }
+        case m3_opSoftBodyAnchorSoft:
+        {
+            struct
+            {
+                m3SoftBodyId idA;
+                int32_t particleA;
+                m3SoftBodyId idB;
+                int32_t particleB;
+            } record;
+            if (bytes != (int32_t)sizeof(record))
+            {
+                return false;
+            }
+            memcpy(&record, payload, sizeof(record));
+            record.idA.world0 = world->worldIndex0;
+            record.idB.world0 = world->worldIndex0;
+            int32_t slotA = m3SoftBodySlot(world, record.idA);
+            int32_t slotB = m3SoftBodySlot(world, record.idB);
+            if (slotA < 0 || slotB < 0 || slotA == slotB)
+            {
+                return false;
+            }
+            m3SoftBodyAnchorSoftInternal(world, slotA, record.particleA, slotB, record.particleB);
             break;
         }
         case m3_opApplyForce:

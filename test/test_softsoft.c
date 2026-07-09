@@ -200,11 +200,142 @@ static void TestMidContactRollback(void)
     CHECK(hashes[0] == hashes[1], "soft-soft twins are bit-identical");
 }
 
+static void TestRopeBridge(void)
+{
+    // The deep dive's showcase: a rope anchored between two pinned
+    // cloths carries a dropped rigid ball. Soft-vs-soft contact,
+    // soft-to-soft anchors, and rigid coupling in one scene.
+    m3WorldId world = PlaneWorld();
+    m3SoftBodyDef cd = m3DefaultSoftBodyDef();
+    cd.countX = 5;
+    cd.countY = 1;
+    cd.countZ = 5;
+    cd.spacing = 0.25f;
+    cd.radius = 0.1f;
+    cd.position = (m3Pos3){-2.2, 2.0, -0.5};
+    m3SoftBodyId west = m3CreateSoftBody(world, &cd);
+    cd.position = (m3Pos3){1.2, 2.0, -0.5};
+    m3SoftBodyId east = m3CreateSoftBody(world, &cd);
+    for (int32_t c = 0; c < 25; c += 4)
+    {
+        m3SoftBody_PinParticle(west, c);
+        m3SoftBody_PinParticle(east, c);
+    }
+
+    m3SoftBodyDef rd = m3DefaultSoftBodyDef();
+    rd.countX = 9;
+    rd.countY = 1;
+    rd.countZ = 1;
+    rd.spacing = 0.25f;
+    rd.radius = 0.09f;
+    rd.particleMass = 0.3f;
+    rd.position = (m3Pos3){-1.1, 2.05, 0.0};
+    m3SoftBodyId rope = m3CreateSoftBody(world, &rd);
+    // Tie the rope's ends to the inner edges of the two cloths.
+    m3SoftBody_AnchorToSoft(rope, 0, west, 12);
+    m3SoftBody_AnchorToSoft(rope, 8, east, 10);
+
+    m3BodyDef bd = m3DefaultBodyDef();
+    bd.type = m3_dynamicBody;
+    bd.position = (m3Pos3){0.0, 3.2, 0.0};
+    m3BodyId ball = m3CreateBody(world, &bd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    sd.density = 0.25f; // light enough for a soft bridge
+    m3Sphere s = {{0.0f, 0.0f, 0.0f}, 0.18f};
+    m3CreateSphereShape(ball, &sd, &s);
+
+    for (int32_t i = 0; i < 360; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+    }
+    double bally = m3Body_GetPosition(ball).y;
+    CHECK(bally > 0.6, "the bridge carries the ball above the floor");
+    m3Pos3 r0 = m3SoftBody_GetParticlePosition(rope, 0);
+    m3Pos3 r8 = m3SoftBody_GetParticlePosition(rope, 8);
+    m3Pos3 w12 = m3SoftBody_GetParticlePosition(west, 12);
+    m3Pos3 e10 = m3SoftBody_GetParticlePosition(east, 10);
+    double dw = sqrt((r0.x - w12.x) * (r0.x - w12.x) + (r0.y - w12.y) * (r0.y - w12.y) +
+                     (r0.z - w12.z) * (r0.z - w12.z));
+    double de = sqrt((r8.x - e10.x) * (r8.x - e10.x) + (r8.y - e10.y) * (r8.y - e10.y) +
+                     (r8.z - e10.z) * (r8.z - e10.z));
+    CHECK(dw < 0.05 && de < 0.05, "the anchors hold the rope to both cloths");
+    m3DestroyWorld(world);
+}
+
+static void TestAnchorDeathStorm(void)
+{
+    // Pins release SILENTLY when either side dies, mid-flight, in
+    // both directions, through replay onto identical bits.
+    static uint8_t journal[262144];
+    uint64_t hashes[2];
+    for (int32_t run = 0; run < 2; ++run)
+    {
+        m3WorldDef def = m3DefaultWorldDef();
+        def.bodyCapacity = 16;
+        def.shapeCapacity = 16;
+        def.softBodyCapacity = 4;
+        m3WorldId world = m3CreateWorld(&def);
+        bool recording = run == 0 && m3World_JournalBegin(world, journal, (int32_t)sizeof(journal));
+        m3BodyDef gd = m3DefaultBodyDef();
+        m3BodyId ground = m3CreateBody(world, &gd);
+        m3ShapeDef sg = m3DefaultShapeDef();
+        m3Plane fl = {{0.0f, 1.0f, 0.0f}, 0.0f};
+        m3CreatePlaneShape(ground, &sg, &fl);
+        m3SoftBodyDef sd = m3DefaultSoftBodyDef();
+        sd.countX = 3;
+        sd.countY = 1;
+        sd.countZ = 1;
+        sd.spacing = 0.3f;
+        sd.radius = 0.1f;
+        sd.position = (m3Pos3){0.0, 1.5, 0.0};
+        m3SoftBodyId a = m3CreateSoftBody(world, &sd);
+        sd.position = (m3Pos3){1.2, 1.5, 0.0};
+        m3SoftBodyId b = m3CreateSoftBody(world, &sd);
+        sd.position = (m3Pos3){2.4, 1.5, 0.0};
+        m3SoftBodyId c = m3CreateSoftBody(world, &sd);
+        m3SoftBody_PinParticle(a, 0);
+        m3SoftBody_AnchorToSoft(a, 2, b, 0);
+        m3SoftBody_AnchorToSoft(b, 2, c, 0);
+        for (int32_t i = 0; i < 150; ++i)
+        {
+            if (i == 50)
+            {
+                m3DestroySoftBody(b); // the MIDDLE of the chain dies
+            }
+            m3World_Step(world, 1.0f / 60.0f, 4);
+        }
+        // c lost its tether when b died: it must be on the floor.
+        double cy = m3SoftBody_GetParticlePosition(c, 0).y;
+        CHECK(cy < 0.3, "the freed lattice fell when its pin died");
+        double ay = m3SoftBody_GetParticlePosition(a, 0).y;
+        CHECK(ay > 1.3, "the pinned survivor hangs on");
+        uint64_t final = m3World_Hash(world);
+        hashes[run] = final;
+        if (recording)
+        {
+            int32_t bytes = m3World_JournalEnd(world);
+            CHECK(bytes > 0, "the death storm records");
+            m3WorldDef fdef = m3DefaultWorldDef();
+            fdef.bodyCapacity = 16;
+            fdef.shapeCapacity = 16;
+            fdef.softBodyCapacity = 4;
+            m3WorldId fresh = m3CreateWorld(&fdef);
+            CHECK(m3World_JournalReplay(fresh, journal, bytes), "the death storm replays");
+            CHECK(m3World_Hash(fresh) == final, "the replay is bit-identical");
+            m3DestroyWorld(fresh);
+        }
+        m3DestroyWorld(world);
+    }
+    CHECK(hashes[0] == hashes[1], "death storm twins are bit-identical");
+}
+
 int main(void)
 {
     TestJelliesRefuseToMerge();
     TestRopeDrapesOverCloth();
     TestMidContactRollback();
+    TestRopeBridge();
+    TestAnchorDeathStorm();
     if (s_failures == 0)
     {
         printf("test_softsoft: all green\n");
