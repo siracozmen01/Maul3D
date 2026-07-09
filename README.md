@@ -1,150 +1,80 @@
 # Maul3D
 
-A deterministic 3D rigid body physics engine for sandbox and
-destruction games. Written in C17 with a plain C API. MIT licensed.
-Zero dependencies.
+[![ci](https://github.com/siracozmen01/Maul3D/actions/workflows/ci.yml/badge.svg)](https://github.com/siracozmen01/Maul3D/actions/workflows/ci.yml)
 
-Sibling of [Maul2D](https://github.com/siracozmen01/Maul2D), which
-validated the solver core and the determinism discipline this engine
-is built on.
+A deterministic 3D physics engine for games. Written in C17 with a
+pure C API, zero dependencies, MIT licensed. The 3D sibling of
+[Maul2D](https://github.com/siracozmen01/Maul2D), built on the same
+constitution: the same inputs produce the same bits on every
+supported platform, and the engine is designed around that promise
+end to end.
 
-## Status: v1.0
-
-All planned phases are complete, and the destruction system proved
-the API as its first real consumer: the 1.x freeze is in effect.
-The engine simulates:
-
-- **Shapes**: spheres, boxes, capsules, convex hulls from point
-  clouds (built-in QuickHull with coplanar face merging and exact
-  mass integration), static triangle meshes with internal-edge ghost
-  filtering and baked edge convexity, heightfield chunks, and native
-  infinite planes.
-- **Bodies**: static, kinematic (commanded velocity, immovable by
-  contact), and dynamic, with full inertia tensors, offset centers of
-  mass, and the implicit gyroscopic term (long skinny bodies tumble
-  correctly and never gain energy).
-- **Solver**: the Soft Step scheme (soft constraints, speculative
-  contacts, relax pass, restitution pass, Coulomb disc friction) on
-  up to four-point manifolds, solved in graph-color order so hosts
-  can parallelize inside a color without moving a single bit.
-- **Collision**: SAT hull pairs with Gauss-map edge pruning, GJK
-  distance with warm-started simplex caching, exact deep-overlap
-  recovery (no EPA needed by construction), and real continuous
-  collision: fast bodies sweep against statics, bullets sweep against
-  dynamics and kinematics with both sweeps in the time-of-impact
-  kernel, meshes included.
-- **Joints**: spherical (with an optional shoulder cone and twist
-  limits), revolute (limits and a motor), and prismatic (limits and
-  a motor), all warm-started through the snapshot, journaled with
-  id-verified replay, and solved before contacts inside every
-  substep. The two hand-derived Jacobians are pinned by central
-  finite-difference gates.
-- **Queries**: closest and all-hits ray casts (sorted, capacity
-  bounded), sphere and capsule shape casts through the shared
-  time-of-impact kernel, point-inside tests, AABB and sphere
-  overlaps. Start-overlapped casts report fraction zero; rays are
-  front-face-only by contract.
-- **Sensors**: shapes that detect and never respond. Their begin and
-  end events ride the same canonical stream walk as contacts; they
-  wake nobody, stop nothing, and never sense each other.
-- **Debug draw**: a pure observer interface (segments and points
-  through host callbacks, fixed palette). A draw pass between two
-  snapshots leaves every byte identical, and the test suite holds
-  that promise on every commit.
-- **World machinery**: fat-AABB dynamic tree broadphase with a
-  brute-force referee, a per-mesh static BVH midphase (derived data,
-  rebuilt on restore, referee kept), islands with per-island sleep
-  (sleeping worlds are bit-frozen), contact begin/end events, and a
-  host-owned task interface (the library never spawns threads;
-  worker count never changes results).
-
-## The determinism promise
-
-Same inputs, same bits, everywhere. Every commit must hold four gates
-in CI, across three OSes, two ISAs, and four compilers, and the
-printed state hashes must match across every cell:
-
-1. **The golden scene.** A fixed pyramid scene plus droppers; every
-   cell must produce the identical state hash on every platform,
-   compiler, and SIMD backend.
-2. **Replay.** The same run twice is bit-identical, and a journaled
-   session (creates plus commands plus steps) replays bit for bit
-   into a fresh world, minted ids included.
-3. **Rollback.** Snapshot mid-flight, run on, restore, rerun: the
-   resimulated timeline is bit-identical, and a changed continuation
-   diverges (restore is total, resume is real simulation). The
-   snapshot format is portable and versioned, never a raw memory
-   image; SIMD width and worker count are deliberately not part of
-   the format.
-4. **Worker twins.** One worker or four, a real thread pool or none,
-   the hash never moves.
-
-Every capacity refusal is loud (a null id or a false return, never a
-crash, never a silent no-op), and the failure paths are themselves
-deterministic. Fast-math is refused at configure time.
-
-## Quick start
-
-```c
-#include "maul3d/shape.h"
-
-m3WorldDef wd = m3DefaultWorldDef();
-m3WorldId world = m3CreateWorld(&wd);
-
-m3BodyDef ground = m3DefaultBodyDef();
-m3BodyId floor = m3CreateBody(world, &ground);
-m3ShapeDef sd = m3DefaultShapeDef();
-m3Plane plane = {{0.0f, 1.0f, 0.0f}, 0.0f};
-m3CreatePlaneShape(floor, &sd, &plane);
-
-m3BodyDef bd = m3DefaultBodyDef();
-bd.type = m3_dynamicBody;
-bd.position = (m3Pos3){0.0, 5.0, 0.0};
-m3BodyId body = m3CreateBody(world, &bd);
-m3CreateBoxShape(body, &sd, (m3Vec3){0.5f, 0.5f, 0.5f});
-
-for (int i = 0; i < 300; ++i)
-{
-    m3World_Step(world, 1.0f / 60.0f, 4);
-}
-
-m3Pos3 p = m3Body_GetPosition(body); // resting at y = 0.5
-m3DestroyWorld(world);
-```
-
-Snapshot and rollback:
+Maul3D's difference is a contract, not a feature flag. Snapshots
+restore worlds bit-exactly and resume identically (the rollback
+most engines explicitly do not promise), a command journal records
+sessions and replays them byte for byte with id verification and
+atomic backout, and CI fails on a single differing bit across
+seven platform cells spanning x64, arm64, MSVC, sanitizers and
+portable scalar. Rollback netcode, deterministic lockstep,
+kill-cam replays and server-verified simulation stop being
+research projects and become four lines of code:
 
 ```c
 int32_t size = m3World_SnapshotSize(world);
-void* buffer = malloc(size);
-m3World_Snapshot(world, buffer, size); // save the exact world
-// ... run steps, mispredict, whatever ...
-m3World_Restore(world, buffer, size);  // bit-exact rewind
+m3World_Snapshot(world, buffer, size);
+/* ... mispredicted steps ... */
+m3World_Restore(world, buffer, size); // bit-exact resimulation from here
 ```
 
-## Testbed
+## What is in the box
 
-An interactive playground lives in `testbed/`: thirteen scenes
-across benchmarks, destruction, vehicles (raycast, geared, and
-wheel-joint carts), characters (including the crouch veto), soft
-bodies in gusting wind, and a rolling heightfield. Solid shading
-under one sun with planar shadows over a sky-and-ground stage, a
-side panel with solver and draw controls, a scene browser (ENTER),
-bullets on click, live voxel carving with host-spawned fragments,
-a held-R rewind that walks time backward through a snapshot ring,
-and a Recording panel that seals the session into an M3J1 replay
-and VERIFIES it bit-exact on demand (the engine's whole point, on
-buttons). It uses raylib (fetched and pinned; the viewer is
-outside the determinism contract, the engine stays
-zero-dependency):
+- **Rigid bodies**: spheres, capsules, convex hulls (64 vertices),
+  triangle meshes (65k triangles with a BVH), heightfields, native
+  infinite planes, and compound children with local transforms;
+  static, kinematic, dynamic; forces, impulses, motion locks,
+  kinematic targets, runtime type switching, per-shape materials
+  with conveyor surface velocities, gusting wind fields.
+- **Voxel destruction inside the rollback contract**: chunked
+  voxel shapes with merged-box collision, journaled carving,
+  fracture events with island recipes for host-spawned fragments,
+  voxel CCD, and seam welding; carve the floor and the character,
+  the car, and the rope all react the same step.
+- **A soft-step solver** adapted from the Box2D v3 lineage:
+  speculative contacts, warm starting, graph coloring, sub-steps;
+  hybrid f64 positions keep worlds exact far from the origin.
+- **Seven joint types**: spherical (with cone and twist limits),
+  revolute, prismatic, fixed, distance, a 6-DOF generic, and a
+  composed wheel joint (suspension slide plus free spin); limits,
+  motors, springs with position targets, constraint force
+  readback, and built-in BREAKING as a deterministic in-step
+  state transition with events.
+- **Vehicles two ways**: an arcade raycast car with suspension,
+  tire friction circles, and a full drivetrain (pinned torque
+  curve, gearbox with deterministic auto shift, clutch), or rigid
+  wheel-joint carts for trucks over rubble.
+- **A character controller**: collide-and-slide capsule with step
+  climbing, slope limits, ground snapping, moving-platform
+  carrying, dt-free pushing, and crouch/resize guarded by a
+  stand-up overlap veto.
+- **Soft bodies**: XPBD particle lattices (boxes, ropes, cloth
+  sheets) colliding with the rigid world and with EACH OTHER,
+  anchored to bodies or across lattices, driven by wind; all
+  inside the same snapshot, journal and hash contract.
+- **The replay studio**: the M3J1 container seals a snapshot plus
+  journal plus final hash into one artifact; the `m3replay` CLI
+  records, verifies, seeks, plays and DIFFS two runs to the exact
+  divergence frame; `m3lockstep` demonstrates two processes
+  staying bit-identical over exchanged inputs.
+- **Events and queries**: contact begin/end, sensors, hit events
+  with speed thresholds, body move events, joint break events,
+  pre-solve vetoes; rays, sphere/capsule/hull/box casts, overlap
+  queries, all filterable by category/mask/group and canonically
+  ordered.
+- **Continuous collision** for bullets, island-based sleeping,
+  world tuning knobs, debug draw (wireframe and solid triangle
+  streams, both held by a draw-purity test).
 
-```
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DMAUL3D_BUILD_TESTBED=ON
-cmake --build build
-./build/testbed/testbed
-```
-
-## Build
+## Quick start
 
 ```
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -152,32 +82,66 @@ cmake --build build
 ctest --test-dir build
 ```
 
-No dependencies. `-DMAUL3D_SIMD=scalar` forces the scalar backend,
-which must match the vector backends bit for bit; `-DMAUL3D_SANITIZE=ON`
-adds ASan and UBSan.
+No dependencies. A C17 compiler is required. The default build
+uses SIMD kernels with a portable scalar fallback
+(`-DMAUL3D_SIMD=scalar`) that produces bit-identical results, and
+CI enforces that equality on every commit.
 
-## Performance
+The interactive testbed (raylib, viewer only, outside the engine's
+dependency surface) builds with `-DMAUL3D_BUILD_TESTBED=ON`:
+thirteen scenes across benchmarks, voxel destruction, three kinds
+of vehicle, a playable character with the crouch veto, cloth in
+gusting wind over a conveyor, and a rolling heightfield; solid
+shading with shadows, a solver panel, and a Recording panel that
+seals the live session into an M3J1 replay and verifies it
+bit-exact on a button. Hold R and time runs backward through a
+snapshot ring, bit for bit.
 
-The benchmark harness ships in `bench/` and is never a test gate
-(wall time is not deterministic; the printed state hashes are). On
-one mid-range x86-64 core, Release, 300 steps:
+## Determinism and performance
 
-| scene     | bodies                      | ms/step |
-| --------- | --------------------------- | ------- |
-| pyramid   | 91 spheres on a plane       | 0.12    |
-| hulljam   | 80 hulls jammed in a pit    | 0.53    |
-| meshfield | rain on a 1922-triangle field | 0.38  |
+Determinism here means pinned IEEE arithmetic (no fast math, no FP
+contraction), fixed tessellations and canonical ordering on every
+path, journaled defs treated as untrusted bytes on replay, and a
+golden world hash that has moved exactly twice in the engine's
+life, both times argued on the record. Every commit runs 39 test
+suites in three build flavors plus a shared-library cell, ASAN and
+UBSAN, cross-platform hash equality across all cells, and seven
+pinned benchmark hashes that must not move: a 5000-body city block
+with destruction, a 10k-body smoke test with twin-run matching,
+mesh and hull rain fields, and the classic pyramid.
 
-## Roadmap
+## Status and stability
 
-- Voxel destruction, the reason this engine exists: chunked voxel
-  shapes with payloads and fill fractions, journaled edits, seam
-  welding, voxel CCD, and deterministic fracture as state
-  transitions inside the rollback delta, with fragment-spawn events
-  the host turns into bodies (QuickHull included). No other engine
-  ships rollback-native deterministic destruction.
-- The 1.x law: the public API is frozen for the 1.x series.
+Current release: 1.9. The 1.x API surface is frozen: functions and
+defs may be added in minor releases, but existing signatures,
+semantics and id layouts do not change until a 2.0. Defs are
+cookie-guarded, so a stale compiled caller fails loudly instead of
+subtly. Snapshots and journal tapes are versioned artifacts of a
+single library version and refuse loudly across versions.
 
-## License
+## Learn more
 
-MIT. See LICENSE.
+- [The manual](docs/manual.md): the engine-host contract, chapter
+  by chapter: rollback, the journal, destruction, vehicles, the
+  character, soft bodies, the replay studio, lockstep networking,
+  and the integration checklist.
+- [The changelog](docs/changelog.md): every release with its
+  determinism ledger, including the convictions the road collected
+  and what they cost.
+- [CONTRIBUTING.md](CONTRIBUTING.md) for contributions.
+- [THIRD_PARTY.md](THIRD_PARTY.md) for adapted-code licenses.
+- [Maul2D](https://github.com/siracozmen01/Maul2D): the 2D sibling,
+  same constitution, with particle fluids and a browser-playable
+  testbed.
+
+## Acknowledgments
+
+Maul3D stands on the shoulders of [Box2D and Box3D](https://github.com/erincatto)
+by Erin Catto (MIT): the soft-step solver structure, joint
+formulations, and several collision kernels are adapted from that
+lineage, with adaptations noted in the sources and licensed in
+[THIRD_PARTY.md](THIRD_PARTY.md). The determinism architecture
+(hybrid f64 positions, snapshot rollback, the command journal,
+config-hash refusal, cross-platform hash gating) and the
+voxel-destruction-inside-rollback design are Maul's own, shared
+with [Maul2D](https://github.com/siracozmen01/Maul2D).

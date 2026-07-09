@@ -20,7 +20,7 @@ jobs:
         run: |
           mkdir pkg
           cp build/testbed/Release/testbed.exe pkg/
-          cp README.md LICENSE MANUAL.md pkg/
+          cp README.md LICENSE docs/manual.md pkg/
           cd pkg && 7z a ../maul3d-testbed-windows.zip .
       - uses: actions/upload-artifact@v4
         with:
