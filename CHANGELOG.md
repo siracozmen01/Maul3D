@@ -4,6 +4,31 @@ All notable changes to Maul3D. Versions are tags on green CI SHAs;
 every entry's determinism gates were verified across all CI cells at
 tag time.
 
+## v1.6 (2026-07-08)
+
+The replay studio: the moat made visible. Nobody else can ship a
+bit-exact scrubber, because nobody else has the bit contract.
+
+- The M3J1 container (include/maul3d/replay.h): a pure-memory
+  codec for [initial snapshot + journal] sessions carrying step
+  and op counts and the recorder's final hash. The library never
+  touches files; refusals are loud and touch nothing.
+- tools/m3replay: record, info, verify (MATCH or DIVERGED with a
+  nonzero exit), seek and play through a 30-step keyframe
+  scrubber that PROVES every landing against a straight-run
+  prefix hash, and diff: a prefix-hash binary search that names
+  the first divergent step and the worst bodies at it, backed by
+  m3World_DiffReport (a pure debug read, worst-first).
+- tools/m3lockstep: rollback networking as executable
+  documentation; an online peer absorbs hundreds of rollbacks
+  against an offline truth peer and every checkpoint hash
+  matches. MANUAL gained the networking chapter.
+- CI now runs the scrubber selftest, the divergence difftest, and
+  the lockstep sample in every cell on every commit; the fuzz law
+  batters the container with 200 bit-mutations under sanitizers.
+- Zero engine-step changes in the whole phase: golden and every
+  rev-21 bench pin stood from v1.5 to v1.6.
+
 ## v1.5 (2026-07-08)
 
 The table-stakes release: everything an engine evaluator checks

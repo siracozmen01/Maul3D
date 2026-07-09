@@ -172,11 +172,77 @@ static void TestSmallCapacity(void)
     free(blob);
 }
 
+static void TestFuzz(void)
+{
+    // The 9-5 fuzz law: 200 LCG bit-mutations of a valid container
+    // must never crash. Decode either refuses or yields a view; a
+    // view that decodes must survive restore + replay attempts on a
+    // fresh world (the atomic-replay guarantee backs out partial
+    // application). The sanitizer cell turns any slip into a
+    // failure.
+    int32_t bytes;
+    uint64_t recorded;
+    int32_t ops;
+    int32_t steps;
+    uint8_t* blob = RecordSession(&bytes, &recorded, &ops, &steps);
+    uint8_t* mutant = (uint8_t*)malloc((size_t)bytes);
+    // The container is snapshot-dominated, so pure-random offsets
+    // almost never touch the 32-byte header or the journal tail
+    // (the first draft proved it: 200 draws, zero framing hits).
+    // Half the mutations aim at the framing on purpose; the other
+    // half roam the whole container.
+    m3ReplayView valid;
+    CHECK(m3ReplayDecode(blob, bytes, &valid), "decode for the fuzz split");
+    int32_t journalStart = (int32_t)((const uint8_t*)valid.journal - blob);
+    uint32_t rng = 87654321u;
+    int32_t refused = 0;
+    int32_t survived = 0;
+    for (int32_t t = 0; t < 200; ++t)
+    {
+        memcpy(mutant, blob, (size_t)bytes);
+        rng = rng * 1664525u + 1013904223u;
+        int32_t where;
+        if (t % 2 == 0)
+        {
+            int32_t zone = 32 + (bytes - journalStart);
+            int32_t pick = (int32_t)(rng % (uint32_t)zone);
+            where = pick < 32 ? pick : journalStart + (pick - 32);
+        }
+        else
+        {
+            where = (int32_t)(rng % (uint32_t)bytes);
+        }
+        rng = rng * 1664525u + 1013904223u;
+        mutant[where] ^= (uint8_t)(1u << (rng % 8));
+        m3ReplayView view;
+        if (!m3ReplayDecode(mutant, bytes, &view))
+        {
+            refused += 1;
+            continue;
+        }
+        m3WorldDef def = Def();
+        m3WorldId world = m3CreateWorld(&def);
+        if (m3World_Restore(world, view.snapshot, view.snapshotBytes))
+        {
+            m3World_JournalReplay(world, view.journal, view.journalBytes);
+        }
+        m3DestroyWorld(world);
+        survived += 1;
+    }
+    // Every mutation lands somewhere; the split just has to add up
+    // and nothing above may crash or trip the sanitizers.
+    CHECK(refused + survived == 200, "every mutant either refused or survived");
+    CHECK(refused > 0, "at least some mutations hit the framing");
+    free(mutant);
+    free(blob);
+}
+
 int main(void)
 {
     TestRoundTrip();
     TestRefusals();
     TestSmallCapacity();
+    TestFuzz();
     if (s_failures == 0)
     {
         printf("test_replayfile: all green\n");

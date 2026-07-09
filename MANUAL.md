@@ -564,6 +564,24 @@ destroys the joint at the end of the step and emits the break
 event. Breakage is an in-step deterministic transition on
 purpose: a host poll would race the journal under rollback.
 
+## The replay studio
+
+An M3J1 file is [header | initial snapshot | journal], encoded
+and decoded by pure-memory calls in maul3d/replay.h; file IO
+belongs to hosts and tools (tools/m3replay is the reference
+consumer). The header carries step and op counts and the
+recorder's final hash, so verification is self-contained: restore
+the snapshot, replay the journal, compare hashes. A journal
+prefix cut at record boundaries is itself a valid journal; the
+scrubber in m3replay keyframes every 30 steps and re-steps to
+seek anywhere, proving each landing against a straight-run
+prefix hash. When two sessions disagree, m3replay diff finds the
+first divergent step by prefix-hash binary search and
+m3World_DiffReport names the worst bodies at it. Corrupt
+containers refuse loudly: the codec validates magic, version,
+exact lengths, record framing, and that the header's counts match
+its own stream.
+
 ## Lockstep and rollback networking
 
 The engine's bit contract makes the classic rollback recipe safe

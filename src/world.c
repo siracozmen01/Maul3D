@@ -9,10 +9,29 @@
 
 #include "world_internal.h"
 
+#include <stddef.h>
 #include <string.h>
 
 static m3World* s_worlds[M3_MAX_WORLDS];
 static uint16_t s_worldGenerations[M3_MAX_WORLDS];
+
+// Journaled defs are untrusted bytes (the fuzz law, 9-5): a
+// flipped bit in an embedded bool field is undefined even to LOAD
+// as _Bool, so every replay handler normalizes bool bytes through
+// uint8_t before the def is used as its C type. UBSAN convicted
+// the raw load on the container fuzzer's first day.
+static void NormalizeBoolByte(void* base, size_t offset)
+{
+    uint8_t* b = (uint8_t*)base + offset;
+    *b = *b != 0 ? 1 : 0;
+}
+
+static void NormalizeShapeDefBools(m3ShapeDef* def)
+{
+    NormalizeBoolByte(def, offsetof(m3ShapeDef, isSensor));
+    NormalizeBoolByte(def, offsetof(m3ShapeDef, enableHitEvents));
+    NormalizeBoolByte(def, offsetof(m3ShapeDef, enablePreSolveEvents));
+}
 
 m3World* m3WorldFromId(m3WorldId worldId)
 {
@@ -972,6 +991,7 @@ static bool JournalReplayApply(m3World* world, const void* data, int32_t size)
                 return false;
             }
             memcpy(&record, payload, sizeof(record));
+            NormalizeBoolByte(&record.def, offsetof(m3BodyDef, isBullet));
             int32_t index = m3CreateBodyInternal(world, &record.def);
             // Id determinism: the replayed world must mint the exact
             // id the original minted, or the replay is invalid.
@@ -1076,6 +1096,7 @@ static bool JournalReplayApply(m3World* world, const void* data, int32_t size)
             {
                 return false;
             }
+            NormalizeShapeDefBools(&record.def);
             int32_t index = m3CreateShapeInternal(world, bodyIndex, record.type, &record.geom,
                                                   &record.def, NULL, NULL, NULL);
             if (index < 0 || index + 1 != record.expected.index1 ||
@@ -1122,6 +1143,7 @@ static bool JournalReplayApply(m3World* world, const void* data, int32_t size)
                    (size_t)indexBytes);
             m3ShapeGeom geom;
             memset(&geom, 0, sizeof(geom));
+            NormalizeShapeDefBools(&record.def);
             int32_t index = m3CreateShapeInternal(world, bodyIndex, (uint8_t)m3_meshShape, &geom,
                                                   &record.def, NULL, mesh, NULL);
             m3Free(mesh);
@@ -1140,6 +1162,10 @@ static bool JournalReplayApply(m3World* world, const void* data, int32_t size)
                 return false;
             }
             memcpy(&record, payload, sizeof(record));
+            NormalizeBoolByte(&record.def, offsetof(m3JointDef, enableLimit));
+            NormalizeBoolByte(&record.def, offsetof(m3JointDef, enableMotor));
+            NormalizeBoolByte(&record.def, offsetof(m3JointDef, enableCone));
+            NormalizeBoolByte(&record.def, offsetof(m3JointDef, collideConnected));
             record.def.bodyA.world0 = world->worldIndex0;
             record.def.bodyB.world0 = world->worldIndex0;
             int32_t bodyA = m3BodySlot(world, record.def.bodyA);
@@ -1194,6 +1220,7 @@ static bool JournalReplayApply(m3World* world, const void* data, int32_t size)
             }
             m3ShapeGeom geom;
             memset(&geom, 0, sizeof(geom));
+            NormalizeShapeDefBools(&record.def);
             int32_t index = m3CreateShapeInternal(world, bodyIndex, (uint8_t)m3_hullShape, &geom,
                                                   &record.def, &rebuilt, NULL, NULL);
             if (index < 0 || index + 1 != record.expected.index1 ||
@@ -1247,6 +1274,7 @@ static bool JournalReplayApply(m3World* world, const void* data, int32_t size)
             m3ShapeGeom geom;
             memset(&geom, 0, sizeof(geom));
             geom.s = record.cellSize;
+            NormalizeShapeDefBools(&record.def);
             int32_t index = m3CreateShapeInternal(world, bodyIndex, (uint8_t)m3_voxelShape, &geom,
                                                   &record.def, NULL, NULL, chunk);
             m3Free(chunk);
@@ -1423,6 +1451,12 @@ static bool JournalReplayApply(m3World* world, const void* data, int32_t size)
                 return false;
             }
             memcpy(&record, payload, sizeof(record));
+            for (int32_t w = 0; w < M3_VEHICLE_MAX_WHEELS; ++w)
+            {
+                size_t wheelBase = offsetof(m3VehicleDef, wheels) + (size_t)w * sizeof(m3WheelDef);
+                NormalizeBoolByte(&record.def, wheelBase + offsetof(m3WheelDef, steerable));
+                NormalizeBoolByte(&record.def, wheelBase + offsetof(m3WheelDef, driven));
+            }
             record.def.chassis.world0 = world->worldIndex0;
             int32_t slot = m3CreateVehicleInternal(world, &record.def);
             if (slot < 0 || slot + 1 != record.expected.index1 ||
