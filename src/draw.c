@@ -432,9 +432,12 @@ static void SolidBoxFaces(const m3SolidContext* ctx, const m3Transform* xf, m3Ve
         c[k] = (m3Vec3){(k & 1) != 0 ? hi.x : lo.x, (k & 2) != 0 ? hi.y : lo.y,
                         (k & 4) != 0 ? hi.z : lo.z};
     }
-    // Six faces, CCW from outside.
-    static const int32_t faces[6][4] = {{1, 5, 7, 3}, {0, 2, 6, 4}, {2, 3, 7, 6},
-                                        {0, 4, 5, 1}, {4, 6, 7, 5}, {0, 1, 3, 2}};
+    // Six faces, CCW seen from OUTSIDE (verified by the cross
+    // product of each quad's first two edges: +x, -x, +y, -y, +z,
+    // -z; the first table was mirrored and Windows culling showed
+    // fort interiors through their own walls).
+    static const int32_t faces[6][4] = {{1, 3, 7, 5}, {0, 4, 6, 2}, {2, 6, 7, 3},
+                                        {0, 1, 5, 4}, {4, 5, 7, 6}, {0, 2, 3, 1}};
     for (int32_t f = 0; f < 6; ++f)
     {
         SolidTri(ctx, xf, c[faces[f][0]], c[faces[f][1]], c[faces[f][2]], color);

@@ -31,6 +31,7 @@
 #include "maul3d/softbody.h"
 #include "maul3d/vehicle.h"
 #include "raylib.h"
+#include "rlgl.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -149,7 +150,12 @@ static void FlushSolid(bool shadows)
 {
     if (shadows)
     {
-        Color ink = {20, 22, 30, 36};
+        // Sun-facing triangles only (half the layers, and a box
+        // casts one footprint instead of piling top and bottom
+        // faces into hatching), drawn with culling OFF because the
+        // planar projection is free to flip a winding.
+        Color ink = {20, 22, 30, 40};
+        rlDisableBackfaceCulling();
         for (int32_t i = 0; i < s_triCount; ++i)
         {
             const tbTri* t = &s_tris[i];
@@ -157,14 +163,14 @@ static void FlushSolid(bool shadows)
             {
                 continue; // ground-level faces cast nothing useful
             }
-            // Both windings: the projection can flip orientation and
-            // raylib culls back faces.
-            Vector3 pa = ShadowProject(t->a);
-            Vector3 pb = ShadowProject(t->b);
-            Vector3 pc = ShadowProject(t->c);
-            DrawTriangle3D(pa, pb, pc, ink);
-            DrawTriangle3D(pa, pc, pb, ink);
+            Vector3 n = TriNormal(t);
+            if (n.x * s_sun.x + n.y * s_sun.y + n.z * s_sun.z >= 0.0f)
+            {
+                continue; // back to the sun: its twin casts instead
+            }
+            DrawTriangle3D(ShadowProject(t->a), ShadowProject(t->b), ShadowProject(t->c), ink);
         }
+        rlEnableBackfaceCulling();
     }
     for (int32_t i = 0; i < s_triCount; ++i)
     {
@@ -766,23 +772,20 @@ static tbScene SceneHill(void)
     AddFloor(scene.world);
     m3ShapeDef sd = m3DefaultShapeDef();
     sd.friction = 0.8f;
-    // The hill: a long voxel wedge east of the start.
-    static uint8_t rampVox[16 * 16 * 16];
-    memset(rampVox, 0, sizeof(rampVox));
-    for (int32_t z = 0; z < 16; ++z)
-    {
-        for (int32_t x = 0; x < 16; ++x)
-        {
-            int32_t top = x;
-            for (int32_t y = 0; y <= top && y < 16; ++y)
-            {
-                rampVox[x + 16 * (y + 16 * z)] = 1;
-            }
-        }
-    }
+    // The hill: a SMOOTH hull wedge, not voxel stairs (the first
+    // draft used one-meter cells and built a staircase taller than
+    // the car). Sixteen degrees over twelve meters: first gear
+    // climbs it, fifth gear bogs, exactly the 12-1 analytic.
     m3BodyDef rd = m3DefaultBodyDef();
-    rd.position = (m3Pos3){6.0, 0.0, -8.0};
-    m3CreateVoxelChunkShape(m3CreateBody(scene.world, &rd), &sd, rampVox, NULL, 1.0f);
+    rd.position = (m3Pos3){4.0, 0.0, 0.0};
+    m3BodyId hill = m3CreateBody(scene.world, &rd);
+    m3Vec3 wedge[6] = {{0.0f, 0.0f, -5.0f}, {0.0f, 0.0f, 5.0f},   {12.0f, 0.0f, -5.0f},
+                       {12.0f, 0.0f, 5.0f}, {12.0f, 3.5f, -5.0f}, {12.0f, 3.5f, 5.0f}};
+    m3CreateHullShape(hill, &sd, wedge, 6);
+    // The summit plateau, so the climb has a finish line.
+    m3BodyDef td = m3DefaultBodyDef();
+    td.position = (m3Pos3){20.0, 1.75, 0.0};
+    m3CreateBoxShape(m3CreateBody(scene.world, &td), &sd, (m3Vec3){4.0f, 1.75f, 5.0f});
 
     m3BodyDef cd = m3DefaultBodyDef();
     cd.type = m3_dynamicBody;
