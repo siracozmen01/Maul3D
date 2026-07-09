@@ -634,6 +634,26 @@ What an engine evaluator wires first, and where Maul3D answers:
     round-trips bit-exactly, and CI enforces cross-platform
     equality on every commit. That last line is the moat.
 
+## Compound shapes and the geometry ceilings
+
+Every shape may carry a local transform relative to its body:
+localPosition and localRotation in m3ShapeDef (identity by
+default, near-unit rotations demanded loudly). One composed read
+serves the whole engine, so an offset shape collides, casts,
+rays, draws, and weighs exactly as it sits. Mass properties
+compose per shape before the parallel-axis walk: a dumbbell built
+from two offset boxes spins by the composite books. Caster sweeps
+take explicit poses and CCD composes at t0 (documented v1 bound).
+m3DestroyShape removes one shape at runtime and rebuilds the
+owner's mass; the last shape leaves a unit-mass shapeless body.
+
+Ceilings: hulls hold up to 64 vertices (124 faces, 372 half
+edges, input clouds up to 256 points); mesh chunks hold up to
+65,535 triangles and 65,535 vertices with 16-bit indices, stored
+count-derived so empty capacity costs nothing; heightfields
+triangulate through the same mesh path. One triangle or vertex
+past a ceiling refuses at create, loudly.
+
 ## Units and conventions
 
 SI units: meters, kilograms, seconds, radians. Gravity defaults to

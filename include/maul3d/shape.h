@@ -203,6 +203,12 @@ extern "C"
 
     M3_API bool m3Shape_IsValid(m3ShapeId shapeId);
 
+    /// Destroy one shape and rebuild the owner's mass books (10-4).
+    /// Journaled; contacts involving the shape dissolve at the next
+    /// step. The last shape leaves a shapeless dynamic body at unit
+    /// mass (the reference convention).
+    M3_API void m3DestroyShape(m3ShapeId shapeId);
+
     /// Runtime material setters (8-4). Journaled; contacts read
     /// materials at prepare, so changes bind from the next step. A
     /// sleeping stack keeps its old mix until something wakes it

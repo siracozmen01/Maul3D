@@ -934,6 +934,27 @@ bool m3Shape_IsValid(m3ShapeId shapeId)
     return world != NULL && m3ShapeSlot(world, shapeId) >= 0;
 }
 
+void m3DestroyShape(m3ShapeId shapeId)
+{
+    m3World* world = m3WorldFromIndex0(shapeId.world0);
+    int32_t index = world != NULL ? m3ShapeSlot(world, shapeId) : -1;
+    if (index < 0)
+    {
+        return;
+    }
+    if (world->journalActive != 0)
+    {
+        m3JournalRecord(world, m3_opDestroyShape, &shapeId, (int32_t)sizeof(shapeId));
+    }
+    int32_t bodyIndex = world->shapeBody[index];
+    m3DestroyShapeInternal(world, index);
+    m3RecomputeMass(world, bodyIndex);
+    if (world->types[bodyIndex] == (uint8_t)m3_dynamicBody)
+    {
+        m3SetAwakeInternal(world, bodyIndex, 1);
+    }
+}
+
 // --- Runtime materials (8-4) ------------------------------------------------
 
 void m3SetShapeFrictionInternal(m3World* world, int32_t slot, float value)

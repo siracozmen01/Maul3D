@@ -134,6 +134,65 @@ static m3WorldId SceneHullJam(void)
     return world;
 }
 
+// Scene 3b (10-4): the grand mesh, a ~60k-triangle terrain under
+// a crate rain: the 10-3 ceiling priced and pinned.
+static m3WorldId SceneMeshGrand(void)
+{
+    m3WorldDef def = m3DefaultWorldDef();
+    def.bodyCapacity = 128;
+    def.shapeCapacity = 128;
+    m3WorldId world = m3CreateWorld(&def);
+    m3BodyDef gd = m3DefaultBodyDef();
+    gd.position = (m3Pos3){-43.0, 0.0, -43.0};
+    m3BodyId terrain = m3CreateBody(world, &gd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    sd.friction = 0.5f;
+    enum
+    {
+        GG = 174 // (174-1)^2 * 2 = 59858 triangles
+    };
+    static m3Vec3 verts[GG * GG];
+    static uint16_t tris[6 * (GG - 1) * (GG - 1)];
+    for (int32_t z = 0; z < GG; ++z)
+    {
+        for (int32_t x = 0; x < GG; ++x)
+        {
+            float h = 0.2f * sinf(0.31f * (float)x) + 0.2f * cosf(0.23f * (float)z);
+            verts[z * GG + x] = (m3Vec3){0.5f * (float)x, h, 0.5f * (float)z};
+        }
+    }
+    int32_t n = 0;
+    for (int32_t z = 0; z < GG - 1; ++z)
+    {
+        for (int32_t x = 0; x < GG - 1; ++x)
+        {
+            uint16_t v00 = (uint16_t)(z * GG + x);
+            uint16_t v10 = (uint16_t)(z * GG + x + 1);
+            uint16_t v01 = (uint16_t)((z + 1) * GG + x);
+            uint16_t v11 = (uint16_t)((z + 1) * GG + x + 1);
+            tris[n++] = v00;
+            tris[n++] = v11;
+            tris[n++] = v10;
+            tris[n++] = v00;
+            tris[n++] = v01;
+            tris[n++] = v11;
+        }
+    }
+    m3CreateMeshShape(terrain, &sd, verts, GG * GG, tris, n / 3);
+
+    m3BodyDef bd = m3DefaultBodyDef();
+    bd.type = m3_dynamicBody;
+    uint64_t rng = 0x6BA2Dull;
+    for (int32_t k = 0; k < 80; ++k)
+    {
+        bd.position = (m3Pos3){RandRange(&rng, -30.0, 30.0), 2.0 + 0.35 * (double)k,
+                               RandRange(&rng, -30.0, 30.0)};
+        m3BodyId body = m3CreateBody(world, &bd);
+        m3CreateBoxShape(body, &sd, (m3Vec3){0.35f, 0.35f, 0.35f});
+    }
+    return world;
+}
+
 // Scene 3: the mesh field, the midphase workout (2c-10's target).
 static m3WorldId SceneMeshField(void)
 {
@@ -645,6 +704,7 @@ int main(int argc, char** argv)
     RunScene("pyramid", ScenePyramid, steps);
     RunScene("hulljam", SceneHullJam, steps);
     RunScene("meshfield", SceneMeshField, steps);
+    RunScene("meshgrand", SceneMeshGrand, steps);
     RunVoxfort(steps);
     RunCityblock(steps);
     RunScaleGauntlet(steps);

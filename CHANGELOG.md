@@ -4,6 +4,35 @@ All notable changes to Maul3D. Versions are tags on green CI SHAs;
 every entry's determinism gates were verified across all CI cells at
 tag time.
 
+## v1.7 (2026-07-09)
+
+Geometry scale: the ceilings the July deep dive flagged, raised
+without moving a single default bit.
+
+- Compound shapes: every shape takes an optional local transform
+  (position + rotation) behind ONE composed-read gate with an
+  identity short-circuit; mass composes per shape (c' = p + Rc,
+  I' = R I R^T); queries, rays, contacts, soft bodies, and debug
+  draw all see true placement. Offsets ride the existing create
+  ops and hash off-identity only.
+- Hull vertices to 64 (faces 124, half edges 372 by Euler; input
+  clouds to 256); index types widened where a byte ran out.
+- Mesh chunks to 65,535 triangles: content went count-derived
+  (exact heap arrays behind ownership gates), the snapshot gained
+  its first variable-size section with atomic pre-validation, and
+  a 59,858-triangle terrain is proven under traffic, rays, and
+  bit-identical rollback. The meshgrand bench prices the ceiling.
+- m3DestroyShape: journaled single-shape destruction with mass
+  rebuild (the red team found bodies could shed shapes only by
+  dying).
+- Red team: compound storms under mid-flight snapshots (and the
+  rollback lesson applied to the test itself: host handles are
+  game state), hull boundary clouds at 63/64/65 with degenerate
+  stews, LeakSanitizer-clean ownership across every embedded
+  derived tree.
+- Golden and every bench pin stood through the whole phase;
+  snapshot formats v37 through v39.
+
 ## v1.6 (2026-07-08)
 
 The replay studio: the moat made visible. Nobody else can ship a

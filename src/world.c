@@ -1789,6 +1789,29 @@ static bool JournalReplayApply(m3World* world, const void* data, int32_t size)
             m3SetSleepControlsInternal(world, index, record.threshold, record.canSleep);
             break;
         }
+        case m3_opDestroyShape:
+        {
+            m3ShapeId id;
+            if (bytes != (int32_t)sizeof(id))
+            {
+                return false;
+            }
+            memcpy(&id, payload, sizeof(id));
+            id.world0 = world->worldIndex0;
+            int32_t index = m3ShapeSlot(world, id);
+            if (index < 0)
+            {
+                return false;
+            }
+            int32_t bodyIndex = world->shapeBody[index];
+            m3DestroyShapeInternal(world, index);
+            m3RecomputeMass(world, bodyIndex);
+            if (world->types[bodyIndex] == (uint8_t)m3_dynamicBody)
+            {
+                m3SetAwakeInternal(world, bodyIndex, 1);
+            }
+            break;
+        }
         case m3_opSetGravity:
         {
             m3Vec3 gravity;

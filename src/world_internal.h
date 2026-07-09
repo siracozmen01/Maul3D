@@ -142,7 +142,10 @@ typedef enum m3Op
     m3_opJointSetCollide = 54,      // joint + collide-connected flag
     m3_opJointSetBreak = 55,        // joint + force + torque caps
     m3_opJointSetSpring = 56,       // joint + enable + hertz + zeta (8-6b)
-    m3_opJointSetTarget = 57,       // joint + scalar + quat drive target        // world toggle
+    m3_opJointSetTarget = 57,       // joint + scalar + quat drive target
+    m3_opDestroyShape = 58,         // shape id (10-4: the red team
+                                    // found bodies could shed shapes
+                                    // only by dying)        // world toggle
 } m3Op;
 
 // Immutable interned hull data (lifetime 3): vertices, face planes,

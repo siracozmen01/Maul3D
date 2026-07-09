@@ -269,6 +269,59 @@ static void TestBigHullCap(void)
     CHECK(!m3ComputeHull(tooMany, 257, &hull), "input past the cap refuses");
 }
 
+// 10-4 boundary fuzz: clouds at 63, 64, and 65 candidate hull
+// vertices, plus degenerate stews (coplanar sheets, duplicate
+// spikes) that must simplify or refuse but never crash.
+static void TestBoundaryClouds(void)
+{
+    // A cube-corner lattice tuned to yield close-to-cap hulls.
+    for (int32_t target = 63; target <= 65; ++target)
+    {
+        m3Vec3 cloud[130];
+        int32_t n = 0;
+        for (int32_t i = 0; i < target && n < 128; ++i)
+        {
+            float t = (float)i / (float)target;
+            float phi = 2.399963f * (float)i;
+            float y = 1.0f - 2.0f * t;
+            float r = sqrtf(1.0f - y * y);
+            cloud[n++] = (m3Vec3){r * cosf(phi), y, r * sinf(phi)};
+        }
+        m3HullData hull;
+        CHECK(m3ComputeHull(cloud, n, &hull), "a boundary cloud builds");
+        CHECK(hull.vertexCount <= 64, "the cap holds at the boundary");
+        for (int32_t e = 0; e < hull.edgeCount; ++e)
+        {
+            CHECK(hull.edges[hull.edges[e].twin].twin == e, "twins pair at the boundary");
+        }
+    }
+    // Degenerate stews: a coplanar sheet with two spikes, and a
+    // cloud that is one point duplicated many times plus a tetra.
+    m3Vec3 sheet[80];
+    int32_t n = 0;
+    for (int32_t i = 0; i < 60; ++i)
+    {
+        sheet[n++] = (m3Vec3){(float)(i % 10) * 0.1f, 0.0f, (float)(i / 10) * 0.1f};
+    }
+    sheet[n++] = (m3Vec3){0.45f, 0.8f, 0.25f};
+    sheet[n++] = (m3Vec3){0.45f, -0.8f, 0.25f};
+    m3HullData hull;
+    CHECK(m3ComputeHull(sheet, n, &hull), "the spiked sheet builds a volume");
+    CHECK(hull.vertexCount >= 5, "the sheet corners and spikes survive");
+
+    m3Vec3 dupes[70];
+    for (int32_t i = 0; i < 66; ++i)
+    {
+        dupes[i] = (m3Vec3){0.5f, 0.5f, 0.5f};
+    }
+    dupes[66] = (m3Vec3){0.0f, 0.0f, 0.0f};
+    dupes[67] = (m3Vec3){1.0f, 0.0f, 0.0f};
+    dupes[68] = (m3Vec3){0.0f, 1.0f, 0.0f};
+    dupes[69] = (m3Vec3){0.0f, 0.0f, 1.0f};
+    CHECK(m3ComputeHull(dupes, 70, &hull), "the duplicate stew simplifies to the tetra");
+    CHECK(hull.vertexCount >= 4 && hull.vertexCount <= 5, "duplicates absorbed");
+}
+
 int main(void)
 {
     TestCubeMergesToQuads();
@@ -278,6 +331,7 @@ int main(void)
     TestDegenerateRefusals();
     TestFuzzSweep();
     TestBigHullCap();
+    TestBoundaryClouds();
     TestHalfEdgeTwinLaw();
     if (s_failures == 0)
     {

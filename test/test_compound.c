@@ -276,6 +276,114 @@ static void TestBigHullUnderTheGates(void)
     (void)journal;
 }
 
+static void TestCompoundStorm(void)
+{
+    // The 10-4 storm: offset shapes created and destroyed under
+    // fire, mass rebuilding every time, through a mid-flight
+    // snapshot onto identical bits.
+    static uint8_t snap[2097152];
+    uint64_t hashes[2];
+    for (int32_t run = 0; run < 2; ++run)
+    {
+        m3WorldId world = PlaneWorld();
+        m3BodyId bars[3];
+        m3ShapeId extras[3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
+        for (int32_t k = 0; k < 3; ++k)
+        {
+            m3BodyDef bd = m3DefaultBodyDef();
+            bd.type = m3_dynamicBody;
+            bd.position = (m3Pos3){(double)k * 2.2, 2.0 + (double)k, 0.0};
+            bars[k] = m3CreateBody(world, &bd);
+            m3ShapeDef sd = m3DefaultShapeDef();
+            sd.localPosition = (m3Vec3){-0.6f, 0.0f, 0.0f};
+            m3CreateBoxShape(bars[k], &sd, (m3Vec3){0.3f, 0.3f, 0.3f});
+            sd.localPosition = (m3Vec3){0.6f, 0.0f, 0.0f};
+            m3CreateBoxShape(bars[k], &sd, (m3Vec3){0.3f, 0.3f, 0.3f});
+        }
+        int32_t snapBytes = 0;
+        m3ShapeId extrasAtSnap[3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
+        for (int32_t i = 0; i < 150; ++i)
+        {
+            int32_t phase = i % 30;
+            int32_t k = (i / 30) % 3;
+            if (phase == 4)
+            {
+                // Grow a third lobe mid-flight: mass rebuilds.
+                m3ShapeDef sd = m3DefaultShapeDef();
+                sd.localPosition = (m3Vec3){0.0f, 0.7f, 0.0f};
+                float st = sinf(0.2f * (float)i);
+                float ct = cosf(0.2f * (float)i);
+                st = st < 0 ? -st : st; // deterministic, unit-safe
+                float len = sqrtf(st * st + ct * ct);
+                sd.localRotation = (m3Quat){0.0f, st / len, 0.0f, ct / len};
+                extras[k] = m3CreateBoxShape(bars[k], &sd, (m3Vec3){0.2f, 0.2f, 0.2f});
+            }
+            if (phase == 19 && m3Shape_IsValid(extras[k]))
+            {
+                // And shed it: mass rebuilds again, under fire.
+                m3DestroyShape(extras[k]);
+                extras[k] = (m3ShapeId){0, 0, 0};
+            }
+            if (phase == 11)
+            {
+                m3Body_ApplyLinearImpulse(bars[k], (m3Vec3){0.5f, 0.3f, -0.2f});
+            }
+            m3World_Step(world, 1.0f / 60.0f, 4);
+            if (i == 75 && run == 0)
+            {
+                snapBytes = m3World_Snapshot(world, snap, (int32_t)sizeof(snap));
+                CHECK(snapBytes > 0, "the storm snapshot fits");
+                // The rollback lesson applied to ourselves: host
+                // handles are game state too; save them WITH the
+                // snapshot or the re-run diverges on stale ids.
+                for (int32_t k2 = 0; k2 < 3; ++k2)
+                {
+                    extrasAtSnap[k2] = extras[k2];
+                }
+            }
+        }
+        uint64_t final = m3World_Hash(world);
+        hashes[run] = final;
+        if (run == 0)
+        {
+            CHECK(m3World_Restore(world, snap, snapBytes), "the storm restore lands");
+            for (int32_t k2 = 0; k2 < 3; ++k2)
+            {
+                extras[k2] = extrasAtSnap[k2];
+            }
+            for (int32_t i = 76; i < 150; ++i)
+            {
+                int32_t phase = i % 30;
+                int32_t k = (i / 30) % 3;
+                if (phase == 4)
+                {
+                    m3ShapeDef sd = m3DefaultShapeDef();
+                    sd.localPosition = (m3Vec3){0.0f, 0.7f, 0.0f};
+                    float st = sinf(0.2f * (float)i);
+                    float ct = cosf(0.2f * (float)i);
+                    st = st < 0 ? -st : st;
+                    float len = sqrtf(st * st + ct * ct);
+                    sd.localRotation = (m3Quat){0.0f, st / len, 0.0f, ct / len};
+                    extras[k] = m3CreateBoxShape(bars[k], &sd, (m3Vec3){0.2f, 0.2f, 0.2f});
+                }
+                if (phase == 19 && m3Shape_IsValid(extras[k]))
+                {
+                    m3DestroyShape(extras[k]);
+                    extras[k] = (m3ShapeId){0, 0, 0};
+                }
+                if (phase == 11)
+                {
+                    m3Body_ApplyLinearImpulse(bars[k], (m3Vec3){0.5f, 0.3f, -0.2f});
+                }
+                m3World_Step(world, 1.0f / 60.0f, 4);
+            }
+            CHECK(m3World_Hash(world) == final, "the storm re-runs onto identical bits");
+        }
+        m3DestroyWorld(world);
+    }
+    CHECK(hashes[0] == hashes[1], "storm twins are bit-identical");
+}
+
 static void TestGrandMesh(void)
 {
     // The 10-3 ceiling in the flesh: a procedural ~60k-triangle
@@ -380,6 +488,7 @@ int main(void)
     TestRotatedOffsetRests();
     TestQueriesSeeOffsets();
     TestOffsetsReplayAndRollback();
+    TestCompoundStorm();
     TestGrandMesh();
     TestBigHullUnderTheGates();
     TestHostileOffsets();
