@@ -2817,75 +2817,29 @@ void m3StepInternal(m3World* world, float dt, int32_t substeps)
         m3StackDestroy(&world->scratch);
         world->scratch = m3StackCreate(bigger);
     }
-    // Pre-flight sizing (V-STALL, the moat item): a starved step is
-    // deterministic SIZE-DRIVEN state evolution, and struct sizes
-    // are not part of the cross-platform contract, so a stall on
-    // one compiler could land on a different tick than another.
-    // The estimate below uses PINNED per-item byte budgets chosen
-    // to dominate every platform's real sizes; counts are pure
-    // state, so every cell grows on the same tick and the reactive
-    // doubling above becomes a backstop that never fires in an
-    // honest run.
-    {
-        int64_t need = 64 * 1024 + 128 * (int64_t)world->bodyPool.maxIndex +
-                       64 * (int64_t)world->shapePool.maxIndex + 1024 * (int64_t)world->pairCount +
-                       1024 * (int64_t)world->jointPool.maxIndex;
-        if (need > (int64_t)world->scratch.capacity && world->scratch.capacity < (1 << 28))
-        {
-            int32_t grown = world->scratch.capacity;
-            while ((int64_t)grown < need && grown < (1 << 28))
-            {
-                grown *= 2;
-            }
-            m3StackDestroy(&world->scratch);
-            world->scratch = m3StackCreate(grown);
-        }
-    }
-    m3StackReset(&world->scratch);
 
     // Stash the previous pairs and manifolds BEFORE the scan
-    // overwrites them (the warm-start carry reads this).
+    // overwrites them (the warm-start carry reads this). On the
+    // HEAP on purpose (V-LAYOUT): the stash predates the scan, so
+    // scratch sizing here could only use the stale pair count, and
+    // a stale-count budget is exactly the lag that let stall ticks
+    // depend on struct sizes. Freed after the event walk; the
+    // alloc/free pair nets zero for the soak law.
     int32_t oldCount = world->pairCount;
     uint64_t* oldKeys = NULL;
     m3Manifold* oldManifolds = NULL;
     if (oldCount > 0)
     {
-        oldKeys = (uint64_t*)m3StackAlloc(&world->scratch, oldCount * (int32_t)sizeof(uint64_t));
-        oldManifolds =
-            (m3Manifold*)m3StackAlloc(&world->scratch, oldCount * (int32_t)sizeof(m3Manifold));
+        oldKeys = (uint64_t*)m3AllocZeroed(oldCount * (int32_t)sizeof(uint64_t));
+        oldManifolds = (m3Manifold*)m3AllocZeroed(oldCount * (int32_t)sizeof(m3Manifold));
         if (oldKeys == NULL || oldManifolds == NULL)
         {
-            return; // scratch starved: a transient stall; the next
-                    // step arrives with a grown stack
+            m3Free(oldKeys);
+            m3Free(oldManifolds);
+            return; // out of memory: refuse the step loudly
         }
         memcpy(oldKeys, world->pairKeys, (size_t)oldCount * sizeof(uint64_t));
         memcpy(oldManifolds, world->manifolds, (size_t)oldCount * sizeof(m3Manifold));
-    }
-
-    // Begin-of-step COM and rotation for every body: the sweeps the
-    // continuous pass (2b-8) needs. Captured before anything moves.
-    int32_t sweepMax = world->bodyPool.maxIndex;
-    m3Pos3* com0 =
-        (m3Pos3*)m3StackAlloc(&world->scratch, sweepMax > 0 ? sweepMax * (int32_t)sizeof(m3Pos3)
-                                                            : (int32_t)sizeof(m3Pos3));
-    m3Quat* rot0 =
-        (m3Quat*)m3StackAlloc(&world->scratch, sweepMax > 0 ? sweepMax * (int32_t)sizeof(m3Quat)
-                                                            : (int32_t)sizeof(m3Quat));
-    if (com0 == NULL || rot0 == NULL)
-    {
-        return; // transient scratch stall, grown next step
-    }
-    for (int32_t i = 0; i < sweepMax; ++i)
-    {
-        if (world->bodyPool.alive[i] == 0)
-        {
-            continue;
-        }
-        m3Vec3 rlc = m3RotateVec3(world->transforms[i].q, world->localCenters[i]);
-        com0[i].x = world->transforms[i].p.x + (double)rlc.x;
-        com0[i].y = world->transforms[i].p.y + (double)rlc.y;
-        com0[i].z = world->transforms[i].p.z + (double)rlc.z;
-        rot0[i] = world->transforms[i].q;
     }
 
     // The suspension pass (5-1): vehicle impulses land here so the
@@ -2982,6 +2936,66 @@ void m3StepInternal(m3World* world, float dt, int32_t substeps)
                 world->endEvents[world->endEventCount++] = event;
             }
         }
+    }
+
+    // The stash served the warm carry and the event walk: done.
+    m3Free(oldKeys);
+    m3Free(oldManifolds);
+
+    // Pre-flight sizing (V-STALL; repositioned by V-LAYOUT): a
+    // starved step is deterministic SIZE-DRIVEN state evolution,
+    // and struct sizes are not part of the cross-platform
+    // contract. The estimate uses PINNED per-item byte budgets
+    // chosen to dominate every platform's real sizes, and it runs
+    // AFTER the pair scan so the pair count is THIS step's count:
+    // the one-step lag was V-LAYOUT's whole crime (a stale budget
+    // let real consumption race capacity on pileup spikes, and the
+    // winner depended on sizeof). Counts are pure state, so every
+    // cell grows on the same tick; the reactive NULL returns below
+    // are loud backstops an honest run can no longer reach.
+    {
+        int64_t need = 64 * 1024 + 128 * (int64_t)world->bodyPool.maxIndex +
+                       64 * (int64_t)world->shapePool.maxIndex + 1024 * (int64_t)world->pairCount +
+                       1024 * (int64_t)world->jointPool.maxIndex;
+        if (need > (int64_t)world->scratch.capacity && world->scratch.capacity < (1 << 28))
+        {
+            int32_t grown = world->scratch.capacity;
+            while ((int64_t)grown < need && grown < (1 << 28))
+            {
+                grown *= 2;
+            }
+            m3StackDestroy(&world->scratch);
+            world->scratch = m3StackCreate(grown);
+        }
+    }
+    m3StackReset(&world->scratch);
+
+    // Begin-of-step COM and rotation for every body: the sweeps the
+    // continuous pass (2b-8) needs. The scan reads transforms but
+    // never moves them, so capturing here equals capturing before
+    // it, and now the capture lives under the fresh-count budget.
+    int32_t sweepMax = world->bodyPool.maxIndex;
+    m3Pos3* com0 =
+        (m3Pos3*)m3StackAlloc(&world->scratch, sweepMax > 0 ? sweepMax * (int32_t)sizeof(m3Pos3)
+                                                            : (int32_t)sizeof(m3Pos3));
+    m3Quat* rot0 =
+        (m3Quat*)m3StackAlloc(&world->scratch, sweepMax > 0 ? sweepMax * (int32_t)sizeof(m3Quat)
+                                                            : (int32_t)sizeof(m3Quat));
+    if (com0 == NULL || rot0 == NULL)
+    {
+        return; // unreachable backstop (see the pre-flight above)
+    }
+    for (int32_t i = 0; i < sweepMax; ++i)
+    {
+        if (world->bodyPool.alive[i] == 0)
+        {
+            continue;
+        }
+        m3Vec3 rlc = m3RotateVec3(world->transforms[i].q, world->localCenters[i]);
+        com0[i].x = world->transforms[i].p.x + (double)rlc.x;
+        com0[i].y = world->transforms[i].p.y + (double)rlc.y;
+        com0[i].z = world->transforms[i].p.z + (double)rlc.z;
+        rot0[i] = world->transforms[i].q;
     }
 
     // Islands and wake propagation BEFORE the solve: a sleeping body
