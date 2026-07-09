@@ -96,6 +96,63 @@ extern "C"
     /// state: hosts spin their wheel meshes with it).
     M3_API m3real m3Vehicle_GetWheelSpin(m3VehicleId vehicleId, int32_t wheel);
 
+#define M3_DRIVETRAIN_MAX_CURVE 8
+#define M3_DRIVETRAIN_MAX_GEARS 6
+
+    /// The drivetrain (12-1): the flat force model grows an engine.
+    /// Torque comes from a pinned curve (control points, linear
+    /// interpolation between them: deterministic on every platform
+    /// because only +,-,*,/ touch the numbers), multiplied through
+    /// the active gear and the final drive, split equally across the
+    /// driven wheels (an open differential), and handed to the same
+    /// friction circle the flat model uses. The first control point
+    /// is the idle line: engine speed never reads below it, so a car
+    /// at standstill still has launch torque. Past the last point
+    /// the curve extends flat.
+    ///
+    /// With a drivetrain attached, throttle drives only forward
+    /// gears; reverse is gear -1 (throttle magnitude, direction from
+    /// the gear), gear 0 is neutral. Auto shift manages forward
+    /// gears only and waits for the clutch to close between shifts.
+    typedef struct m3DrivetrainDef
+    {
+        int32_t curveCount;                       // 2..8 control points
+        m3real curveRpm[M3_DRIVETRAIN_MAX_CURVE]; // strictly ascending,
+                                                  // nonnegative
+        m3real curveTorque[M3_DRIVETRAIN_MAX_CURVE]; // newton meters at
+                                                     // the crank
+        int32_t gearCount;                         // 1..6 forward gears
+        m3real gearRatio[M3_DRIVETRAIN_MAX_GEARS]; // crank turns per
+                                                   // wheel turn
+        m3real reverseRatio; // positive magnitude; 0 forbids reverse
+        m3real finalDrive;   // multiplies every gear
+        m3real shiftUpRpm;   // auto shift climbs above this
+        m3real shiftDownRpm; // auto shift drops below this
+        int32_t clutchSteps; // steps of torque cut per shift
+        bool autoShift;
+        int32_t internalValue;
+    } m3DrivetrainDef;
+
+    M3_API m3DrivetrainDef m3DefaultDrivetrainDef(void);
+
+    /// Attach a drivetrain (journaled). Replaces the flat driveForce
+    /// model for this vehicle; starts in first gear, clutch closed.
+    /// Invalid defs (bad cookie, non-ascending curve, out-of-range
+    /// counts, non-finite numbers) are documented no-ops.
+    M3_API void m3Vehicle_SetDrivetrain(m3VehicleId vehicleId, const m3DrivetrainDef* def);
+
+    /// Select a gear (journaled): -1 reverse, 0 neutral, 1..gearCount.
+    /// Opens the clutch for clutchSteps. A no-op without a drivetrain,
+    /// out of range, or when reverseRatio is zero and gear is -1.
+    M3_API void m3Vehicle_SelectGear(m3VehicleId vehicleId, int32_t gear);
+
+    /// Current gear; 0 when no drivetrain is attached.
+    M3_API int32_t m3Vehicle_GetGear(m3VehicleId vehicleId);
+
+    /// Engine speed computed by the last step, idle-floored like the
+    /// torque lookup (a tachometer, not raw wheel math).
+    M3_API m3real m3Vehicle_GetEngineRpm(m3VehicleId vehicleId);
+
     static const m3VehicleId m3_nullVehicleId = {0, 0, 0};
 
 #ifdef __cplusplus

@@ -149,6 +149,8 @@ typedef enum m3Op
     m3_opSoftBodyAnchorSoft = 59,   // lattice<->lattice pin (11-2)
     m3_opSetWind = 60,              // world wind field (11-3)
     m3_opSetSurfaceVelocity = 61,   // shape conveyor velocity        // world toggle
+    m3_opVehicleDrivetrain = 62,    // vehicle + drivetrain def (12-1)
+    m3_opVehicleGear = 63,          // vehicle + gear select
 } m3Op;
 
 // Immutable interned hull data (lifetime 3): vertices, face planes,
@@ -606,6 +608,27 @@ typedef struct m3World
     m3real* vehSteer;
     m3real* vehBrake;
     m3real* vehWheelSpin; // accumulated spin angle, render state
+
+    // The drivetrain (12-1): per-vehicle engine curve and gearbox.
+    // Def fields land by journaled op; gear, clutch countdown, and
+    // last engine speed are simulation state (snapshot always,
+    // hashed only when a drivetrain is attached: the additive-state
+    // golden rule keeps drivetrain-free worlds on their old hashes).
+    uint8_t* vehDtActive;
+    int32_t* vehDtCurveCount;
+    m3real* vehDtCurveRpm;    // capacity * M3_DRIVETRAIN_MAX_CURVE
+    m3real* vehDtCurveTorque; // capacity * M3_DRIVETRAIN_MAX_CURVE
+    int32_t* vehDtGearCount;
+    m3real* vehDtGearRatio; // capacity * M3_DRIVETRAIN_MAX_GEARS
+    m3real* vehDtReverse;
+    m3real* vehDtFinal;
+    m3real* vehDtShiftUp;
+    m3real* vehDtShiftDown;
+    int32_t* vehDtClutchSteps;
+    uint8_t* vehDtAutoShift;
+    int8_t* vehDtGear;    // -1 reverse, 0 neutral, 1..gearCount
+    int32_t* vehDtClutch; // torque-cut countdown, steps
+    m3real* vehDtRpm;     // engine speed from the last pass
 
     // Soft bodies (7-1): XPBD particle lattices, fixed-size blocks
     // per slot (the snapshot walker's simplest shape). Positions
@@ -1070,6 +1093,8 @@ void m3DestroyVehicleInternal(m3World* world, int32_t slot);
 void m3VehicleApplySuspension(m3World* world, float dt);
 void m3VehicleCommandsInternal(m3World* world, int32_t slot, m3real throttle, m3real steer,
                                m3real brake);
+bool m3VehicleDrivetrainInternal(m3World* world, int32_t slot, const m3DrivetrainDef* def);
+bool m3VehicleGearInternal(m3World* world, int32_t slot, int32_t gear);
 int32_t m3SoftBodySlot(const m3World* world, m3SoftBodyId softId);
 int32_t m3CreateSoftBodyInternal(m3World* world, const m3SoftBodyDef* def);
 void m3DestroySoftBodyInternal(m3World* world, int32_t slot);

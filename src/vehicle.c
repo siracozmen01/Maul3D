@@ -17,6 +17,36 @@
 #include <string.h>
 
 #define M3_VEHICLE_COOKIE ((int32_t)(M3_COOKIE ^ ((int32_t)sizeof(m3VehicleDef) << 8) ^ 8))
+#define M3_DRIVETRAIN_COOKIE                                                                       \
+    ((int32_t)(M3_COOKIE ^ ((int32_t)sizeof(m3DrivetrainDef) << 8) ^ 12))
+
+// Freed and freshly created vehicles carry no drivetrain: the flat
+// force model is the default, and the hash walk skips these fields
+// until an op 62 lands (the additive-state golden rule).
+static void ResetDrivetrain(m3World* world, int32_t slot)
+{
+    world->vehDtActive[slot] = 0;
+    world->vehDtCurveCount[slot] = 0;
+    world->vehDtGearCount[slot] = 0;
+    for (int32_t c = 0; c < M3_DRIVETRAIN_MAX_CURVE; ++c)
+    {
+        world->vehDtCurveRpm[slot * M3_DRIVETRAIN_MAX_CURVE + c] = 0.0f;
+        world->vehDtCurveTorque[slot * M3_DRIVETRAIN_MAX_CURVE + c] = 0.0f;
+    }
+    for (int32_t g = 0; g < M3_DRIVETRAIN_MAX_GEARS; ++g)
+    {
+        world->vehDtGearRatio[slot * M3_DRIVETRAIN_MAX_GEARS + g] = 0.0f;
+    }
+    world->vehDtReverse[slot] = 0.0f;
+    world->vehDtFinal[slot] = 0.0f;
+    world->vehDtShiftUp[slot] = 0.0f;
+    world->vehDtShiftDown[slot] = 0.0f;
+    world->vehDtClutchSteps[slot] = 0;
+    world->vehDtAutoShift[slot] = 0;
+    world->vehDtGear[slot] = 0;
+    world->vehDtClutch[slot] = 0;
+    world->vehDtRpm[slot] = 0.0f;
+}
 
 m3VehicleDef m3DefaultVehicleDef(void)
 {
@@ -110,6 +140,7 @@ int32_t m3CreateVehicleInternal(m3World* world, const m3VehicleDef* def)
         world->vehWheelContact[k] = 0;
         world->vehWheelSpin[k] = 0.0f;
     }
+    ResetDrivetrain(world, slot);
     return slot;
 }
 
@@ -142,6 +173,7 @@ void m3DestroyVehicleInternal(m3World* world, int32_t slot)
         world->vehWheelContact[k] = 0;
         world->vehWheelSpin[k] = 0.0f;
     }
+    ResetDrivetrain(world, slot);
     m3IdPoolFree(&world->vehPool, slot);
 }
 
@@ -180,6 +212,127 @@ void m3VehicleApplySuspension(m3World* world, float dt)
         m3Vec3 impulses[M3_VEHICLE_MAX_WHEELS];
         m3Vec3 arms[M3_VEHICLE_MAX_WHEELS];
         int32_t applied = 0;
+
+        // The drivetrain (12-1): one engine per vehicle, computed
+        // BEFORE the wheel loop from pass-start velocities like
+        // everything else. Engine speed derives from chassis forward
+        // speed through the driven wheels' mean radius, the active
+        // ratio, and the final drive; the curve turns it into crank
+        // torque; gears and the final drive turn that into a force
+        // per driven wheel. The friction circle still has the last
+        // word at each tire. All arithmetic is +,-,*,/: bit-stable
+        // on every platform.
+        m3real dtForce = 0.0f;
+        if (world->vehDtActive[slot] != 0)
+        {
+            int32_t drivenCount = 0;
+            m3real radiusSum = 0.0f;
+            for (int32_t w = 0; w < world->vehWheelCount[slot]; ++w)
+            {
+                int32_t k = slot * M3_VEHICLE_MAX_WHEELS + w;
+                if ((world->vehWheelFlags[k] & 2u) != 0)
+                {
+                    drivenCount += 1;
+                    radiusSum += world->vehWheelRadius[k];
+                }
+            }
+            m3real radius = drivenCount > 0 ? radiusSum / (m3real)drivenCount : 0.0f;
+            int32_t base = slot * M3_DRIVETRAIN_MAX_CURVE;
+            int32_t count = world->vehDtCurveCount[slot];
+            int8_t gear = world->vehDtGear[slot];
+            m3real ratio = 0.0f;
+            if (gear > 0)
+            {
+                ratio = world->vehDtGearRatio[slot * M3_DRIVETRAIN_MAX_GEARS + (gear - 1)];
+            }
+            else if (gear < 0)
+            {
+                ratio = world->vehDtReverse[slot];
+            }
+
+            // Raw engine speed, signed by rolling direction relative
+            // to the gear: rolling against the gear reads as zero
+            // (the idle floor catches it below).
+            m3Vec3 fwd = m3RotateVec3(xf->q, (m3Vec3){1.0f, 0.0f, 0.0f});
+            m3real vFwd = m3Dot3(v0, fwd);
+            m3real wheelRps = radius > 0.0f ? vFwd / radius : 0.0f;
+            m3real rawRpm =
+                wheelRps * ratio * world->vehDtFinal[slot] * (60.0f / 6.28318530717958647692f);
+            if (gear < 0)
+            {
+                rawRpm = -rawRpm;
+            }
+            if (rawRpm < 0.0f)
+            {
+                rawRpm = 0.0f;
+            }
+
+            // Auto shift manages forward gears only, and only with
+            // the clutch closed: a shift opens it for clutchSteps,
+            // which is also the thrash brake.
+            if (world->vehDtAutoShift[slot] != 0 && gear >= 1 && world->vehDtClutch[slot] == 0)
+            {
+                if (rawRpm > world->vehDtShiftUp[slot] && gear < (int8_t)world->vehDtGearCount[slot])
+                {
+                    gear += 1;
+                    world->vehDtGear[slot] = gear;
+                    world->vehDtClutch[slot] = world->vehDtClutchSteps[slot];
+                    ratio = world->vehDtGearRatio[slot * M3_DRIVETRAIN_MAX_GEARS + (gear - 1)];
+                }
+                else if (rawRpm < world->vehDtShiftDown[slot] && gear > 1)
+                {
+                    gear -= 1;
+                    world->vehDtGear[slot] = gear;
+                    world->vehDtClutch[slot] = world->vehDtClutchSteps[slot];
+                    ratio = world->vehDtGearRatio[slot * M3_DRIVETRAIN_MAX_GEARS + (gear - 1)];
+                }
+            }
+
+            // The tachometer: idle-floored at the first control
+            // point, flat past the last. This is what the curve
+            // reads and what the API reports.
+            m3real rpm = rawRpm;
+            if (rpm < world->vehDtCurveRpm[base])
+            {
+                rpm = world->vehDtCurveRpm[base];
+            }
+            if (rpm > world->vehDtCurveRpm[base + count - 1])
+            {
+                rpm = world->vehDtCurveRpm[base + count - 1];
+            }
+            world->vehDtRpm[slot] = rpm;
+
+            int32_t cut = world->vehDtClutch[slot] > 0;
+            if (cut)
+            {
+                world->vehDtClutch[slot] -= 1;
+            }
+            m3real thr = world->vehThrottle[slot];
+            if (thr < 0.0f)
+            {
+                thr = 0.0f; // with a drivetrain, reverse is a gear
+            }
+            if (!cut && gear != 0 && drivenCount > 0 && thr > 0.0f)
+            {
+                m3real seg = 0.0f;
+                for (int32_t c = 0; c < count - 1; ++c)
+                {
+                    if (rpm <= world->vehDtCurveRpm[base + c + 1] || c == count - 2)
+                    {
+                        m3real r0 = world->vehDtCurveRpm[base + c];
+                        m3real r1 = world->vehDtCurveRpm[base + c + 1];
+                        m3real t = (rpm - r0) / (r1 - r0);
+                        seg = world->vehDtCurveTorque[base + c] +
+                              t * (world->vehDtCurveTorque[base + c + 1] -
+                                   world->vehDtCurveTorque[base + c]);
+                        break;
+                    }
+                }
+                m3real sign = gear < 0 ? -1.0f : 1.0f;
+                dtForce = sign * seg * thr * ratio * world->vehDtFinal[slot] /
+                          (radius * (m3real)drivenCount);
+            }
+        }
 
         for (int32_t w = 0; w < world->vehWheelCount[slot]; ++w)
         {
@@ -301,7 +454,14 @@ void m3VehicleApplySuspension(m3World* world, float dt)
                 m3real lon = 0.0f;
                 if ((world->vehWheelFlags[k] & 2u) != 0)
                 {
-                    lon += world->vehThrottle[slot] * world->vehDriveForce[slot] * dt;
+                    if (world->vehDtActive[slot] != 0)
+                    {
+                        lon += dtForce * dt;
+                    }
+                    else
+                    {
+                        lon += world->vehThrottle[slot] * world->vehDriveForce[slot] * dt;
+                    }
                 }
                 if (world->vehBrake[slot] > 0.0f)
                 {
@@ -501,4 +661,202 @@ bool m3Vehicle_IsWheelGrounded(m3VehicleId vehicleId, int32_t wheel)
         return false;
     }
     return world->vehWheelContact[slot * M3_VEHICLE_MAX_WHEELS + wheel] != 0;
+}
+
+m3DrivetrainDef m3DefaultDrivetrainDef(void)
+{
+    // A plain small car: torquey low end (the launch), a peak in the
+    // middle, falling off toward the limiter. Ratios descend like
+    // every gearbox ever built.
+    m3DrivetrainDef def;
+    memset(&def, 0, sizeof(def));
+    def.curveCount = 4;
+    def.curveRpm[0] = 1000.0f;
+    def.curveRpm[1] = 3000.0f;
+    def.curveRpm[2] = 5000.0f;
+    def.curveRpm[3] = 6500.0f;
+    def.curveTorque[0] = 120.0f;
+    def.curveTorque[1] = 200.0f;
+    def.curveTorque[2] = 180.0f;
+    def.curveTorque[3] = 90.0f;
+    def.gearCount = 5;
+    def.gearRatio[0] = 3.5f;
+    def.gearRatio[1] = 2.2f;
+    def.gearRatio[2] = 1.5f;
+    def.gearRatio[3] = 1.1f;
+    def.gearRatio[4] = 0.9f;
+    def.reverseRatio = 3.2f;
+    def.finalDrive = 3.7f;
+    def.shiftUpRpm = 5500.0f;
+    def.shiftDownRpm = 2000.0f;
+    def.clutchSteps = 12;
+    def.autoShift = true;
+    def.internalValue = M3_DRIVETRAIN_COOKIE;
+    return def;
+}
+
+// Validation lives here because replay hands this function raw
+// journal bytes: every field earns its range or the op fails loud.
+bool m3VehicleDrivetrainInternal(m3World* world, int32_t slot, const m3DrivetrainDef* def)
+{
+    if (def->curveCount < 2 || def->curveCount > M3_DRIVETRAIN_MAX_CURVE || def->gearCount < 1 ||
+        def->gearCount > M3_DRIVETRAIN_MAX_GEARS || def->clutchSteps < 0 ||
+        def->clutchSteps > 600)
+    {
+        return false;
+    }
+    for (int32_t c = 0; c < def->curveCount; ++c)
+    {
+        if (!m3FiniteF(def->curveRpm[c]) || def->curveRpm[c] < 0.0f ||
+            !m3FiniteF(def->curveTorque[c]) || def->curveTorque[c] < 0.0f)
+        {
+            return false;
+        }
+        if (c > 0 && def->curveRpm[c] <= def->curveRpm[c - 1])
+        {
+            return false; // strictly ascending or the interp divides by zero
+        }
+    }
+    for (int32_t g = 0; g < def->gearCount; ++g)
+    {
+        if (!m3FiniteF(def->gearRatio[g]) || def->gearRatio[g] <= 0.0f)
+        {
+            return false;
+        }
+    }
+    if (!m3FiniteF(def->reverseRatio) || def->reverseRatio < 0.0f ||
+        !m3FiniteF(def->finalDrive) || def->finalDrive <= 0.0f || !m3FiniteF(def->shiftUpRpm) ||
+        !m3FiniteF(def->shiftDownRpm) || def->shiftDownRpm < 0.0f ||
+        def->shiftUpRpm <= def->shiftDownRpm)
+    {
+        return false;
+    }
+
+    world->vehDtActive[slot] = 1;
+    world->vehDtCurveCount[slot] = def->curveCount;
+    for (int32_t c = 0; c < M3_DRIVETRAIN_MAX_CURVE; ++c)
+    {
+        int32_t inRange = c < def->curveCount;
+        world->vehDtCurveRpm[slot * M3_DRIVETRAIN_MAX_CURVE + c] =
+            inRange ? def->curveRpm[c] : 0.0f;
+        world->vehDtCurveTorque[slot * M3_DRIVETRAIN_MAX_CURVE + c] =
+            inRange ? def->curveTorque[c] : 0.0f;
+    }
+    world->vehDtGearCount[slot] = def->gearCount;
+    for (int32_t g = 0; g < M3_DRIVETRAIN_MAX_GEARS; ++g)
+    {
+        world->vehDtGearRatio[slot * M3_DRIVETRAIN_MAX_GEARS + g] =
+            g < def->gearCount ? def->gearRatio[g] : 0.0f;
+    }
+    world->vehDtReverse[slot] = def->reverseRatio;
+    world->vehDtFinal[slot] = def->finalDrive;
+    world->vehDtShiftUp[slot] = def->shiftUpRpm;
+    world->vehDtShiftDown[slot] = def->shiftDownRpm;
+    world->vehDtClutchSteps[slot] = def->clutchSteps;
+    world->vehDtAutoShift[slot] = def->autoShift ? 1 : 0;
+    world->vehDtGear[slot] = 1;
+    world->vehDtClutch[slot] = 0;
+    world->vehDtRpm[slot] = 0.0f;
+    int32_t chassis = world->vehChassis[slot];
+    if (chassis >= 0 && world->bodyPool.alive[chassis] != 0)
+    {
+        world->awake[chassis] = 1;
+        world->sleepTimes[chassis] = 0.0f;
+    }
+    return true;
+}
+
+bool m3VehicleGearInternal(m3World* world, int32_t slot, int32_t gear)
+{
+    if (world->vehDtActive[slot] == 0 || gear < -1 || gear > world->vehDtGearCount[slot] ||
+        (gear == -1 && world->vehDtReverse[slot] == 0.0f))
+    {
+        return false;
+    }
+    if ((int8_t)gear != world->vehDtGear[slot])
+    {
+        world->vehDtGear[slot] = (int8_t)gear;
+        world->vehDtClutch[slot] = world->vehDtClutchSteps[slot];
+    }
+    int32_t chassis = world->vehChassis[slot];
+    if (chassis >= 0 && world->bodyPool.alive[chassis] != 0)
+    {
+        world->awake[chassis] = 1;
+        world->sleepTimes[chassis] = 0.0f;
+    }
+    return true;
+}
+
+void m3Vehicle_SetDrivetrain(m3VehicleId vehicleId, const m3DrivetrainDef* def)
+{
+    m3World* world = m3WorldFromIndex0(vehicleId.world0);
+    int32_t slot = world != NULL ? m3VehicleSlot(world, vehicleId) : -1;
+    if (slot < 0 || def == NULL || def->internalValue != M3_DRIVETRAIN_COOKIE)
+    {
+        return; // stale id or hostile def: a documented no-op
+    }
+    if (!m3VehicleDrivetrainInternal(world, slot, def))
+    {
+        return; // invalid fields never journal
+    }
+    if (world->journalActive != 0)
+    {
+        struct
+        {
+            m3VehicleId id;
+            m3DrivetrainDef def;
+        } record;
+        memset(&record, 0, sizeof(record));
+        record.id = vehicleId;
+        record.def = *def;
+        m3JournalRecord(world, m3_opVehicleDrivetrain, &record, (int32_t)sizeof(record));
+    }
+}
+
+void m3Vehicle_SelectGear(m3VehicleId vehicleId, int32_t gear)
+{
+    m3World* world = m3WorldFromIndex0(vehicleId.world0);
+    int32_t slot = world != NULL ? m3VehicleSlot(world, vehicleId) : -1;
+    if (slot < 0)
+    {
+        return;
+    }
+    if (!m3VehicleGearInternal(world, slot, gear))
+    {
+        return;
+    }
+    if (world->journalActive != 0)
+    {
+        struct
+        {
+            m3VehicleId id;
+            int32_t gear;
+        } record;
+        memset(&record, 0, sizeof(record));
+        record.id = vehicleId;
+        record.gear = gear;
+        m3JournalRecord(world, m3_opVehicleGear, &record, (int32_t)sizeof(record));
+    }
+}
+
+int32_t m3Vehicle_GetGear(m3VehicleId vehicleId)
+{
+    m3World* world = m3WorldFromIndex0(vehicleId.world0);
+    int32_t slot = world != NULL ? m3VehicleSlot(world, vehicleId) : -1;
+    if (slot < 0 || world->vehDtActive[slot] == 0)
+    {
+        return 0;
+    }
+    return (int32_t)world->vehDtGear[slot];
+}
+
+m3real m3Vehicle_GetEngineRpm(m3VehicleId vehicleId)
+{
+    m3World* world = m3WorldFromIndex0(vehicleId.world0);
+    int32_t slot = world != NULL ? m3VehicleSlot(world, vehicleId) : -1;
+    if (slot < 0 || world->vehDtActive[slot] == 0)
+    {
+        return 0.0f;
+    }
+    return world->vehDtRpm[slot];
 }

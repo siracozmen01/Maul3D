@@ -22,7 +22,8 @@
 #endif
 
 #define M3_SNAPSHOT_MAGIC   0x4D33534Eu // 'M3SN'
-#define M3_SNAPSHOT_VERSION 41u
+#define M3_SNAPSHOT_VERSION 42u
+// v42: vehicle drivetrain, the engine curve and gearbox (12-1).
 // v41: wind field and conveyor surface velocities (11-3).
 // v40: soft-to-soft anchors (11-2).
 // v39: mesh content went count-derived (10-3): variable blocks
@@ -302,6 +303,24 @@ static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3Wal
     M3_BLOCK(world->vehBrake, world->vehicleCapacity * (int32_t)sizeof(m3real));
     M3_BLOCK(world->vehWheelSpin,
              world->vehicleCapacity * M3_VEHICLE_MAX_WHEELS * (int32_t)sizeof(m3real));
+    M3_BLOCK(world->vehDtActive, world->vehicleCapacity * (int32_t)sizeof(uint8_t));
+    M3_BLOCK(world->vehDtCurveCount, world->vehicleCapacity * (int32_t)sizeof(int32_t));
+    M3_BLOCK(world->vehDtCurveRpm,
+             world->vehicleCapacity * M3_DRIVETRAIN_MAX_CURVE * (int32_t)sizeof(m3real));
+    M3_BLOCK(world->vehDtCurveTorque,
+             world->vehicleCapacity * M3_DRIVETRAIN_MAX_CURVE * (int32_t)sizeof(m3real));
+    M3_BLOCK(world->vehDtGearCount, world->vehicleCapacity * (int32_t)sizeof(int32_t));
+    M3_BLOCK(world->vehDtGearRatio,
+             world->vehicleCapacity * M3_DRIVETRAIN_MAX_GEARS * (int32_t)sizeof(m3real));
+    M3_BLOCK(world->vehDtReverse, world->vehicleCapacity * (int32_t)sizeof(m3real));
+    M3_BLOCK(world->vehDtFinal, world->vehicleCapacity * (int32_t)sizeof(m3real));
+    M3_BLOCK(world->vehDtShiftUp, world->vehicleCapacity * (int32_t)sizeof(m3real));
+    M3_BLOCK(world->vehDtShiftDown, world->vehicleCapacity * (int32_t)sizeof(m3real));
+    M3_BLOCK(world->vehDtClutchSteps, world->vehicleCapacity * (int32_t)sizeof(int32_t));
+    M3_BLOCK(world->vehDtAutoShift, world->vehicleCapacity * (int32_t)sizeof(uint8_t));
+    M3_BLOCK(world->vehDtGear, world->vehicleCapacity * (int32_t)sizeof(int8_t));
+    M3_BLOCK(world->vehDtClutch, world->vehicleCapacity * (int32_t)sizeof(int32_t));
+    M3_BLOCK(world->vehDtRpm, world->vehicleCapacity * (int32_t)sizeof(m3real));
     M3_BLOCK(world->vehPool.generations, world->vehicleCapacity * (int32_t)sizeof(uint16_t));
     M3_BLOCK(world->vehPool.alive, world->vehicleCapacity * (int32_t)sizeof(uint8_t));
     M3_BLOCK(world->vehPool.freeQueue, world->vehicleCapacity * (int32_t)sizeof(int32_t));
@@ -887,6 +906,32 @@ uint64_t m3World_Hash(m3WorldId worldId)
             h = m3Hash64(h, &world->vehWheelCompression[k], 4);
             h = m3Hash64(h, &world->vehWheelContact[k], 1);
             h = m3Hash64(h, &world->vehWheelSpin[k], 4);
+        }
+        if (world->vehDtActive[i] != 0)
+        {
+            // The drivetrain hashes only when attached: vehicles on
+            // the flat force model keep their pre-12-1 hashes (the
+            // additive-state golden rule).
+            h = m3Hash64(h, &world->vehDtCurveCount[i], 4);
+            for (int32_t c = 0; c < world->vehDtCurveCount[i]; ++c)
+            {
+                h = m3Hash64(h, &world->vehDtCurveRpm[i * M3_DRIVETRAIN_MAX_CURVE + c], 4);
+                h = m3Hash64(h, &world->vehDtCurveTorque[i * M3_DRIVETRAIN_MAX_CURVE + c], 4);
+            }
+            h = m3Hash64(h, &world->vehDtGearCount[i], 4);
+            for (int32_t g = 0; g < world->vehDtGearCount[i]; ++g)
+            {
+                h = m3Hash64(h, &world->vehDtGearRatio[i * M3_DRIVETRAIN_MAX_GEARS + g], 4);
+            }
+            h = m3Hash64(h, &world->vehDtReverse[i], 4);
+            h = m3Hash64(h, &world->vehDtFinal[i], 4);
+            h = m3Hash64(h, &world->vehDtShiftUp[i], 4);
+            h = m3Hash64(h, &world->vehDtShiftDown[i], 4);
+            h = m3Hash64(h, &world->vehDtClutchSteps[i], 4);
+            h = m3Hash64(h, &world->vehDtAutoShift[i], 1);
+            h = m3Hash64(h, &world->vehDtGear[i], 1);
+            h = m3Hash64(h, &world->vehDtClutch[i], 4);
+            h = m3Hash64(h, &world->vehDtRpm[i], 4);
         }
     }
 
