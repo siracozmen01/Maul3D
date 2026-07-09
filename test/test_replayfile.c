@@ -6,8 +6,11 @@
 // stream, and every kind of corruption refuses loudly without
 // touching a world.
 
+#include "maul3d/character.h"
+#include "maul3d/joint.h"
 #include "maul3d/replay.h"
 #include "maul3d/shape.h"
+#include "maul3d/vehicle.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -237,12 +240,144 @@ static void TestFuzz(void)
     free(blob);
 }
 
+static void TestFuzzPhase12Ops(void)
+{
+    // The 12-4 red team: a session DENSE in the phase 12 ops (62
+    // drivetrain def, 63 gear, 64 stance, plus a wheel joint and
+    // its runtime control) so the mutation storm actually lands on
+    // their payloads. Every mutation aims at the journal region on
+    // purpose. The law is the 9-5 law: never crash, decode refuses
+    // or the atomic replay survives; the sanitizer cell converts
+    // any slip into a failure.
+    m3WorldDef def = Def();
+    def.vehicleCapacity = 2;
+    def.characterCapacity = 2;
+    def.jointCapacity = 8;
+    m3WorldId world = m3CreateWorld(&def);
+    int32_t snapBytes = m3World_SnapshotSize(world);
+    uint8_t* snap = (uint8_t*)malloc((size_t)snapBytes);
+    m3World_Snapshot(world, snap, snapBytes);
+    static uint8_t journal[131072];
+    m3World_JournalBegin(world, journal, (int32_t)sizeof(journal));
+
+    m3BodyDef gd = m3DefaultBodyDef();
+    m3BodyId ground = m3CreateBody(world, &gd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    m3Plane fl = {{0.0f, 1.0f, 0.0f}, 0.0f};
+    m3CreatePlaneShape(ground, &sd, &fl);
+
+    m3BodyDef bd = m3DefaultBodyDef();
+    bd.type = m3_dynamicBody;
+    bd.position = (m3Pos3){0.0, 0.7, 0.0};
+    m3BodyId chassis = m3CreateBody(world, &bd);
+    sd.density = 300.0f;
+    m3CreateBoxShape(chassis, &sd, (m3Vec3){1.0f, 0.25f, 0.5f});
+    m3VehicleDef vd = m3DefaultVehicleDef();
+    vd.chassis = chassis;
+    vd.wheelCount = 4;
+    for (int32_t w = 0; w < 4; ++w)
+    {
+        vd.wheels[w].anchor =
+            (m3Vec3){(w & 1) != 0 ? 0.8f : -0.8f, -0.25f, (w & 2) != 0 ? 0.45f : -0.45f};
+        vd.wheels[w].driven = true;
+    }
+    m3VehicleId car = m3CreateVehicle(world, &vd);
+    m3DrivetrainDef dt = m3DefaultDrivetrainDef();
+    dt.autoShift = false;
+    m3Vehicle_SetDrivetrain(car, &dt);
+
+    bd.position = (m3Pos3){4.0, 0.7, 3.0};
+    m3BodyId hub = m3CreateBody(world, &bd);
+    sd.density = 100.0f;
+    m3Sphere ball = {{0.0f, 0.0f, 0.0f}, 0.3f};
+    m3CreateSphereShape(hub, &sd, &ball);
+    bd.position = (m3Pos3){4.0, 0.3, 3.0};
+    m3BodyId rim = m3CreateBody(world, &bd);
+    m3CreateSphereShape(rim, &sd, &ball);
+    m3JointDef jd = m3DefaultJointDef();
+    jd.type = m3_wheelJoint;
+    jd.bodyA = hub;
+    jd.bodyB = rim;
+    jd.localAxisA = (m3Vec3){0.0f, -1.0f, 0.0f};
+    jd.localAxisB = (m3Vec3){0.0f, 0.0f, 1.0f};
+    m3JointId axle = m3CreateJoint(&jd);
+    m3Joint_SetMotor(axle, true, -15.0f, 40.0f);
+    m3Joint_SetBreakThresholds(axle, 0.0f, 30.0f);
+
+    m3CharacterDef cd = m3DefaultCharacterDef();
+    cd.position = (m3Pos3){-4.0, 1.0, 0.0};
+    m3CharacterId hero = m3CreateCharacter(world, &cd);
+
+    for (int32_t i = 0; i < 120; ++i)
+    {
+        if (i == 10)
+        {
+            m3Vehicle_SetCommands(car, 1.0f, 0.0f, 0.0f);
+        }
+        if (i % 20 == 5)
+        {
+            m3Vehicle_SelectGear(car, 1 + (i / 20) % 5); // op 63 spray
+        }
+        if (i % 15 == 7)
+        {
+            m3Character_SetStance(hero, i % 30 == 7 ? 0.2f : 0.5f, 0.4f); // op 64 spray
+        }
+        m3Character_Move(hero, (m3Vec3){0.02f, -0.1f, 0.0f});
+        m3World_Step(world, 1.0f / 60.0f, 4);
+    }
+    int32_t journalBytes = m3World_JournalEnd(world);
+    uint64_t final = m3World_Hash(world);
+    int32_t need = m3ReplayEncodeSize(snapBytes, journalBytes);
+    uint8_t* blob = (uint8_t*)malloc((size_t)need);
+    CHECK(m3ReplayEncode(snap, snapBytes, journal, journalBytes, final, blob, need) == need,
+          "the phase 12 session encodes");
+    m3DestroyWorld(world);
+
+    m3ReplayView valid;
+    CHECK(m3ReplayDecode(blob, need, &valid), "the phase 12 session decodes");
+    int32_t journalStart = (int32_t)((const uint8_t*)valid.journal - blob);
+    uint8_t* mutant = (uint8_t*)malloc((size_t)need);
+    uint32_t rng = 246813579u;
+    int32_t refused = 0;
+    int32_t survived = 0;
+    for (int32_t t = 0; t < 300; ++t)
+    {
+        memcpy(mutant, blob, (size_t)need);
+        rng = rng * 1664525u + 1013904223u;
+        int32_t where = journalStart + (int32_t)(rng % (uint32_t)(need - journalStart));
+        rng = rng * 1664525u + 1013904223u;
+        mutant[where] ^= (uint8_t)(1u << (rng % 8));
+        m3ReplayView view;
+        if (!m3ReplayDecode(mutant, need, &view))
+        {
+            refused += 1;
+            continue;
+        }
+        m3WorldDef fresh = Def();
+        fresh.vehicleCapacity = 2;
+        fresh.characterCapacity = 2;
+        fresh.jointCapacity = 8;
+        m3WorldId probe = m3CreateWorld(&fresh);
+        if (m3World_Restore(probe, view.snapshot, view.snapshotBytes))
+        {
+            m3World_JournalReplay(probe, view.journal, view.journalBytes);
+        }
+        m3DestroyWorld(probe);
+        survived += 1;
+    }
+    CHECK(refused + survived == 300, "every phase 12 mutant either refused or survived");
+    free(mutant);
+    free(blob);
+    free(snap);
+}
+
 int main(void)
 {
     TestRoundTrip();
     TestRefusals();
     TestSmallCapacity();
     TestFuzz();
+    TestFuzzPhase12Ops();
     if (s_failures == 0)
     {
         printf("test_replayfile: all green\n");

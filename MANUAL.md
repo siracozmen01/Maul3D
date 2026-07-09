@@ -586,6 +586,73 @@ back the sheet with a thin box when you need a true barrier (a v1
 bound of the box-lattice substrate, recorded here so nobody
 relearns it).
 
+## The drivetrain
+
+The raycast vehicle's flat driveForce grows an engine when you
+attach an m3DrivetrainDef (m3Vehicle_SetDrivetrain, journaled):
+a torque curve of 2..8 pinned control points with deterministic
+linear interpolation (only +,-,*,/ touch the numbers), 1..6
+forward gear ratios plus reverse, a final drive, pinned shift
+RPMs, and a clutch measured in steps of torque cut. The first
+control point is the idle line (a standing car keeps launch
+torque); past the last point the curve extends flat. Engine
+speed derives from chassis forward speed through the driven
+wheels' mean radius and the active ratio; crank torque splits
+equally across driven wheels (an open differential) and the
+friction circle still has the last word at each tire.
+
+With a drivetrain attached, throttle drives forward gears only:
+reverse is gear -1 (m3Vehicle_SelectGear, journaled; 0 is
+neutral) and takes throttle magnitude with direction from the
+gear. Auto shift climbs above shiftUpRpm and drops below
+shiftDownRpm, forward gears only, never while the clutch is
+open (the thrash brake). Current gear, clutch countdown, and
+the tachometer (m3Vehicle_GetGear, m3Vehicle_GetEngineRpm) are
+state: snapshotted, hashed when attached, rolled back mid-shift
+to the bit. Vehicles without a drivetrain keep the flat model
+untouched.
+
+## The wheel joint
+
+m3_wheelJoint is the OPTIONAL rigid-wheel path: the wheel is a
+real body on real contacts (trucks over rubble, wheels in
+fragments), while the raycast vehicle stays the default.
+localAxisA is the suspension axis in the chassis frame,
+localAxisB the axle in the wheel frame; the axle is captured at
+create and snapped exactly perpendicular to the strut (more
+than a small skew refuses loudly). One joint composes both
+halves: the wheel slides along the strut (travel limits from
+enableLimit, suspension spring from m3Joint_SetSpring plus
+m3Joint_SetTargetTranslation) and spins freely about its axle
+(drive with m3Joint_SetMotor; read the spin with
+m3Joint_GetAngle and the travel with m3Joint_GetTranslation).
+
+Breakage is the 8-6 contract unchanged: the force cap snaps a
+wheel torn sideways, the torque cap a drive axle overdriven,
+in-step, evented, and deterministic through rollback. The def
+grew nothing and there is no new state: a wheel joint is
+ordinary joint state and rides every snapshot and hash law that
+already existed.
+
+## Stance
+
+m3Character_SetStance resizes the capsule in place, FEET
+ANCHORED: the center moves so the capsule bottom stays level,
+which also means a mid-air crouch lands shorter, never higher.
+Shrinking always applies (removing volume cannot create
+contact). Growing runs the stand-up veto: the grown capsule is
+cast at its new pose through the same core every move uses, and
+any contact within one skin (a pressing ceiling, a wall against
+a wider radius) refuses the whole change and returns false with
+stance untouched. The veto is bit-deterministic: twins and
+replays grant and refuse in the same pattern.
+
+Only APPLIED changes journal; a vetoed stand writes nothing.
+Stance rides existing state (the capsule shape, the body
+transform, the character config), so snapshots, hashes, and
+rollback cover it with no new machinery. Read it back with
+m3Character_GetStance.
+
 ## The replay studio
 
 An M3J1 file is [header | initial snapshot | journal], encoded

@@ -381,6 +381,65 @@ static void TestHostileWall(void)
     m3DestroyWorld(world);
 }
 
+static void TestShiftThrashStorm(void)
+{
+    // The 12-4 red team: auto shift fighting a manual gear spammer
+    // fighting a rollback loop. Every 7 ticks a manual select
+    // (cycling neutral, first, fifth, reverse), every 11 the
+    // throttle flips, and every 60 the world snapshots, runs 30
+    // more, restores, and re-runs them demanding EXACT bits. Twins
+    // over the whole storm must agree.
+    static uint8_t snap[2097152];
+    uint64_t hashes[2];
+    for (int32_t run = 0; run < 2; ++run)
+    {
+        m3WorldId world = PlaneWorld();
+        m3BodyId chassis;
+        m3VehicleId car = MakeCar(world, (m3Pos3){0.0, 1.0, 0.0}, &chassis);
+        m3DrivetrainDef dt = m3DefaultDrivetrainDef();
+        m3Vehicle_SetDrivetrain(car, &dt); // autoShift stays ON
+        for (int32_t i = 0; i < 120; ++i)
+        {
+            m3World_Step(world, 1.0f / 60.0f, 4);
+        }
+        m3Vehicle_SetCommands(car, 1.0f, 0.0f, 0.0f);
+        const int32_t gears[4] = {0, 1, 5, -1};
+        for (int32_t i = 0; i < 600; ++i)
+        {
+            if (i % 7 == 3)
+            {
+                m3Vehicle_SelectGear(car, gears[(i / 7) % 4]);
+            }
+            if (i % 11 == 5)
+            {
+                m3Vehicle_SetCommands(car, (i / 11) % 2 == 0 ? 0.3f : 1.0f, 0.0f, 0.0f);
+            }
+            m3World_Step(world, 1.0f / 60.0f, 4);
+            if (i % 60 == 59)
+            {
+                int32_t snapBytes = m3World_Snapshot(world, snap, (int32_t)sizeof(snap));
+                CHECK(snapBytes > 0, "the storm snapshot fits");
+                for (int32_t k = 0; k < 30; ++k)
+                {
+                    m3World_Step(world, 1.0f / 60.0f, 4);
+                }
+                uint64_t ahead = m3World_Hash(world);
+                CHECK(m3World_Restore(world, snap, snapBytes), "the storm restore lands");
+                for (int32_t k = 0; k < 30; ++k)
+                {
+                    m3World_Step(world, 1.0f / 60.0f, 4);
+                }
+                CHECK(m3World_Hash(world) == ahead, "the storm re-run is bit-identical");
+            }
+        }
+        int32_t g = m3Vehicle_GetGear(car);
+        CHECK(g >= -1 && g <= 5, "the thrashed gearbox stays in range");
+        hashes[run] = m3World_Hash(world);
+        m3DestroyWorld(world);
+    }
+    CHECK(hashes[0] == hashes[1], "twin thrash storms are bit-identical");
+}
+
 int main(void)
 {
     TestUphillBogAndClimb();
@@ -389,6 +448,7 @@ int main(void)
     TestJournalReplay();
     TestNeutralAndReverse();
     TestHostileWall();
+    TestShiftThrashStorm();
     if (s_failures == 0)
     {
         printf("test_drivetrain: all passed\n");

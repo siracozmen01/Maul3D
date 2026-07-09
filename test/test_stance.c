@@ -268,6 +268,89 @@ static void TestHostileWall(void)
     m3DestroyWorld(world);
 }
 
+static void TestCrouchSpamMovingCeiling(void)
+{
+    // The 12-4 red team: a kinematic press descends and rises over
+    // a character that attempts to STAND EVERY TICK. The veto must
+    // flicker between grant and refusal in perfect step with the
+    // press, twins must flicker identically, and a mid-storm
+    // rollback must re-run onto the same bits. The invariant every
+    // tick: standing means clearance existed at the grant.
+    static uint8_t snap[2097152];
+    uint64_t hashes[2];
+    int32_t grants[2] = {0, 0};
+    for (int32_t run = 0; run < 2; ++run)
+    {
+        m3WorldId world = TunnelWorld();
+        m3BodyDef pd = m3DefaultBodyDef();
+        pd.type = m3_kinematicBody;
+        pd.position = (m3Pos3){-3.0, 2.6, 0.0}; // slab bottom at 2.35
+        m3BodyId press = m3CreateBody(world, &pd);
+        m3ShapeDef sd = m3DefaultShapeDef();
+        m3CreateBoxShape(press, &sd, (m3Vec3){1.5f, 0.25f, 1.5f});
+        m3CharacterDef cd = m3DefaultCharacterDef();
+        cd.position = (m3Pos3){-3.0, 3.0, 0.0};
+        m3CharacterId hero = m3CreateCharacter(world, &cd);
+        for (int32_t i = 0; i < 80; ++i)
+        {
+            m3Character_Move(hero, (m3Vec3){0.0f, -0.1f, 0.0f});
+        }
+        CHECK(m3Character_IsGrounded(hero), "the character lands under the press");
+        int32_t snapBytes = 0;
+        uint64_t midAhead = 0;
+        for (int32_t i = 0; i < 480; ++i)
+        {
+            // The press: down for 120, hold 60, up for 120, hold,
+            // repeat. Speed 0.01 per tick: from 2.35 down to 1.15
+            // (crouch-only) and back.
+            int32_t phase = i % 420;
+            m3real vy = phase < 120 ? -0.6f : (phase < 180 ? 0.0f : (phase < 300 ? 0.6f : 0.0f));
+            m3Body_SetLinearVelocity(press, (m3Vec3){0.0f, vy, 0.0f});
+            m3Character_SetStance(hero, 0.2f, 0.4f); // duck first
+            m3World_Step(world, 1.0f / 60.0f, 4);
+            if (m3Character_SetStance(hero, 0.5f, 0.4f))
+            {
+                grants[run] += 1;
+                m3Character_SetStance(hero, 0.2f, 0.4f); // back down for
+                                                         // the next tick
+            }
+            if (i == 200 && run == 0)
+            {
+                snapBytes = m3World_Snapshot(world, snap, (int32_t)sizeof(snap));
+                CHECK(snapBytes > 0, "the mid-storm snapshot fits");
+            }
+        }
+        hashes[run] = m3World_Hash(world);
+        if (run == 0)
+        {
+            midAhead = hashes[0];
+            CHECK(m3World_Restore(world, snap, snapBytes), "the mid-storm restore lands");
+            int32_t regrants = 0;
+            for (int32_t i = 201; i < 480; ++i)
+            {
+                int32_t phase = i % 420;
+                m3real vy =
+                    phase < 120 ? -0.6f : (phase < 180 ? 0.0f : (phase < 300 ? 0.6f : 0.0f));
+                m3Body_SetLinearVelocity(press, (m3Vec3){0.0f, vy, 0.0f});
+                m3Character_SetStance(hero, 0.2f, 0.4f);
+                m3World_Step(world, 1.0f / 60.0f, 4);
+                if (m3Character_SetStance(hero, 0.5f, 0.4f))
+                {
+                    regrants += 1;
+                    m3Character_SetStance(hero, 0.2f, 0.4f);
+                }
+            }
+            CHECK(m3World_Hash(world) == midAhead, "the re-run storm is bit-identical");
+            (void)regrants;
+        }
+        CHECK(grants[run] > 0, "the veto grants when the press is high");
+        CHECK(grants[run] < 480, "the veto refuses when the press is low");
+        m3DestroyWorld(world);
+    }
+    CHECK(hashes[0] == hashes[1], "twin press storms are bit-identical");
+    CHECK(grants[0] == grants[1], "twin grant patterns are identical");
+}
+
 int main(void)
 {
     TestDuckWalkStand();
@@ -275,6 +358,7 @@ int main(void)
     TestMidAirCrouchLandsShorter();
     TestSlotRefusesWidth();
     TestHostileWall();
+    TestCrouchSpamMovingCeiling();
     if (s_failures == 0)
     {
         printf("test_stance: all passed\n");

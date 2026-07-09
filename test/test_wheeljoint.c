@@ -331,6 +331,63 @@ static void TestHostileWall(void)
     m3DestroyWorld(world);
 }
 
+static void TestAxleCascadeStorm(void)
+{
+    // The 12-4 red team: every axle capped, brutal torque, rough
+    // ground. Axles snap one after another (each break shifts load
+    // onto the survivors), the cart degenerates from car to sled,
+    // and a rollback seeded BEFORE the first break re-runs the
+    // whole cascade onto identical bits. Twins agree end to end.
+    static uint8_t snap[2097152];
+    uint64_t hashes[2];
+    for (int32_t run = 0; run < 2; ++run)
+    {
+        m3WorldId world = PlaneWorld();
+        m3ShapeDef sd = m3DefaultShapeDef();
+        sd.density = 400.0f;
+        for (int32_t i = 0; i < 8; ++i)
+        {
+            m3BodyDef bd = m3DefaultBodyDef();
+            bd.type = m3_dynamicBody;
+            bd.position = (m3Pos3){2.0 + (double)(i % 4) * 0.9, 0.12, -0.8 + (double)(i / 4) * 1.1};
+            m3BodyId brick = m3CreateBody(world, &bd);
+            m3CreateBoxShape(brick, &sd, (m3Vec3){0.2f, 0.1f, 0.2f});
+        }
+        JointCart cart = MakeJointCart(world, (m3Pos3){0.0, 0.66, 0.0});
+        for (int32_t i = 0; i < 120; ++i)
+        {
+            m3World_Step(world, 1.0f / 60.0f, 4);
+        }
+        for (int32_t w = 0; w < CART_WHEELS; ++w)
+        {
+            m3Joint_SetBreakThresholds(cart.joints[w], 0.0f, 18.0f + 4.0f * (m3real)w);
+        }
+        DriveCart(&cart, -35.0f, 120.0f);
+        int32_t snapBytes = m3World_Snapshot(world, snap, (int32_t)sizeof(snap));
+        CHECK(snapBytes > 0, "the pre-cascade snapshot fits");
+        for (int32_t i = 0; i < 600; ++i)
+        {
+            m3World_Step(world, 1.0f / 60.0f, 4);
+        }
+        int32_t broken = 0;
+        for (int32_t w = 0; w < CART_WHEELS; ++w)
+        {
+            broken += m3Joint_IsValid(cart.joints[w]) ? 0 : 1;
+        }
+        CHECK(broken >= 2, "the cascade takes at least two axles");
+        uint64_t after = m3World_Hash(world);
+        CHECK(m3World_Restore(world, snap, snapBytes), "the pre-cascade restore lands");
+        for (int32_t i = 0; i < 600; ++i)
+        {
+            m3World_Step(world, 1.0f / 60.0f, 4);
+        }
+        CHECK(m3World_Hash(world) == after, "the re-run cascade is bit-identical");
+        hashes[run] = after;
+        m3DestroyWorld(world);
+    }
+    CHECK(hashes[0] == hashes[1], "twin cascades are bit-identical");
+}
+
 int main(void)
 {
     TestCartRollsOnFlat();
@@ -338,6 +395,7 @@ int main(void)
     TestBrokenAxleDeterministic();
     TestJournalReplay();
     TestHostileWall();
+    TestAxleCascadeStorm();
     if (s_failures == 0)
     {
         printf("test_wheeljoint: all passed\n");

@@ -4,6 +4,38 @@ All notable changes to Maul3D. Versions are tags on green CI SHAs;
 every entry's determinism gates were verified across all CI cells at
 tag time.
 
+## v1.9 (2026-07-09)
+
+Drivetrain and stance: the last phase of Roadmap 3. The vehicle
+grows a real engine, wheels earn an optional joint body, and the
+character learns to crouch.
+
+- Drivetrain (op 62/63): pinned torque curve with deterministic
+  linear interpolation, 1..6 gears plus reverse, final drive,
+  pinned shift RPMs, clutch in steps; auto shift never mid
+  clutch; gear, countdown, and tachometer are snapshot state
+  hashed only when attached. Snapshot v42.
+- The wheel joint (m3_wheelJoint): one frame composing the
+  revolute's axle half (collinearity pair, spin motor, angle
+  read) with the prismatic's suspension half (point-to-line
+  pair, travel limits, translation spring). The def grew
+  nothing; the axle snaps perpendicular at create or refuses;
+  8-6 breakage applies to axles unchanged.
+- Stance (op 64): m3Character_SetStance, feet anchored, shrink
+  always, grow through the stand-up veto cast through the move
+  core itself (fraction-zero initial overlap PROBED before being
+  built on); vetoed changes journal nothing.
+- The red team: fuzz aimed point-blank at ops 62/63/64, a shift
+  thrash storm against a rollback loop, an axle cascade that
+  degenerates a car into a sled on identical bits, and a crouch
+  spammer under a moving press whose grant pattern twins
+  exactly.
+- MANUAL: the drivetrain, the wheel joint, and stance chapters.
+- One process scar on the ledger: the 12-1 push skipped the
+  local format pass and the format cell caught it (every physics
+  cell was green). The local gate ritual now includes
+  clang-format before every push.
+
 ## v1.8 (2026-07-09)
 
 The admitted gaps, closed: the three capabilities the
