@@ -305,6 +305,11 @@ target_link_libraries(test_compound PRIVATE maul3d)
 maul3d_apply_flags(test_compound)
 add_test(NAME compound COMMAND test_compound)
 
+add_executable(test_softsoft test/test_softsoft.c)
+target_link_libraries(test_softsoft PRIVATE maul3d)
+maul3d_apply_flags(test_softsoft)
+add_test(NAME softsoft COMMAND test_softsoft)
+
 add_executable(test_fuzz test/test_fuzz.c)
 target_link_libraries(test_fuzz PRIVATE maul3d)
 maul3d_apply_flags(test_fuzz)

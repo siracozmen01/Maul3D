@@ -630,6 +630,130 @@ void m3SoftBodyPass(m3World* world, float dt, int32_t substeps)
                 }
             }
         }
+
+        // Soft-vs-soft (11-1): particle pairs between DIFFERENT
+        // lattices, the gap the competitors' own docs admit.
+        // Canonical order: lower slot first, ascending particle
+        // indices, one projection per substep. Self-collision stays
+        // out on purpose: a box lattice's structure rods already
+        // hold it apart at these scales (documented since 7-1).
+        // No new snapshot state: contacts are transient projections.
+        for (int32_t sa = 0; sa < world->softPool.maxIndex; ++sa)
+        {
+            if (world->softPool.alive[sa] == 0)
+            {
+                continue;
+            }
+            int32_t countA = world->softParticleCount[sa];
+            int32_t baseA = sa * M3_SOFTBODY_MAX_PARTICLES;
+            m3real ra = world->softRadius[sa];
+            // Lattice bounds, current predicted positions.
+            double loA[3] = {1.0e30, 1.0e30, 1.0e30};
+            double hiA[3] = {-1.0e30, -1.0e30, -1.0e30};
+            for (int32_t i = 0; i < countA; ++i)
+            {
+                const m3Pos3* p = &world->softPos[baseA + i];
+                loA[0] = p->x < loA[0] ? p->x : loA[0];
+                loA[1] = p->y < loA[1] ? p->y : loA[1];
+                loA[2] = p->z < loA[2] ? p->z : loA[2];
+                hiA[0] = p->x > hiA[0] ? p->x : hiA[0];
+                hiA[1] = p->y > hiA[1] ? p->y : hiA[1];
+                hiA[2] = p->z > hiA[2] ? p->z : hiA[2];
+            }
+            for (int32_t sb = sa + 1; sb < world->softPool.maxIndex; ++sb)
+            {
+                if (world->softPool.alive[sb] == 0)
+                {
+                    continue;
+                }
+                int32_t countB = world->softParticleCount[sb];
+                int32_t baseB = sb * M3_SOFTBODY_MAX_PARTICLES;
+                m3real rb = world->softRadius[sb];
+                double reach = (double)(ra + rb);
+                double loB[3] = {1.0e30, 1.0e30, 1.0e30};
+                double hiB[3] = {-1.0e30, -1.0e30, -1.0e30};
+                for (int32_t j = 0; j < countB; ++j)
+                {
+                    const m3Pos3* p = &world->softPos[baseB + j];
+                    loB[0] = p->x < loB[0] ? p->x : loB[0];
+                    loB[1] = p->y < loB[1] ? p->y : loB[1];
+                    loB[2] = p->z < loB[2] ? p->z : loB[2];
+                    hiB[0] = p->x > hiB[0] ? p->x : hiB[0];
+                    hiB[1] = p->y > hiB[1] ? p->y : hiB[1];
+                    hiB[2] = p->z > hiB[2] ? p->z : hiB[2];
+                }
+                if (loA[0] > hiB[0] + reach || loB[0] > hiA[0] + reach || loA[1] > hiB[1] + reach ||
+                    loB[1] > hiA[1] + reach || loA[2] > hiB[2] + reach || loB[2] > hiA[2] + reach)
+                {
+                    continue; // lattices out of reach: no pair work
+                }
+                m3real target = ra + rb;
+                m3real target2 = target * target;
+                for (int32_t i = 0; i < countA; ++i)
+                {
+                    int32_t ka = baseA + i;
+                    m3real wa = world->softInvMass[ka];
+                    for (int32_t j = 0; j < countB; ++j)
+                    {
+                        int32_t kb = baseB + j;
+                        m3Vec3 d = {(m3real)(world->softPos[ka].x - world->softPos[kb].x),
+                                    (m3real)(world->softPos[ka].y - world->softPos[kb].y),
+                                    (m3real)(world->softPos[ka].z - world->softPos[kb].z)};
+                        m3real dist2 = m3Dot3(d, d);
+                        if (dist2 >= target2 || dist2 <= 1.0e-12f)
+                        {
+                            continue; // apart, or dead-centered (skip:
+                                      // no deterministic normal exists)
+                        }
+                        m3real wb = world->softInvMass[kb];
+                        m3real wSum = wa + wb;
+                        if (wSum <= 0.0f)
+                        {
+                            continue;
+                        }
+                        m3real dist = sqrtf(dist2);
+                        m3Vec3 n = m3MulSV3(1.0f / dist, d);
+                        m3real pen = target - dist;
+                        m3Vec3 pushA = m3MulSV3(pen * wa / wSum, n);
+                        m3Vec3 pushB = m3MulSV3(-pen * wb / wSum, n);
+                        world->softPos[ka].x += (double)pushA.x;
+                        world->softPos[ka].y += (double)pushA.y;
+                        world->softPos[ka].z += (double)pushA.z;
+                        world->softPos[kb].x += (double)pushB.x;
+                        world->softPos[kb].y += (double)pushB.y;
+                        world->softPos[kb].z += (double)pushB.z;
+                        // PBD friction, the SoftProject rule with a
+                        // fixed mix (no per-lattice friction state in
+                        // v1, documented): tangential motion this
+                        // substep shrinks by mu times the correction.
+                        const m3real mu = 0.5f;
+                        m3Vec3 velA = {(m3real)(world->softPos[ka].x - world->softPrev[ka].x),
+                                       (m3real)(world->softPos[ka].y - world->softPrev[ka].y),
+                                       (m3real)(world->softPos[ka].z - world->softPrev[ka].z)};
+                        m3Vec3 velB = {(m3real)(world->softPos[kb].x - world->softPrev[kb].x),
+                                       (m3real)(world->softPos[kb].y - world->softPrev[kb].y),
+                                       (m3real)(world->softPos[kb].z - world->softPrev[kb].z)};
+                        m3Vec3 rel = m3Sub3(velA, velB);
+                        m3Vec3 tangential = m3Sub3(rel, m3MulSV3(m3Dot3(rel, n), n));
+                        m3real tLen = m3Length3(tangential);
+                        if (tLen > 1.0e-9f)
+                        {
+                            m3real budget = mu * pen;
+                            m3real cut = tLen < budget ? tLen : budget;
+                            m3Vec3 corr = m3MulSV3(cut / tLen, tangential);
+                            m3Vec3 corrA = m3MulSV3(-wa / wSum, corr);
+                            m3Vec3 corrB = m3MulSV3(wb / wSum, corr);
+                            world->softPos[ka].x += (double)corrA.x;
+                            world->softPos[ka].y += (double)corrA.y;
+                            world->softPos[ka].z += (double)corrA.z;
+                            world->softPos[kb].x += (double)corrB.x;
+                            world->softPos[kb].y += (double)corrB.y;
+                            world->softPos[kb].z += (double)corrB.z;
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
