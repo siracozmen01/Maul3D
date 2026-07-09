@@ -1670,6 +1670,11 @@ int main(void)
 
         // ---- render
         BeginDrawing();
+        // ClearBackground clears the DEPTH buffer, not just color:
+        // skipping it leaves last frame's depth in place and the
+        // whole scene shreds as the camera moves (the first Windows
+        // run proved it). The sky gradient paints OVER the clear.
+        ClearBackground((Color){164, 170, 184, 255});
         DrawSky(screenW, screenH);
         BeginMode3D(camera);
         DrawGround();
