@@ -36,6 +36,27 @@ extern "C"
     /// skipped; the call itself never mutates the world.
     M3_API void m3World_Draw(m3WorldId worldId, const m3DebugDraw* draw);
 
+    /// Solid draw: the world describes itself as FILLED triangles in
+    /// world space, counter-clockwise seen from outside, so a viewer
+    /// can light and shadow real surfaces. A SEPARATE struct and
+    /// entry point on purpose: the m3DebugDraw layout above is
+    /// frozen ABI under 1.x and growing it would hand stale-compiled
+    /// hosts uninitialized function pointers.
+    typedef struct m3SolidDraw
+    {
+        void (*DrawTriangle)(m3Pos3 a, m3Pos3 b, m3Pos3 c, uint32_t color, void* context);
+        void* context;
+        bool drawSleepTint; // sleeping dynamics take the sleep gray
+    } m3SolidDraw;
+
+    /// Emit every live shape as triangles: spheres and capsules
+    /// tessellate at fixed counts, hulls fan their face loops,
+    /// meshes emit their stored triangles, voxel surfaces emit their
+    /// merged-box faces. Infinite planes are SKIPPED (a viewer draws
+    /// its own ground). Read-only like m3World_Draw and held by the
+    /// same purity test: a draw pass never moves the world hash.
+    M3_API void m3World_DrawSolid(m3WorldId worldId, const m3SolidDraw* draw);
+
 #ifdef __cplusplus
 }
 #endif

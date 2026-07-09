@@ -299,3 +299,227 @@ void m3World_Draw(m3WorldId worldId, const m3DebugDraw* draw)
         }
     }
 }
+
+// --------------------------------------------------------------------
+// Solid draw: filled triangles for a lighting viewer. Same read-only
+// law, same palette, fixed tessellation counts so twin worlds emit
+// identical streams.
+// --------------------------------------------------------------------
+
+#define M3_SOLID_SEGMENTS 12
+#define M3_SOLID_RINGS    6
+
+typedef struct m3SolidContext
+{
+    const m3SolidDraw* draw;
+    const m3World* world;
+} m3SolidContext;
+
+static void SolidTri(const m3SolidContext* ctx, const m3Transform* xf, m3Vec3 a, m3Vec3 b, m3Vec3 c,
+                     uint32_t color)
+{
+    ctx->draw->DrawTriangle(ToWorld(xf, a), ToWorld(xf, b), ToWorld(xf, c), color,
+                            ctx->draw->context);
+}
+
+// A unit-lattitude point on the sphere around `center`.
+static m3Vec3 SpherePoint(m3Vec3 center, m3real radius, int32_t ring, int32_t seg)
+{
+    m3real phi = (m3real)ring * (M3_PI / (m3real)M3_SOLID_RINGS); // 0..pi
+    m3real theta = (m3real)seg * (2.0f * M3_PI / (m3real)M3_SOLID_SEGMENTS);
+    m3CosSin cp = m3ComputeCosSin(phi);
+    m3CosSin ct = m3ComputeCosSin(theta);
+    m3Vec3 dir = {cp.s * ct.c, cp.c, cp.s * ct.s};
+    return m3Add3(center, m3MulSV3(radius, dir));
+}
+
+static void SolidSphere(const m3SolidContext* ctx, const m3Transform* xf, m3Vec3 center,
+                        m3real radius, uint32_t color)
+{
+    for (int32_t r = 0; r < M3_SOLID_RINGS; ++r)
+    {
+        for (int32_t s = 0; s < M3_SOLID_SEGMENTS; ++s)
+        {
+            m3Vec3 a = SpherePoint(center, radius, r, s);
+            m3Vec3 b = SpherePoint(center, radius, r + 1, s);
+            m3Vec3 c = SpherePoint(center, radius, r + 1, s + 1);
+            m3Vec3 d = SpherePoint(center, radius, r, s + 1);
+            if (r > 0)
+            {
+                SolidTri(ctx, xf, a, d, b, color);
+            }
+            if (r < M3_SOLID_RINGS - 1)
+            {
+                SolidTri(ctx, xf, b, d, c, color);
+            }
+        }
+    }
+}
+
+// A capsule cap point: hemisphere around `center`, axis-aligned to
+// the segment direction through the tangent basis.
+static m3Vec3 CapPoint(m3Vec3 center, m3Vec3 axis, m3Vec3 t1, m3Vec3 t2, m3real radius,
+                       int32_t ring, int32_t seg, int32_t rings)
+{
+    m3real phi = (m3real)ring * (0.5f * M3_PI / (m3real)rings); // 0..pi/2
+    m3real theta = (m3real)seg * (2.0f * M3_PI / (m3real)M3_SOLID_SEGMENTS);
+    m3CosSin cp = m3ComputeCosSin(phi);
+    m3CosSin ct = m3ComputeCosSin(theta);
+    m3Vec3 dir =
+        m3Add3(m3MulSV3(cp.c, axis), m3Add3(m3MulSV3(cp.s * ct.c, t1), m3MulSV3(cp.s * ct.s, t2)));
+    return m3Add3(center, m3MulSV3(radius, dir));
+}
+
+static void SolidCapsule(const m3SolidContext* ctx, const m3Transform* xf, m3Vec3 p1, m3Vec3 p2,
+                         m3real radius, uint32_t color)
+{
+    m3Vec3 axis = m3Normalize3(m3Sub3(p2, p1));
+    m3Vec3 t1;
+    m3Vec3 t2;
+    m3MakeTangentBasis(axis, &t1, &t2);
+    const int32_t capRings = 3;
+    // The cylinder side.
+    for (int32_t s = 0; s < M3_SOLID_SEGMENTS; ++s)
+    {
+        m3real thetaA = (m3real)s * (2.0f * M3_PI / (m3real)M3_SOLID_SEGMENTS);
+        m3real thetaB = (m3real)(s + 1) * (2.0f * M3_PI / (m3real)M3_SOLID_SEGMENTS);
+        m3CosSin ca = m3ComputeCosSin(thetaA);
+        m3CosSin cb = m3ComputeCosSin(thetaB);
+        m3Vec3 ra = m3Add3(m3MulSV3(radius * ca.c, t1), m3MulSV3(radius * ca.s, t2));
+        m3Vec3 rb = m3Add3(m3MulSV3(radius * cb.c, t1), m3MulSV3(radius * cb.s, t2));
+        m3Vec3 a = m3Add3(p1, ra);
+        m3Vec3 b = m3Add3(p2, ra);
+        m3Vec3 c = m3Add3(p2, rb);
+        m3Vec3 d = m3Add3(p1, rb);
+        SolidTri(ctx, xf, a, b, c, color);
+        SolidTri(ctx, xf, a, c, d, color);
+    }
+    // Hemisphere caps: p2 along +axis, p1 along -axis.
+    m3Vec3 negAxis = m3Neg3(axis);
+    for (int32_t r = 0; r < capRings; ++r)
+    {
+        for (int32_t s = 0; s < M3_SOLID_SEGMENTS; ++s)
+        {
+            m3Vec3 a2 = CapPoint(p2, axis, t1, t2, radius, r, s, capRings);
+            m3Vec3 b2 = CapPoint(p2, axis, t1, t2, radius, r + 1, s, capRings);
+            m3Vec3 c2 = CapPoint(p2, axis, t1, t2, radius, r + 1, s + 1, capRings);
+            m3Vec3 d2 = CapPoint(p2, axis, t1, t2, radius, r, s + 1, capRings);
+            if (r > 0)
+            {
+                SolidTri(ctx, xf, a2, b2, d2, color);
+            }
+            SolidTri(ctx, xf, b2, c2, d2, color);
+            // The mirror cap winds the other way.
+            m3Vec3 a1 = CapPoint(p1, negAxis, t1, t2, radius, r, s, capRings);
+            m3Vec3 b1 = CapPoint(p1, negAxis, t1, t2, radius, r + 1, s, capRings);
+            m3Vec3 c1 = CapPoint(p1, negAxis, t1, t2, radius, r + 1, s + 1, capRings);
+            m3Vec3 d1 = CapPoint(p1, negAxis, t1, t2, radius, r, s + 1, capRings);
+            if (r > 0)
+            {
+                SolidTri(ctx, xf, a1, d1, b1, color);
+            }
+            SolidTri(ctx, xf, b1, d1, c1, color);
+        }
+    }
+}
+
+static void SolidBoxFaces(const m3SolidContext* ctx, const m3Transform* xf, m3Vec3 lo, m3Vec3 hi,
+                          uint32_t color)
+{
+    m3Vec3 c[8];
+    for (int32_t k = 0; k < 8; ++k)
+    {
+        c[k] = (m3Vec3){(k & 1) != 0 ? hi.x : lo.x, (k & 2) != 0 ? hi.y : lo.y,
+                        (k & 4) != 0 ? hi.z : lo.z};
+    }
+    // Six faces, CCW from outside.
+    static const int32_t faces[6][4] = {{1, 5, 7, 3}, {0, 2, 6, 4}, {2, 3, 7, 6},
+                                        {0, 4, 5, 1}, {4, 6, 7, 5}, {0, 1, 3, 2}};
+    for (int32_t f = 0; f < 6; ++f)
+    {
+        SolidTri(ctx, xf, c[faces[f][0]], c[faces[f][1]], c[faces[f][2]], color);
+        SolidTri(ctx, xf, c[faces[f][0]], c[faces[f][2]], c[faces[f][3]], color);
+    }
+}
+
+static void DrawShapeSolid(const m3SolidContext* ctx, int32_t shape)
+{
+    const m3World* world = ctx->world;
+    m3Transform xfS = m3ShapeWorldTransform(world, shape);
+    const m3Transform* xf = &xfS;
+    m3DebugDraw tintProbe;
+    tintProbe.drawSleepTint = ctx->draw->drawSleepTint;
+    uint32_t color = ShapeColor(world, shape, &tintProbe);
+    uint8_t type = world->shapeType[shape];
+
+    if (type == (uint8_t)m3_sphereShape)
+    {
+        SolidSphere(ctx, xf, world->shapeGeom[shape].v, world->shapeGeom[shape].s, color);
+        return;
+    }
+    if (type == (uint8_t)m3_capsuleShape)
+    {
+        SolidCapsule(ctx, xf, world->shapeGeom[shape].v, world->shapeGeom[shape].v2,
+                     world->shapeGeom[shape].s, color);
+        return;
+    }
+    if (type == (uint8_t)m3_hullShape)
+    {
+        const m3HullData* hull = &world->hullData[world->shapeHullIndex[shape]];
+        for (int32_t f = 0; f < hull->faceCount; ++f)
+        {
+            int32_t start = hull->faceVertStart[f];
+            int32_t count = hull->faceVertCounts[f];
+            m3Vec3 root = hull->vertices[hull->faceIndices[start]];
+            for (int32_t k = 1; k + 1 < count; ++k)
+            {
+                SolidTri(ctx, xf, root, hull->vertices[hull->faceIndices[start + k]],
+                         hull->vertices[hull->faceIndices[start + k + 1]], color);
+            }
+        }
+        return;
+    }
+    if (type == (uint8_t)m3_meshShape)
+    {
+        const m3MeshData* mesh = &world->meshData[world->shapeMeshIndex[shape]];
+        for (int32_t t = 0; t < mesh->triangleCount; ++t)
+        {
+            SolidTri(ctx, xf, mesh->vertices[mesh->indices[3 * t + 0]],
+                     mesh->vertices[mesh->indices[3 * t + 1]],
+                     mesh->vertices[mesh->indices[3 * t + 2]], color);
+        }
+        return;
+    }
+    if (type == (uint8_t)m3_voxelShape)
+    {
+        const m3VoxelSurface* surface = &world->voxelSurface[world->shapeVoxelIndex[shape]];
+        m3real cell = world->voxelData[world->shapeVoxelIndex[shape]].cellSize;
+        for (int32_t b = 0; b < surface->boxCount; ++b)
+        {
+            m3Vec3 lo;
+            m3Vec3 hi;
+            m3VoxelBoxBounds(surface, cell, b, &lo, &hi);
+            SolidBoxFaces(ctx, xf, lo, hi, color);
+        }
+        return;
+    }
+    // Infinite planes are skipped: the viewer owns its ground.
+}
+
+void m3World_DrawSolid(m3WorldId worldId, const m3SolidDraw* draw)
+{
+    m3World* world = m3WorldFromId(worldId);
+    if (world == NULL || draw == NULL || draw->DrawTriangle == NULL)
+    {
+        return;
+    }
+    m3SolidContext ctx = {draw, world};
+    int32_t maxShape = world->shapePool.maxIndex;
+    for (int32_t s = 0; s < maxShape; ++s)
+    {
+        if (world->shapePool.alive[s] != 0)
+        {
+            DrawShapeSolid(&ctx, s);
+        }
+    }
+}

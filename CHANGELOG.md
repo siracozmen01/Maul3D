@@ -4,6 +4,20 @@ All notable changes to Maul3D. Versions are tags on green CI SHAs;
 every entry's determinism gates were verified across all CI cells at
 tag time.
 
+## Unreleased
+
+- The testbed grew up: thirteen categorized scenes (benchmarks,
+  destruction, geared and wheel-joint vehicles, the crouch veto,
+  cloth in gusting wind over a conveyor, a rolling heightfield),
+  solid shading under one sun with planar shadows on a
+  sky-and-ground stage, a side panel (solver, draw toggles), a
+  scene browser, and a Recording panel that seals the session
+  into an M3J1 container and verifies it bit-exact on demand.
+- New additive API: m3World_DrawSolid emits every shape as filled
+  world-space triangles for lighting viewers (a separate struct
+  and entry point; the original m3DebugDraw layout stays frozen
+  ABI). Held by the same draw-purity test as the wireframe walk.
+
 ## v1.9 (2026-07-09)
 
 Drivetrain and stance: the last phase of Roadmap 3. The vehicle

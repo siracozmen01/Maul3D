@@ -98,6 +98,16 @@ static void SinkPoint(m3Pos3 p, m3real size, uint32_t color, void* context)
     SinkFold(sink, &color, sizeof(color));
 }
 
+static void SinkTriangle(m3Pos3 a, m3Pos3 b, m3Pos3 c, uint32_t color, void* context)
+{
+    DrawSink* sink = (DrawSink*)context;
+    sink->segments += 1; // triangles count as emissions like the rest
+    (void)a;
+    (void)b;
+    (void)c;
+    (void)color;
+}
+
 static DrawSink MakeSink(void)
 {
     DrawSink sink;
@@ -254,6 +264,14 @@ static void TestDrawIsPureObserver(void)
     m3DebugDraw draw = AllOn(&sink);
     m3World_Draw(world, &draw);
     m3World_Draw(world, &draw); // twice: a second pass is as pure as the first
+    m3SolidDraw solid;
+    memset(&solid, 0, sizeof(solid));
+    solid.DrawTriangle = SinkTriangle;
+    solid.context = &sink;
+    solid.drawSleepTint = true;
+    m3World_DrawSolid(world, &solid); // the solid pass is held to the
+                                      // same purity law
+    m3World_DrawSolid(world, &solid);
 
     CHECK(m3World_Snapshot(world, after, bytes) == bytes, "snapshot after writes");
     CHECK(memcmp(before, after, (size_t)bytes) == 0, "a draw pass moves no bits");

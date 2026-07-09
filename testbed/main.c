@@ -14,10 +14,19 @@
 //   tab         next scene   F5      restart scene
 //   R (hold)    REWIND TIME through the snapshot ring
 //   F1          toggle AABBs F2      toggle contacts
+//   ENTER       scene browser        F3   toggle wind (cloth scene)
+//   C           crouch toggle (walker scenes)
+//
+// The look (post-1.9): a sky gradient, a lit ground plane, and the
+// engine's solid triangle stream shaded by one sun with planar
+// shadows. The wireframe pass survives as an overlay toggle; the
+// simulation stays untouched (the solid walk is read-only and held
+// by the same purity test as the wireframe one).
 
 #include "maul3d/character.h"
 #include "maul3d/draw.h"
 #include "maul3d/joint.h"
+#include "maul3d/replay.h"
 #include "maul3d/shape.h"
 #include "maul3d/softbody.h"
 #include "maul3d/vehicle.h"
@@ -78,6 +87,129 @@ static void DrawPointCb(m3Pos3 p, m3real size, uint32_t color, void* context)
     DrawCubeV(FromPos(p), (Vector3){s, s, s}, FromHex(color));
 }
 
+// -------------------------------------------------- solid render pass
+// The engine emits filled world-space triangles; the viewer buffers
+// them, drops a planar shadow for each, then shades with one sun.
+// All of it is view-side cosmetics: the stream is read-only.
+
+#define TB_MAX_TRIS 131072
+
+typedef struct tbTri
+{
+    Vector3 a;
+    Vector3 b;
+    Vector3 c;
+    Color base;
+} tbTri;
+
+static tbTri s_tris[TB_MAX_TRIS];
+static int32_t s_triCount = 0;
+
+static void SolidTriCb(m3Pos3 a, m3Pos3 b, m3Pos3 c, uint32_t color, void* context)
+{
+    (void)context;
+    if (s_triCount >= TB_MAX_TRIS)
+    {
+        return;
+    }
+    tbTri* t = &s_tris[s_triCount++];
+    t->a = FromPos(a);
+    t->b = FromPos(b);
+    t->c = FromPos(c);
+    t->base = FromHex(color);
+}
+
+// The sun: a fixed direction, normalized once by hand.
+static const Vector3 s_sun = {-0.42f, -0.82f, -0.39f};
+
+static Vector3 TriNormal(const tbTri* t)
+{
+    Vector3 u = {t->b.x - t->a.x, t->b.y - t->a.y, t->b.z - t->a.z};
+    Vector3 v = {t->c.x - t->a.x, t->c.y - t->a.y, t->c.z - t->a.z};
+    Vector3 n = {u.y * v.z - u.z * v.y, u.z * v.x - u.x * v.z, u.x * v.y - u.y * v.x};
+    float len = sqrtf(n.x * n.x + n.y * n.y + n.z * n.z);
+    if (len > 1.0e-9f)
+    {
+        n.x /= len;
+        n.y /= len;
+        n.z /= len;
+    }
+    return n;
+}
+
+static Vector3 ShadowProject(Vector3 v)
+{
+    // Project along the sun onto the ground plane, lifted a hair so
+    // the shadow wins the depth fight against the ground quad.
+    float t = (v.y - 0.02f) / -s_sun.y;
+    return (Vector3){v.x + s_sun.x * t, 0.02f, v.z + s_sun.z * t};
+}
+
+static void FlushSolid(bool shadows)
+{
+    if (shadows)
+    {
+        Color ink = {20, 22, 30, 36};
+        for (int32_t i = 0; i < s_triCount; ++i)
+        {
+            const tbTri* t = &s_tris[i];
+            if (t->a.y < 0.06f && t->b.y < 0.06f && t->c.y < 0.06f)
+            {
+                continue; // ground-level faces cast nothing useful
+            }
+            // Both windings: the projection can flip orientation and
+            // raylib culls back faces.
+            Vector3 pa = ShadowProject(t->a);
+            Vector3 pb = ShadowProject(t->b);
+            Vector3 pc = ShadowProject(t->c);
+            DrawTriangle3D(pa, pb, pc, ink);
+            DrawTriangle3D(pa, pc, pb, ink);
+        }
+    }
+    for (int32_t i = 0; i < s_triCount; ++i)
+    {
+        const tbTri* t = &s_tris[i];
+        Vector3 n = TriNormal(t);
+        float lambert = -(n.x * s_sun.x + n.y * s_sun.y + n.z * s_sun.z);
+        if (lambert < 0.0f)
+        {
+            lambert = 0.0f;
+        }
+        float shade = 0.44f + 0.56f * lambert;
+        Color lit = {(unsigned char)((float)t->base.r * shade),
+                     (unsigned char)((float)t->base.g * shade),
+                     (unsigned char)((float)t->base.b * shade), 255};
+        DrawTriangle3D(t->a, t->b, t->c, lit);
+    }
+    s_triCount = 0;
+}
+
+static void DrawSky(int width, int height)
+{
+    DrawRectangleGradientV(0, 0, width, (int)(height * 0.62f), (Color){86, 92, 112, 255},
+                           (Color){164, 170, 184, 255});
+    DrawRectangle(0, (int)(height * 0.62f), width, height, (Color){164, 170, 184, 255});
+}
+
+static void DrawGround(void)
+{
+    // A lit slab and a modest grid: the Box3D stage, not a void.
+    DrawPlane((Vector3){0.0f, -0.015f, 0.0f}, (Vector2){240.0f, 240.0f},
+              (Color){157, 157, 159, 255});
+    Color minor = {143, 143, 146, 255};
+    Color major = {128, 128, 132, 255};
+    for (int32_t k = -60; k <= 60; ++k)
+    {
+        Color c = (k % 10 == 0) ? major : minor;
+        DrawLine3D((Vector3){(float)k, 0.0f, -60.0f}, (Vector3){(float)k, 0.0f, 60.0f}, c);
+        DrawLine3D((Vector3){-60.0f, 0.0f, (float)k}, (Vector3){60.0f, 0.0f, (float)k}, c);
+    }
+    DrawLine3D((Vector3){-60.0f, 0.001f, 0.0f}, (Vector3){60.0f, 0.001f, 0.0f},
+               (Color){170, 90, 90, 255});
+    DrawLine3D((Vector3){0.0f, 0.001f, -60.0f}, (Vector3){0.0f, 0.001f, 60.0f},
+               (Color){90, 90, 170, 255});
+}
+
 // -------------------------------------------------------------- scenes
 typedef struct tbScene
 {
@@ -86,8 +218,14 @@ typedef struct tbScene
     m3CharacterId hero; // the playable walker, if the scene has one
     m3VehicleId car;    // the playable car, if the scene has one
     m3SoftBodyId jelly; // the star of the jelly scene
+    m3SoftBodyId cloth; // the wind scene's sheet
     m3BodyId carBody;   // its chassis (camera and wheel draw)
+    m3BodyId chaseBody; // camera chase target without a vehicle
     m3BodyId ferry;     // the host-driven platform, if any
+    m3JointId axles[4]; // the joint cart's wheel joints
+    bool geared;        // the drivetrain HUD reads gear and RPM
+    m3WorldDef def;     // the world's recipe (replay verify rebuilds
+                        // a probe with the same capacities)
     const char* name;
     const char* blurb;
 } tbScene;
@@ -122,6 +260,7 @@ static tbScene SceneKeep(void)
     scene.name = "voxfort";
     scene.blurb = "E carves at the crosshair, left click shoots, R rewinds time";
     m3WorldDef def = SceneDef();
+    scene.def = def;
     scene.world = m3CreateWorld(&def);
     AddFloor(scene.world);
 
@@ -161,6 +300,7 @@ static tbScene SceneRain(void)
     scene.name = "rain";
     scene.blurb = "mixed bodies fall on a pyramid; B drops crates";
     m3WorldDef def = SceneDef();
+    scene.def = def;
     scene.world = m3CreateWorld(&def);
     AddFloor(scene.world);
     m3ShapeDef sd = m3DefaultShapeDef();
@@ -214,6 +354,7 @@ static tbScene SceneMachines(void)
     scene.name = "machines";
     scene.blurb = "joints at work: motor door, chain, shoulder, slider";
     m3WorldDef def = SceneDef();
+    scene.def = def;
     scene.world = m3CreateWorld(&def);
     AddFloor(scene.world);
     m3ShapeDef sd = m3DefaultShapeDef();
@@ -322,6 +463,7 @@ static tbScene SceneWalker(void)
     scene.name = "walker";
     scene.blurb = "WASD walk, SPACE jump, E carve under feet, ride the ferry";
     m3WorldDef def = SceneDef();
+    scene.def = def;
     scene.world = m3CreateWorld(&def);
     AddFloor(scene.world);
 
@@ -397,6 +539,7 @@ static tbScene SceneCircuit(void)
     scene.name = "circuit";
     scene.blurb = "W/S throttle, A/D steer, SPACE handbrake, crash the fort";
     m3WorldDef def = SceneDef();
+    scene.def = def;
     scene.world = m3CreateWorld(&def);
     AddFloor(scene.world);
     m3ShapeDef sd = m3DefaultShapeDef();
@@ -489,6 +632,7 @@ static tbScene SceneJelly(void)
     scene.blurb = "a soft lattice on the keep: E carves, LMB shoots, R rewinds";
     m3WorldDef def = SceneDef();
     def.softBodyCapacity = 2;
+    scene.def = def;
     scene.world = m3CreateWorld(&def);
     AddFloor(scene.world);
 
@@ -531,10 +675,346 @@ static tbScene SceneJelly(void)
     return scene;
 }
 
-typedef tbScene (*SceneBuilder)(void);
-static const SceneBuilder s_builders[] = {SceneKeep,   SceneRain,    SceneMachines,
-                                          SceneWalker, SceneCircuit, SceneJelly};
-#define SCENE_COUNT ((int32_t)(sizeof(s_builders) / sizeof(s_builders[0])))
+// Scene 7: the pyramid. The classic stack benchmark, watchable.
+static tbScene ScenePyramid(void)
+{
+    tbScene scene;
+    memset(&scene, 0, sizeof(scene));
+    scene.name = "pyramid";
+    scene.blurb = "the classic box pyramid; LMB shoots, R rewinds the collapse";
+    m3WorldDef def = SceneDef();
+    scene.def = def;
+    scene.world = m3CreateWorld(&def);
+    AddFloor(scene.world);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    sd.friction = 0.6f;
+    const int32_t base = 9;
+    for (int32_t layer = 0; layer < base; ++layer)
+    {
+        int32_t n = base - layer;
+        for (int32_t i = 0; i < n; ++i)
+        {
+            for (int32_t j = 0; j < n; ++j)
+            {
+                m3BodyDef bd = m3DefaultBodyDef();
+                bd.type = m3_dynamicBody;
+                bd.position = (m3Pos3){(double)i - 0.5 * (double)n, 0.4 + 0.81 * (double)layer,
+                                       (double)j - 0.5 * (double)n};
+                m3BodyId body = m3CreateBody(scene.world, &bd);
+                m3CreateBoxShape(body, &sd, (m3Vec3){0.4f, 0.4f, 0.4f});
+            }
+        }
+    }
+    return scene;
+}
+
+// Scene 8: the tower. One tall stack and a wrecking ball on a chain.
+static tbScene SceneTower(void)
+{
+    tbScene scene;
+    memset(&scene, 0, sizeof(scene));
+    scene.name = "tower";
+    scene.blurb = "a tall stack and a wrecking ball; cut the chain with a shot";
+    m3WorldDef def = SceneDef();
+    scene.def = def;
+    scene.world = m3CreateWorld(&def);
+    AddFloor(scene.world);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    sd.friction = 0.6f;
+    for (int32_t k = 0; k < 14; ++k)
+    {
+        m3BodyDef bd = m3DefaultBodyDef();
+        bd.type = m3_dynamicBody;
+        bd.position = (m3Pos3){0.0, 0.45 + 0.91 * (double)k, 0.0};
+        m3CreateBoxShape(m3CreateBody(scene.world, &bd), &sd, (m3Vec3){0.45f, 0.45f, 0.45f});
+    }
+    // The ball hangs from a post on a breakable distance rope.
+    m3BodyDef pd = m3DefaultBodyDef();
+    pd.position = (m3Pos3){-6.0, 14.0, 0.0};
+    m3BodyId post = m3CreateBody(scene.world, &pd);
+    m3BodyDef wd = m3DefaultBodyDef();
+    wd.type = m3_dynamicBody;
+    wd.position = (m3Pos3){-6.0, 8.0, -6.0};
+    m3BodyId ball = m3CreateBody(scene.world, &wd);
+    m3ShapeDef bs = m3DefaultShapeDef();
+    bs.density = 8.0f;
+    m3Sphere heavy = {{0.0f, 0.0f, 0.0f}, 0.9f};
+    m3CreateSphereShape(ball, &bs, &heavy);
+    m3JointDef jd = m3DefaultJointDef();
+    jd.type = m3_distanceJoint;
+    jd.bodyA = post;
+    jd.bodyB = ball;
+    jd.enableLimit = true;
+    jd.lowerLimit = 0.0f;
+    jd.upperLimit = 8.4f;
+    m3JointId rope = m3CreateJoint(&jd);
+    m3Joint_SetBreakThresholds(rope, 2200.0f, 0.0f);
+    return scene;
+}
+
+// Scene 9: the hill. The geared car against a slope that top gear
+// cannot climb: the 12-1 analytic, playable.
+static tbScene SceneHill(void)
+{
+    tbScene scene;
+    memset(&scene, 0, sizeof(scene));
+    scene.name = "hillclimb";
+    scene.blurb = "geared car: W throttle, A/D steer, Q reverse, watch the gear HUD";
+    m3WorldDef def = SceneDef();
+    scene.def = def;
+    scene.world = m3CreateWorld(&def);
+    AddFloor(scene.world);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    sd.friction = 0.8f;
+    // The hill: a long voxel wedge east of the start.
+    static uint8_t rampVox[16 * 16 * 16];
+    memset(rampVox, 0, sizeof(rampVox));
+    for (int32_t z = 0; z < 16; ++z)
+    {
+        for (int32_t x = 0; x < 16; ++x)
+        {
+            int32_t top = x;
+            for (int32_t y = 0; y <= top && y < 16; ++y)
+            {
+                rampVox[x + 16 * (y + 16 * z)] = 1;
+            }
+        }
+    }
+    m3BodyDef rd = m3DefaultBodyDef();
+    rd.position = (m3Pos3){6.0, 0.0, -8.0};
+    m3CreateVoxelChunkShape(m3CreateBody(scene.world, &rd), &sd, rampVox, NULL, 1.0f);
+
+    m3BodyDef cd = m3DefaultBodyDef();
+    cd.type = m3_dynamicBody;
+    cd.position = (m3Pos3){-8.0, 1.2, 0.0};
+    scene.carBody = m3CreateBody(scene.world, &cd);
+    m3ShapeDef bodyShape = m3DefaultShapeDef();
+    bodyShape.density = 300.0f;
+    bodyShape.friction = 0.3f;
+    m3CreateBoxShape(scene.carBody, &bodyShape, (m3Vec3){1.0f, 0.25f, 0.5f});
+    m3VehicleDef vd = m3DefaultVehicleDef();
+    vd.chassis = scene.carBody;
+    vd.wheelCount = 4;
+    vd.tireGrip = 2.2f;
+    for (int32_t w = 0; w < 4; ++w)
+    {
+        vd.wheels[w].anchor =
+            (m3Vec3){(w & 1) != 0 ? 0.8f : -0.8f, -0.25f, (w & 2) != 0 ? 0.45f : -0.45f};
+        vd.wheels[w].driven = true;
+        vd.wheels[w].steerable = (w & 1) != 0;
+    }
+    scene.car = m3CreateVehicle(scene.world, &vd);
+    m3DrivetrainDef dt = m3DefaultDrivetrainDef();
+    m3Vehicle_SetDrivetrain(scene.car, &dt); // auto shift on
+    scene.geared = true;
+    return scene;
+}
+
+// Scene 10: the cart. Rigid wheels on wheel JOINTS over rubble: no
+// rays anywhere, every strike a contact, axles that can snap.
+static tbScene SceneJointCart(void)
+{
+    tbScene scene;
+    memset(&scene, 0, sizeof(scene));
+    scene.name = "jointcart";
+    scene.blurb = "wheel-joint cart: W/S drive; axles snap if you overdo the rubble";
+    m3WorldDef def = SceneDef();
+    scene.def = def;
+    scene.world = m3CreateWorld(&def);
+    AddFloor(scene.world);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    sd.friction = 0.6f;
+    sd.density = 400.0f;
+    for (int32_t i = 0; i < 16; ++i)
+    {
+        m3BodyDef bd = m3DefaultBodyDef();
+        bd.type = m3_dynamicBody;
+        bd.position = (m3Pos3){4.0 + (double)(i % 4) * 1.1, 0.13, -1.6 + (double)(i / 4) * 1.0};
+        m3CreateBoxShape(m3CreateBody(scene.world, &bd), &sd, (m3Vec3){0.24f, 0.12f, 0.24f});
+    }
+    m3BodyDef cd = m3DefaultBodyDef();
+    cd.type = m3_dynamicBody;
+    cd.position = (m3Pos3){-4.0, 0.66, 0.0};
+    scene.chaseBody = m3CreateBody(scene.world, &cd);
+    m3ShapeDef bodyShape = m3DefaultShapeDef();
+    bodyShape.density = 300.0f;
+    m3CreateBoxShape(scene.chaseBody, &bodyShape, (m3Vec3){1.0f, 0.25f, 0.5f});
+    for (int32_t w = 0; w < 4; ++w)
+    {
+        m3Vec3 local = {(w & 1) != 0 ? 0.8f : -0.8f, -0.35f, (w & 2) != 0 ? 0.45f : -0.45f};
+        m3BodyDef wd = m3DefaultBodyDef();
+        wd.type = m3_dynamicBody;
+        wd.position = (m3Pos3){-4.0 + (double)local.x, 0.66 + (double)local.y, (double)local.z};
+        m3BodyId wheel = m3CreateBody(scene.world, &wd);
+        m3ShapeDef ws = m3DefaultShapeDef();
+        ws.density = 120.0f;
+        ws.friction = 0.9f;
+        m3Sphere tire = {{0.0f, 0.0f, 0.0f}, 0.3f};
+        m3CreateSphereShape(wheel, &ws, &tire);
+        m3JointDef jd = m3DefaultJointDef();
+        jd.type = m3_wheelJoint;
+        jd.bodyA = scene.chaseBody;
+        jd.bodyB = wheel;
+        jd.localAnchorA = local;
+        jd.localAxisA = (m3Vec3){0.0f, -1.0f, 0.0f};
+        jd.localAxisB = (m3Vec3){0.0f, 0.0f, 1.0f};
+        jd.enableLimit = true;
+        jd.lowerLimit = -0.1f;
+        jd.upperLimit = 0.1f;
+        scene.axles[w] = m3CreateJoint(&jd);
+        m3Joint_SetSpring(scene.axles[w], true, 4.0f, 0.7f);
+        m3Joint_SetTargetTranslation(scene.axles[w], 0.0f);
+        m3Joint_SetBreakThresholds(scene.axles[w], 0.0f, 60.0f);
+    }
+    return scene;
+}
+
+// Scene 11: the tunnel. Crouch (C) under the slab, get REFUSED the
+// stand while pressed, stand past the edge: the 12-3 veto, playable.
+static tbScene SceneTunnel(void)
+{
+    tbScene scene;
+    memset(&scene, 0, sizeof(scene));
+    scene.name = "tunnel";
+    scene.blurb = "WASD walk, C crouch: the stand-up veto refuses under the slab";
+    m3WorldDef def = SceneDef();
+    scene.def = def;
+    scene.world = m3CreateWorld(&def);
+    AddFloor(scene.world);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    m3BodyDef rd = m3DefaultBodyDef();
+    rd.position = (m3Pos3){6.0, 1.55, 0.0};
+    m3BodyId roof = m3CreateBody(scene.world, &rd);
+    m3CreateBoxShape(roof, &sd, (m3Vec3){3.0f, 0.25f, 3.0f});
+    rd.position = (m3Pos3){6.0, 0.75, 3.4};
+    m3CreateBoxShape(m3CreateBody(scene.world, &rd), &sd, (m3Vec3){3.0f, 0.75f, 0.4f});
+    rd.position = (m3Pos3){6.0, 0.75, -3.4};
+    m3CreateBoxShape(m3CreateBody(scene.world, &rd), &sd, (m3Vec3){3.0f, 0.75f, 0.4f});
+    m3CharacterDef cd = m3DefaultCharacterDef();
+    cd.position = (m3Pos3){0.0, 1.0, 0.0};
+    scene.hero = m3CreateCharacter(scene.world, &cd);
+    return scene;
+}
+
+// Scene 12: the laundry line. A pinned cloth in gusting wind over a
+// conveyor belt hauling crates: the 11-3 fields, playable.
+static tbScene SceneClothWind(void)
+{
+    tbScene scene;
+    memset(&scene, 0, sizeof(scene));
+    scene.name = "clothwind";
+    scene.blurb = "gusting wind on a pinned sheet, a belt hauling crates; F3 wind";
+    m3WorldDef def = SceneDef();
+    def.softBodyCapacity = 2;
+    scene.def = def;
+    scene.world = m3CreateWorld(&def);
+    AddFloor(scene.world);
+
+    m3SoftBodyDef sb = m3DefaultSoftBodyDef();
+    sb.position = (m3Pos3){-3.0, 5.6, -1.4};
+    sb.countX = 13;
+    sb.countY = 1;
+    sb.countZ = 9;
+    sb.spacing = 0.24f;
+    sb.compliance = 4.0e-4f;
+    sb.radius = 0.07f;
+    sb.particleMass = 0.05f;
+    scene.cloth = m3CreateSoftBody(scene.world, &sb);
+    // Pin the west edge: a hanging line, free to billow east.
+    for (int32_t z = 0; z < 9; ++z)
+    {
+        m3SoftBody_PinParticle(scene.cloth, 0 + 13 * (0 + 1 * z));
+    }
+    m3World_SetWind(scene.world, (m3Vec3){1.0f, 0.0f, 0.15f}, 6.0f, 0.4f, 0.6f);
+
+    // The belt: a static slab with a surface velocity, fed crates.
+    m3BodyDef beltDef = m3DefaultBodyDef();
+    beltDef.position = (m3Pos3){0.0, 0.25, 4.0};
+    m3BodyId belt = m3CreateBody(scene.world, &beltDef);
+    m3ShapeDef beltShape = m3DefaultShapeDef();
+    beltShape.friction = 1.0f;
+    m3ShapeId beltTop = m3CreateBoxShape(belt, &beltShape, (m3Vec3){7.0f, 0.25f, 1.2f});
+    m3Shape_SetSurfaceVelocity(beltTop, (m3Vec3){1.6f, 0.0f, 0.0f});
+    m3ShapeDef crateShape = m3DefaultShapeDef();
+    crateShape.friction = 0.5f;
+    for (int32_t k = 0; k < 5; ++k)
+    {
+        m3BodyDef bd = m3DefaultBodyDef();
+        bd.type = m3_dynamicBody;
+        bd.position = (m3Pos3){-6.0 + (double)k * 2.2, 0.95, 4.0};
+        m3CreateBoxShape(m3CreateBody(scene.world, &bd), &crateShape,
+                         (m3Vec3){0.35f, 0.35f, 0.35f});
+    }
+    return scene;
+}
+
+// Scene 13: the meadow. A rolling heightfield catching a hull rain:
+// the 10-x geometry arc on stage.
+static tbScene SceneMeadow(void)
+{
+    tbScene scene;
+    memset(&scene, 0, sizeof(scene));
+    scene.name = "meadow";
+    scene.blurb = "hulls rain on a rolling heightfield; B drops crates";
+    m3WorldDef def = SceneDef();
+    scene.def = def;
+    scene.world = m3CreateWorld(&def);
+    static float heights[24 * 24];
+    for (int32_t z = 0; z < 24; ++z)
+    {
+        for (int32_t x = 0; x < 24; ++x)
+        {
+            heights[x + 24 * z] = 0.9f * sinf(0.55f * (float)x) * cosf(0.45f * (float)z) +
+                                  0.35f * sinf(1.3f * (float)(x + z));
+        }
+    }
+    m3BodyDef gd = m3DefaultBodyDef();
+    gd.position = (m3Pos3){-11.5, 0.0, -11.5};
+    m3BodyId ground = m3CreateBody(scene.world, &gd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    sd.friction = 0.7f;
+    m3CreateHeightFieldShape(ground, &sd, heights, 24, 24, 1.0f);
+
+    m3ShapeDef hd = m3DefaultShapeDef();
+    hd.friction = 0.5f;
+    for (int32_t k = 0; k < 30; ++k)
+    {
+        m3BodyDef bd = m3DefaultBodyDef();
+        bd.type = m3_dynamicBody;
+        bd.position = (m3Pos3){-7.0 + 0.47 * (double)k, 7.0 + 0.8 * (double)k,
+                               -6.0 + 0.83 * (double)(k % 13)};
+        m3BodyId rock = m3CreateBody(scene.world, &bd);
+        m3Vec3 cloud[10];
+        for (int32_t v = 0; v < 10; ++v)
+        {
+            double a = (double)(k * 10 + v) * 2.399963;
+            cloud[v] =
+                (m3Vec3){0.45f * (float)cos(a) * (0.6f + 0.4f * (float)((v * 37 % 10)) * 0.1f),
+                         0.35f * (float)sin(a * 1.7),
+                         0.45f * (float)sin(a) * (0.6f + 0.4f * (float)((v * 53 % 10)) * 0.1f)};
+        }
+        if (!m3Shape_IsValid(m3CreateHullShape(rock, &hd, cloud, 10)))
+        {
+            m3CreateBoxShape(rock, &hd, (m3Vec3){0.35f, 0.3f, 0.35f});
+        }
+    }
+    return scene;
+}
+
+typedef struct tbSceneEntry
+{
+    tbScene (*build)(void);
+    const char* category;
+} tbSceneEntry;
+
+static const tbSceneEntry s_scenes[] = {
+    {ScenePyramid, "Benchmark"},  {SceneTower, "Contacts"},    {SceneRain, "Contacts"},
+    {SceneKeep, "Destruction"},   {SceneJelly, "Destruction"}, {SceneMachines, "Joints"},
+    {SceneJointCart, "Vehicles"}, {SceneCircuit, "Vehicles"},  {SceneHill, "Vehicles"},
+    {SceneWalker, "Characters"},  {SceneTunnel, "Characters"}, {SceneClothWind, "Soft"},
+    {SceneMeadow, "Geometry"},
+};
+#define SCENE_COUNT ((int32_t)(sizeof(s_scenes) / sizeof(s_scenes[0])))
 
 // ------------------------------------------------------ host recipes
 // The fragment recipe from the voxfort bench, verbatim in spirit:
@@ -585,22 +1065,212 @@ static void SpawnFragments(m3WorldId world)
     }
 }
 
+// ------------------------------------------------------------------ ui
+// A tiny immediate-mode panel: rows, buttons, checkboxes, steppers.
+// Enough for the Box3D-style side panel without a dependency.
+
+typedef struct tbUi
+{
+    int x;
+    int y;
+    int w;
+    bool hot; // the mouse is somewhere over the panel this frame
+} tbUi;
+
+static bool UiHit(int x, int y, int w, int h)
+{
+    Vector2 m = GetMousePosition();
+    return m.x >= (float)x && m.x <= (float)(x + w) && m.y >= (float)y && m.y <= (float)(y + h);
+}
+
+static void UiHeader(tbUi* ui, const char* label)
+{
+    DrawRectangle(ui->x, ui->y, ui->w, 20, (Color){40, 44, 54, 255});
+    DrawText(label, ui->x + 8, ui->y + 3, 14, (Color){208, 214, 226, 255});
+    ui->y += 24;
+}
+
+static void UiLabel(tbUi* ui, const char* text, Color color)
+{
+    DrawText(text, ui->x + 10, ui->y, 13, color);
+    ui->y += 18;
+}
+
+static bool UiButton(tbUi* ui, const char* label)
+{
+    int h = 20;
+    bool over = UiHit(ui->x + 8, ui->y, ui->w - 16, h);
+    DrawRectangle(ui->x + 8, ui->y, ui->w - 16, h,
+                  over ? (Color){70, 78, 96, 255} : (Color){52, 58, 72, 255});
+    DrawText(label, ui->x + 16, ui->y + 3, 13, RAYWHITE);
+    ui->y += h + 4;
+    return over && IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
+}
+
+static bool UiCheck(tbUi* ui, const char* label, bool* value)
+{
+    int h = 18;
+    bool over = UiHit(ui->x + 8, ui->y, ui->w - 16, h);
+    bool changed = false;
+    if (over && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
+    {
+        *value = !*value;
+        changed = true;
+    }
+    DrawRectangleLines(ui->x + 10, ui->y + 2, 14, 14, (Color){150, 156, 170, 255});
+    if (*value)
+    {
+        DrawRectangle(ui->x + 13, ui->y + 5, 8, 8, (Color){120, 190, 255, 255});
+    }
+    DrawText(label, ui->x + 32, ui->y + 2, 13, (Color){196, 200, 212, 255});
+    ui->y += h + 3;
+    return changed;
+}
+
+static bool UiStepper(tbUi* ui, const char* label, int32_t* value, int32_t lo, int32_t hi)
+{
+    int h = 18;
+    bool changed = false;
+    if (UiHit(ui->x + 8, ui->y, 18, h) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && *value > lo)
+    {
+        *value -= 1;
+        changed = true;
+    }
+    if (UiHit(ui->x + 50, ui->y, 18, h) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && *value < hi)
+    {
+        *value += 1;
+        changed = true;
+    }
+    DrawRectangle(ui->x + 8, ui->y, 18, h, (Color){52, 58, 72, 255});
+    DrawText("-", ui->x + 14, ui->y + 2, 13, RAYWHITE);
+    DrawText(TextFormat("%d", *value), ui->x + 33, ui->y + 2, 13, (Color){235, 220, 160, 255});
+    DrawRectangle(ui->x + 50, ui->y, 18, h, (Color){52, 58, 72, 255});
+    DrawText("+", ui->x + 56, ui->y + 2, 13, RAYWHITE);
+    DrawText(label, ui->x + 78, ui->y + 2, 13, (Color){196, 200, 212, 255});
+    ui->y += h + 3;
+    return changed;
+}
+
+// ------------------------------------------------------ the recording
+// The replay studio in the testbed: journal the whole scene life,
+// seal it in an M3J1 container, write it to disk, and VERIFY it by
+// replaying into a fresh world and comparing final hashes. The
+// moat, clickable.
+
+#define TB_JOURNAL_BYTES (4 * 1024 * 1024)
+static uint8_t s_journal[TB_JOURNAL_BYTES];
+static uint8_t* s_recordSnap = NULL;
+static int32_t s_recordSnapBytes = 0;
+static bool s_recording = false;
+static char s_recordStatus[96] = "idle";
+static m3WorldDef s_recordDef; // the probe recipe for verify
+
+// Arm on the CURRENT world: the container's snapshot covers all
+// state up to this moment and the journal covers everything after,
+// which is exactly the M3J1 contract.
+static void RecordArm(m3WorldId world, m3WorldDef def)
+{
+    s_recordDef = def;
+    s_recordSnapBytes = m3World_SnapshotSize(world);
+    free(s_recordSnap);
+    s_recordSnap = (uint8_t*)malloc((size_t)s_recordSnapBytes);
+    m3World_Snapshot(world, s_recordSnap, s_recordSnapBytes);
+    s_recording = m3World_JournalBegin(world, s_journal, TB_JOURNAL_BYTES);
+    snprintf(s_recordStatus, sizeof(s_recordStatus), s_recording ? "recording..." : "arm failed");
+}
+
+static void RecordSave(m3WorldId world)
+{
+    if (!s_recording)
+    {
+        return;
+    }
+    int32_t journalBytes = m3World_JournalEnd(world);
+    s_recording = false;
+    if (journalBytes <= 0)
+    {
+        snprintf(s_recordStatus, sizeof(s_recordStatus), "journal overflow");
+        return;
+    }
+    uint64_t final = m3World_Hash(world);
+    int32_t need = m3ReplayEncodeSize(s_recordSnapBytes, journalBytes);
+    uint8_t* blob = (uint8_t*)malloc((size_t)need);
+    int32_t wrote =
+        m3ReplayEncode(s_recordSnap, s_recordSnapBytes, s_journal, journalBytes, final, blob, need);
+    if (wrote != need)
+    {
+        free(blob);
+        snprintf(s_recordStatus, sizeof(s_recordStatus), "encode failed");
+        return;
+    }
+    FILE* f = fopen("testbed_recording.m3j", "wb");
+    if (f != NULL)
+    {
+        fwrite(blob, 1, (size_t)wrote, f);
+        fclose(f);
+        snprintf(s_recordStatus, sizeof(s_recordStatus), "saved %d KB", wrote / 1024);
+    }
+    else
+    {
+        snprintf(s_recordStatus, sizeof(s_recordStatus), "file write failed");
+    }
+    free(blob);
+}
+
+static void RecordVerify(void)
+{
+    FILE* f = fopen("testbed_recording.m3j", "rb");
+    if (f == NULL)
+    {
+        snprintf(s_recordStatus, sizeof(s_recordStatus), "no recording on disk");
+        return;
+    }
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    uint8_t* blob = (uint8_t*)malloc((size_t)size);
+    size_t got = fread(blob, 1, (size_t)size, f);
+    fclose(f);
+    m3ReplayView view;
+    if (got != (size_t)size || !m3ReplayDecode(blob, (int32_t)size, &view))
+    {
+        free(blob);
+        snprintf(s_recordStatus, sizeof(s_recordStatus), "decode refused");
+        return;
+    }
+    m3WorldId probe = m3CreateWorld(&s_recordDef);
+    bool ok = m3World_Restore(probe, view.snapshot, view.snapshotBytes) &&
+              m3World_JournalReplay(probe, view.journal, view.journalBytes) &&
+              m3World_Hash(probe) == view.finalHash;
+    m3DestroyWorld(probe);
+    free(blob);
+    snprintf(s_recordStatus, sizeof(s_recordStatus),
+             ok ? "VERIFIED bit-exact" : "DIVERGED (wrong build?)");
+}
+
 // --------------------------------------------------------------- main
 int main(void)
 {
     SetConfigFlags(FLAG_MSAA_4X_HINT | FLAG_VSYNC_HINT);
-    InitWindow(1280, 720, "Maul3D testbed");
+    InitWindow(1360, 768, "Maul3D testbed");
     SetTargetFPS(60);
 
     int32_t sceneIndex = 0;
-    tbScene scene = s_builders[sceneIndex]();
+    tbScene scene = s_scenes[sceneIndex].build();
     bool paused = false;
     bool showAabbs = false;
-    bool showContacts = false; // F2: hundreds of markers in a pile
+    bool showContacts = false;
+    bool showJoints = true;
+    bool showWire = false;
+    bool showShadows = true;
+    bool sleepTint = true;
+    bool browser = false;
+    bool windOn = true;
+    int32_t substeps = 4;
+    float stepMs = 0.0f;
+    int32_t vetoFlash = 0;
+    bool reverseGear = false;
 
-    // The rewind ring: a snapshot every four steps, four seconds of
-    // rewindable history. Holding R walks time backward; releasing
-    // resumes forward simulation from wherever you stopped.
     int32_t snapBytes = m3World_SnapshotSize(scene.world);
     enum
     {
@@ -617,6 +1287,11 @@ int main(void)
 
     while (!WindowShouldClose())
     {
+        int screenW = GetScreenWidth();
+        int screenH = GetScreenHeight();
+        int panelX = screenW - 272;
+        bool mouseInPanel = UiHit(panelX, 0, 272, screenH) || browser;
+
         // ---- scene switching
         bool rebuild = false;
         if (IsKeyPressed(KEY_TAB))
@@ -628,10 +1303,15 @@ int main(void)
         {
             rebuild = true;
         }
+        if (IsKeyPressed(KEY_ENTER))
+        {
+            browser = !browser;
+        }
         if (rebuild)
         {
+            s_recording = false;
             m3DestroyWorld(scene.world);
-            scene = s_builders[sceneIndex]();
+            scene = s_scenes[sceneIndex].build();
             snapBytes = m3World_SnapshotSize(scene.world);
             for (int32_t i = 0; i < RING; ++i)
             {
@@ -641,6 +1321,8 @@ int main(void)
             ringHead = 0;
             ringCount = 0;
             stepCounter = 0;
+            windOn = true;
+            reverseGear = false;
         }
 
         // ---- camera
@@ -658,7 +1340,10 @@ int main(void)
                 s_pitch = 1.45f;
             }
         }
-        s_distance -= GetMouseWheelMove() * 1.6f;
+        if (!mouseInPanel)
+        {
+            s_distance -= GetMouseWheelMove() * 1.6f;
+        }
         if (s_distance < 4.0f)
         {
             s_distance = 4.0f;
@@ -672,10 +1357,15 @@ int main(void)
         Vector3 rightv = {-forward.z, 0.0f, forward.x};
         bool walkerScene = m3Character_IsValid(scene.hero);
         bool driveScene = m3Vehicle_IsValid(scene.car);
+        bool cartScene = !driveScene && m3Body_IsValid(scene.chaseBody);
         if (driveScene)
         {
-            // Chase target: shadow the car.
             m3Pos3 cp = m3Body_GetPosition(scene.carBody);
+            s_target = (Vector3){(float)cp.x, (float)cp.y + 1.0f, (float)cp.z};
+        }
+        else if (cartScene)
+        {
+            m3Pos3 cp = m3Body_GetPosition(scene.chaseBody);
             s_target = (Vector3){(float)cp.x, (float)cp.y + 1.0f, (float)cp.z};
         }
         else if (!walkerScene)
@@ -703,7 +1393,6 @@ int main(void)
         }
         else
         {
-            // The camera shadows the walker; WASD belongs to it now.
             m3Pos3 hp = m3Character_GetPosition(scene.hero);
             s_target = (Vector3){(float)hp.x, (float)hp.y + 0.8f, (float)hp.z};
         }
@@ -716,7 +1405,7 @@ int main(void)
                          pick.direction.z * 120.0f};
         m3RayHit look = m3World_CastRayClosest(scene.world, rayOrigin, rayDir);
 
-        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
+        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && !mouseInPanel)
         {
             m3BodyDef bd = m3DefaultBodyDef();
             bd.type = m3_dynamicBody;
@@ -733,9 +1422,6 @@ int main(void)
         }
         if (IsKeyPressed(KEY_E) && walkerScene && m3Shape_IsValid(scene.chunk))
         {
-            // Carve the fort out from under your own feet: the
-            // grounding refresh flips the walker airborne the SAME
-            // step, live proof of the destruction interplay.
             m3Pos3 hp = m3Character_GetPosition(scene.hero);
             int32_t cx = (int32_t)floor(hp.x + 8.0);
             int32_t cy = (int32_t)floor(hp.y - 0.93);
@@ -753,8 +1439,6 @@ int main(void)
         else if (IsKeyPressed(KEY_E) && look.hit && m3Shape_IsValid(scene.chunk) &&
                  look.shape.index1 == scene.chunk.index1)
         {
-            // The charge: world hit -> chunk coords (the keep sits at
-            // (-8, 0, -8) with unit cells and identity rotation).
             int32_t cx = (int32_t)floor(look.point.x + 8.0);
             int32_t cy = (int32_t)floor(look.point.y);
             int32_t cz = (int32_t)floor(look.point.z + 8.0);
@@ -767,7 +1451,7 @@ int main(void)
                 SpawnFragments(scene.world);
             }
         }
-        if (IsKeyPressed(KEY_B) && look.hit)
+        if (IsKeyPressed(KEY_B) && look.hit && !mouseInPanel)
         {
             m3BodyDef bd = m3DefaultBodyDef();
             bd.type = m3_dynamicBody;
@@ -778,14 +1462,14 @@ int main(void)
             m3CreateBoxShape(crate, &sd, (m3Vec3){0.4f, 0.4f, 0.4f});
         }
 
-        // ---- time: pause, step, rewind, run
+        // ---- time and toggles
         if (IsKeyPressed(KEY_SPACE) && !walkerScene && !driveScene)
         {
             paused = !paused;
         }
         if (IsKeyPressed(KEY_P))
         {
-            paused = !paused; // the walker scene's pause (SPACE jumps)
+            paused = !paused;
         }
         if (IsKeyPressed(KEY_F1))
         {
@@ -795,16 +1479,21 @@ int main(void)
         {
             showContacts = !showContacts;
         }
-        // The rain never stops: scene two drips a fresh body every
-        // half second so there is always motion to watch (and to
-        // rewind), budgeted so the pool never runs dry.
+        if (IsKeyPressed(KEY_F3) && m3SoftBody_IsValid(scene.cloth))
+        {
+            windOn = !windOn;
+            m3World_SetWind(scene.world, (m3Vec3){1.0f, 0.0f, 0.15f}, windOn ? 6.0f : 0.0f, 0.4f,
+                            0.6f);
+        }
+
+        // The rain drip (scene "rain" only).
         static int32_t dripCounter = 0;
         static int32_t dripped = 0;
         if (rebuild)
         {
             dripped = 0;
         }
-        if (sceneIndex == 1 && !paused)
+        if (strcmp(scene.name, "rain") == 0 && !paused)
         {
             dripCounter += 1;
             if (dripCounter >= 30 && dripped < 600)
@@ -836,20 +1525,23 @@ int main(void)
             }
         }
 
-        // The walker: camera-relative WASD, host gravity, SPACE jump.
-        // The vertical velocity is host state (the engine's contract:
-        // gravity is the host's job), so the rewind ring restores the
-        // WORLD bit-exact and the host merely re-derives its intent.
+        // The walker: WASD, SPACE jump, C crouch with the live veto.
         static float heroVy = 0.0f;
+        static bool crouched = false;
         if (rebuild)
         {
             heroVy = 0.0f;
+            crouched = false;
         }
         if (walkerScene && !paused)
         {
             float mx = (IsKeyDown(KEY_D) ? 1.0f : 0.0f) - (IsKeyDown(KEY_A) ? 1.0f : 0.0f);
             float mz = (IsKeyDown(KEY_W) ? 1.0f : 0.0f) - (IsKeyDown(KEY_S) ? 1.0f : 0.0f);
             float speed = IsKeyDown(KEY_LEFT_SHIFT) ? 7.0f : 4.0f;
+            if (crouched)
+            {
+                speed *= 0.55f;
+            }
             m3Vec3 wish = {forward.x * mz + rightv.x * mx, 0.0f, forward.z * mz + rightv.z * mx};
             float wl = sqrtf(wish.x * wish.x + wish.z * wish.z);
             if (wl > 0.0f)
@@ -864,24 +1556,73 @@ int main(void)
             }
             else if (grounded && heroVy < 0.0f)
             {
-                heroVy = -1.0f; // a firm stick-down keeps stairs honest
+                heroVy = -1.0f;
             }
             else
             {
                 heroVy -= 9.8f / 60.0f;
             }
+            if (IsKeyPressed(KEY_C))
+            {
+                if (!crouched)
+                {
+                    if (m3Character_SetStance(scene.hero, 0.2f, 0.4f))
+                    {
+                        crouched = true;
+                    }
+                }
+                else
+                {
+                    if (m3Character_SetStance(scene.hero, 0.5f, 0.4f))
+                    {
+                        crouched = false;
+                    }
+                    else
+                    {
+                        vetoFlash = 50; // the stand-up veto, live
+                    }
+                }
+            }
             m3Character_Move(scene.hero, (m3Vec3){wish.x / 60.0f, heroVy / 60.0f, wish.z / 60.0f});
         }
-        // The car: W/S throttle, A/D steer, SPACE handbrake.
+
+        // The raycast car (flat or geared): W/S throttle, A/D steer.
         if (driveScene && !paused)
         {
-            float throttle = (IsKeyDown(KEY_W) ? 1.0f : 0.0f) - (IsKeyDown(KEY_S) ? 0.7f : 0.0f);
+            if (scene.geared && IsKeyPressed(KEY_Q))
+            {
+                reverseGear = !reverseGear;
+                m3Vehicle_SelectGear(scene.car, reverseGear ? -1 : 1);
+            }
+            float throttle;
+            if (scene.geared)
+            {
+                throttle = IsKeyDown(KEY_W) ? 1.0f : 0.0f;
+            }
+            else
+            {
+                throttle = (IsKeyDown(KEY_W) ? 1.0f : 0.0f) - (IsKeyDown(KEY_S) ? 0.7f : 0.0f);
+            }
             float steer = (IsKeyDown(KEY_A) ? 1.0f : 0.0f) - (IsKeyDown(KEY_D) ? 1.0f : 0.0f);
-            float brake = IsKeyDown(KEY_SPACE) ? 1.0f : 0.0f;
+            float brake = scene.geared ? (IsKeyDown(KEY_S) ? 1.0f : 0.0f)
+                                       : (IsKeyDown(KEY_SPACE) ? 1.0f : 0.0f);
             m3Vehicle_SetCommands(scene.car, throttle, steer, brake);
         }
 
-        // The ferry shuttles between the moat banks, host-driven.
+        // The joint cart: spin the surviving axles.
+        if (cartScene && !paused)
+        {
+            float spin = (IsKeyDown(KEY_W) ? -25.0f : 0.0f) + (IsKeyDown(KEY_S) ? 14.0f : 0.0f);
+            for (int32_t w = 0; w < 4; ++w)
+            {
+                if (m3Joint_IsValid(scene.axles[w]))
+                {
+                    m3Joint_SetMotor(scene.axles[w], spin != 0.0f, spin, 90.0f);
+                }
+            }
+        }
+
+        // The ferry.
         if (walkerScene && m3Body_IsValid(scene.ferry) && !paused)
         {
             m3Pos3 fp = m3Body_GetPosition(scene.ferry);
@@ -898,17 +1639,20 @@ int main(void)
         bool rewinding = IsKeyDown(KEY_R) && ringCount > 0;
         if (rewinding)
         {
-            // Walk backward through the ring, one snapshot per frame.
             ringHead = (ringHead + RING - 1) % RING;
             ringCount -= 1;
             m3World_Restore(scene.world, ring[ringHead], snapBytes);
         }
         else if ((!paused && !rewinding) || IsKeyPressed(KEY_F))
         {
-            m3World_Step(scene.world, 1.0f / 60.0f, 4);
+            double t0 = GetTime();
+            m3World_Step(scene.world, 1.0f / 60.0f, substeps);
+            stepMs = 0.9f * stepMs + 0.1f * (float)((GetTime() - t0) * 1000.0);
             stepCounter += 1;
-            if (stepCounter % 4 == 0)
+            if (stepCounter % 4 == 0 && !s_recording)
             {
+                // The rewind ring pauses while a recording runs: a
+                // restore would fork the journaled timeline.
                 if (m3World_Snapshot(scene.world, ring[ringHead], snapBytes) == snapBytes)
                 {
                     ringHead = (ringHead + 1) % RING;
@@ -919,39 +1663,52 @@ int main(void)
                 }
             }
         }
+        if (vetoFlash > 0)
+        {
+            vetoFlash -= 1;
+        }
 
         // ---- render
         BeginDrawing();
-        ClearBackground((Color){24, 26, 32, 255});
+        DrawSky(screenW, screenH);
         BeginMode3D(camera);
-        DrawGrid(40, 1.0f);
+        DrawGround();
+
+        m3SolidDraw solid;
+        memset(&solid, 0, sizeof(solid));
+        solid.DrawTriangle = SolidTriCb;
+        solid.drawSleepTint = sleepTint;
+        m3World_DrawSolid(scene.world, &solid);
+        FlushSolid(showShadows);
+
         m3DebugDraw draw;
         memset(&draw, 0, sizeof(draw));
         draw.DrawSegment = DrawSegmentCb;
         draw.DrawPoint = DrawPointCb;
-        draw.drawShapes = true;
-        draw.drawJoints = true;
-        draw.drawSleepTint = true;
+        draw.drawShapes = showWire;
+        draw.drawJoints = showJoints;
+        draw.drawSleepTint = sleepTint;
         draw.drawContacts = showContacts;
         draw.drawAabbs = showAabbs;
         m3World_Draw(scene.world, &draw);
-        if (m3SoftBody_IsValid(scene.jelly))
+
+        for (int32_t soft = 0; soft < 2; ++soft)
         {
-            // Soft bodies are particles, not shapes: the debug draw
-            // cannot know them, so the testbed cubes them directly.
-            int32_t pc = m3SoftBody_GetParticleCount(scene.jelly);
+            m3SoftBodyId body = soft == 0 ? scene.jelly : scene.cloth;
+            if (!m3SoftBody_IsValid(body))
+            {
+                continue;
+            }
+            Color tone = soft == 0 ? (Color){120, 205, 130, 255} : (Color){225, 215, 170, 255};
+            int32_t pc = m3SoftBody_GetParticleCount(body);
             for (int32_t p = 0; p < pc; ++p)
             {
-                m3Pos3 q = m3SoftBody_GetParticlePosition(scene.jelly, p);
-                DrawCubeV(FromPos(q), (Vector3){0.13f, 0.13f, 0.13f}, (Color){120, 230, 130, 255});
+                m3Pos3 q = m3SoftBody_GetParticlePosition(body, p);
+                DrawCubeV(FromPos(q), (Vector3){0.13f, 0.13f, 0.13f}, tone);
             }
         }
         if (driveScene)
         {
-            // Wheels are rays, so the debug draw cannot know them:
-            // rebuild the hubs from the def geometry and the read
-            // back compressions (four spheres per frame is nothing;
-            // the rain scene's slideshow was hundreds).
             m3Pos3 cp = m3Body_GetPosition(scene.carBody);
             m3Quat cq = m3Body_GetRotation(scene.carBody);
             for (int32_t w = 0; w < 4; ++w)
@@ -964,35 +1721,188 @@ int main(void)
                 Vector3 hub = {(float)cp.x + world3.x, (float)cp.y + world3.y,
                                (float)cp.z + world3.z};
                 bool on = m3Vehicle_IsWheelGrounded(scene.car, w);
-                DrawSphere(hub, 0.3f,
-                           on ? (Color){80, 200, 120, 255} : (Color){150, 150, 160, 255});
+                DrawSphere(hub, 0.3f, on ? (Color){90, 96, 104, 255} : (Color){150, 150, 160, 255});
             }
         }
-        if (look.hit)
+        if (look.hit && !mouseInPanel)
         {
             DrawSphere(FromPos(look.point), 0.09f, (Color){255, 240, 120, 255});
         }
         EndMode3D();
 
-        DrawText(TextFormat("Maul3D testbed [%s] %s", scene.name, scene.blurb), 12, 12, 18,
-                 RAYWHITE);
-        DrawText(driveScene ? "RMB orbit | W/S throttle | A/D steer | SPACE handbrake | "
-                              "LMB shoot | B crate | TAB scene | P pause | hold R REWIND"
-                 : walkerScene
-                     ? "RMB orbit | WASD walk | SHIFT run | SPACE jump | E carve under feet | "
-                       "LMB shoot | B crate | TAB scene | P pause | hold R REWIND"
-                     : "RMB orbit | wheel zoom | WASD pan | LMB shoot | E carve | B crate | "
-                       "TAB scene | SPACE pause | F step | hold R REWIND",
-                 12, 36, 14, (Color){170, 176, 190, 255});
+        // ---- the panel
+        DrawRectangle(panelX, 0, 272, screenH, (Color){30, 33, 41, 236});
+        tbUi ui = {panelX, 10, 272, false};
+        UiLabel(&ui, TextFormat("%s", scene.name), (Color){235, 200, 120, 255});
+        UiLabel(&ui, s_scenes[sceneIndex].category, (Color){150, 156, 170, 255});
+        ui.y += 4;
+        UiLabel(&ui, TextFormat("%.2f ms", (double)stepMs), (Color){120, 190, 255, 255});
+        UiLabel(&ui, TextFormat("step %d", stepCounter), (Color){150, 200, 150, 255});
+        if (scene.geared)
+        {
+            int32_t gear = m3Vehicle_GetGear(scene.car);
+            UiLabel(&ui,
+                    TextFormat("gear %s%d   rpm %.0f", gear < 0 ? "R" : "", gear < 0 ? -gear : gear,
+                               (double)m3Vehicle_GetEngineRpm(scene.car)),
+                    (Color){235, 220, 160, 255});
+        }
+        if (cartScene)
+        {
+            int32_t alive = 0;
+            for (int32_t w = 0; w < 4; ++w)
+            {
+                alive += m3Joint_IsValid(scene.axles[w]) ? 1 : 0;
+            }
+            UiLabel(&ui, TextFormat("axles %d/4", alive), (Color){235, 220, 160, 255});
+        }
+        ui.y += 6;
+        UiHeader(&ui, "Solver");
+        UiStepper(&ui, "Sub-steps", &substeps, 1, 8);
+        if (UiButton(&ui, paused ? "Resume" : "Pause"))
+        {
+            paused = !paused;
+        }
+        if (UiButton(&ui, "Single step"))
+        {
+            m3World_Step(scene.world, 1.0f / 60.0f, substeps);
+            stepCounter += 1;
+        }
+        if (UiButton(&ui, "Restart"))
+        {
+            m3DestroyWorld(scene.world);
+            scene = s_scenes[sceneIndex].build();
+            snapBytes = m3World_SnapshotSize(scene.world);
+            for (int32_t i = 0; i < RING; ++i)
+            {
+                free(ring[i]);
+                ring[i] = (uint8_t*)malloc((size_t)snapBytes);
+            }
+            ringHead = 0;
+            ringCount = 0;
+            stepCounter = 0;
+            s_recording = false;
+            windOn = true;
+            reverseGear = false;
+        }
+        ui.y += 4;
+        UiHeader(&ui, "Draw");
+        UiCheck(&ui, "Shadows", &showShadows);
+        UiCheck(&ui, "Sleep tint", &sleepTint);
+        UiCheck(&ui, "Wireframe overlay", &showWire);
+        UiCheck(&ui, "Joints", &showJoints);
+        UiCheck(&ui, "Contacts (F2)", &showContacts);
+        UiCheck(&ui, "AABBs (F1)", &showAabbs);
+        ui.y += 4;
+        UiHeader(&ui, "Recording");
+        UiLabel(&ui, s_recordStatus,
+                s_recording ? (Color){255, 120, 120, 255} : (Color){170, 176, 190, 255});
+        if (UiButton(&ui, "Record (restart)"))
+        {
+            // A fresh scene, then arm: the snapshot covers the build
+            // and the journal covers the session from second zero.
+            m3DestroyWorld(scene.world);
+            scene = s_scenes[sceneIndex].build();
+            snapBytes = m3World_SnapshotSize(scene.world);
+            for (int32_t i = 0; i < RING; ++i)
+            {
+                free(ring[i]);
+                ring[i] = (uint8_t*)malloc((size_t)snapBytes);
+            }
+            ringHead = 0;
+            ringCount = 0;
+            stepCounter = 0;
+            windOn = true;
+            reverseGear = false;
+            RecordArm(scene.world, scene.def);
+        }
+        if (UiButton(&ui, "Save .m3j"))
+        {
+            RecordSave(scene.world);
+        }
+        if (UiButton(&ui, "Verify replay"))
+        {
+            RecordVerify();
+        }
+        ui.y += 4;
+        UiHeader(&ui, "Scenes (ENTER)");
+        if (UiButton(&ui, "Next scene (TAB)"))
+        {
+            sceneIndex = (sceneIndex + 1) % SCENE_COUNT;
+            m3DestroyWorld(scene.world);
+            scene = s_scenes[sceneIndex].build();
+            snapBytes = m3World_SnapshotSize(scene.world);
+            for (int32_t i = 0; i < RING; ++i)
+            {
+                free(ring[i]);
+                ring[i] = (uint8_t*)malloc((size_t)snapBytes);
+            }
+            ringHead = 0;
+            ringCount = 0;
+            stepCounter = 0;
+            s_recording = false;
+        }
+
+        // ---- the browser overlay
+        if (browser)
+        {
+            static const char* names[] = {"pyramid",  "tower",     "rain",    "voxfort",   "jelly",
+                                          "machines", "jointcart", "circuit", "hillclimb", "walker",
+                                          "tunnel",   "clothwind", "meadow"};
+            int bx = screenW / 2 - 220;
+            int by = 80;
+            DrawRectangle(bx - 14, by - 12, 470, 40 + SCENE_COUNT * 24, (Color){22, 24, 30, 242});
+            DrawText("Scenes", bx, by, 16, (Color){235, 200, 120, 255});
+            for (int32_t k = 0; k < SCENE_COUNT; ++k)
+            {
+                int ry = by + 30 + k * 24;
+                bool over = UiHit(bx - 8, ry - 3, 458, 22);
+                if (over)
+                {
+                    DrawRectangle(bx - 8, ry - 3, 458, 22, (Color){52, 58, 72, 255});
+                }
+                DrawText(s_scenes[k].category, bx, ry, 14, (Color){140, 146, 160, 255});
+                DrawText(">", bx + 110, ry, 14, (Color){100, 104, 116, 255});
+                DrawText(names[k], bx + 130, ry, 14,
+                         k == sceneIndex ? (Color){235, 200, 120, 255} : RAYWHITE);
+                if (over && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
+                {
+                    sceneIndex = k;
+                    browser = false;
+                    m3DestroyWorld(scene.world);
+                    scene = s_scenes[sceneIndex].build();
+                    snapBytes = m3World_SnapshotSize(scene.world);
+                    for (int32_t i = 0; i < RING; ++i)
+                    {
+                        free(ring[i]);
+                        ring[i] = (uint8_t*)malloc((size_t)snapBytes);
+                    }
+                    ringHead = 0;
+                    ringCount = 0;
+                    stepCounter = 0;
+                    s_recording = false;
+                }
+            }
+        }
+
+        // ---- HUD
+        DrawText(TextFormat("Maul3D testbed  [%s]", scene.name), 12, 12, 18,
+                 (Color){40, 42, 50, 255});
+        DrawText(scene.blurb, 12, 36, 14, (Color){70, 74, 86, 255});
         if (rewinding)
         {
-            DrawText("<< REWINDING TIME (bit-exact) <<", 12, 60, 22, (Color){130, 220, 255, 255});
+            DrawText("<< REWINDING TIME (bit-exact) <<", 12, 60, 22, (Color){40, 120, 200, 255});
         }
         else if (paused)
         {
-            DrawText("PAUSED", 12, 60, 22, (Color){255, 200, 90, 255});
+            DrawText("PAUSED", 12, 60, 22, (Color){200, 140, 40, 255});
         }
-        DrawFPS(1200, 12);
+        if (vetoFlash > 0)
+        {
+            DrawText("STAND-UP VETOED: something presses", 12, 88, 20, (Color){200, 60, 60, 255});
+        }
+        DrawText("RMB orbit | wheel zoom | LMB shoot | B crate | E carve | TAB scene | "
+                 "ENTER browser | hold R REWIND",
+                 12, screenH - 26, 13, (Color){80, 84, 96, 255});
         EndDrawing();
     }
 
@@ -1000,6 +1910,7 @@ int main(void)
     {
         free(ring[i]);
     }
+    free(s_recordSnap);
     m3DestroyWorld(scene.world);
     CloseWindow();
     return 0;

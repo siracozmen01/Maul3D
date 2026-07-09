@@ -124,13 +124,19 @@ m3World_Restore(world, buffer, size);  // bit-exact rewind
 
 ## Testbed
 
-An interactive playground lives in `testbed/`: orbit camera, every
-scene drawn through the debug-draw interface, bullets on click,
-live voxel carving with host-spawned fragments, and a held-R
-rewind that walks time backward through a snapshot ring (the
-engine's whole point, on a key). It uses raylib (fetched and
-pinned; the viewer is outside the determinism contract, the engine
-stays zero-dependency):
+An interactive playground lives in `testbed/`: thirteen scenes
+across benchmarks, destruction, vehicles (raycast, geared, and
+wheel-joint carts), characters (including the crouch veto), soft
+bodies in gusting wind, and a rolling heightfield. Solid shading
+under one sun with planar shadows over a sky-and-ground stage, a
+side panel with solver and draw controls, a scene browser (ENTER),
+bullets on click, live voxel carving with host-spawned fragments,
+a held-R rewind that walks time backward through a snapshot ring,
+and a Recording panel that seals the session into an M3J1 replay
+and VERIFIES it bit-exact on demand (the engine's whole point, on
+buttons). It uses raylib (fetched and pinned; the viewer is
+outside the determinism contract, the engine stays
+zero-dependency):
 
 ```
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DMAUL3D_BUILD_TESTBED=ON
