@@ -48,7 +48,7 @@ void m3BuildBoxHull(m3HullData* out, m3Vec3 halfExtents)
     for (int32_t f = 0; f < 6; ++f)
     {
         out->faceVertCounts[f] = 4;
-        out->faceVertStart[f] = (uint8_t)(4 * f);
+        out->faceVertStart[f] = (uint16_t)(4 * f);
         for (int32_t k = 0; k < 4; ++k)
         {
             out->faceIndices[4 * f + k] = loops[f][k];
@@ -113,7 +113,7 @@ void m3HullBuildHalfEdges(m3HullData* hull)
                 dirCount += 1;
             }
             hull->edges[slot].origin = (uint8_t)a;
-            hull->edges[slot].twin = (uint8_t)(slot ^ 1);
+            hull->edges[slot].twin = (uint16_t)(slot ^ 1);
             hull->edges[slot].face = (uint8_t)f;
             faceEdgeSlot[start + k] = slot;
         }
@@ -125,7 +125,7 @@ void m3HullBuildHalfEdges(m3HullData* hull)
         int32_t start = hull->faceVertStart[f];
         for (int32_t k = 0; k < n; ++k)
         {
-            hull->edges[faceEdgeSlot[start + k]].next = (uint8_t)faceEdgeSlot[start + (k + 1) % n];
+            hull->edges[faceEdgeSlot[start + k]].next = (uint16_t)faceEdgeSlot[start + (k + 1) % n];
         }
     }
     hull->edgeCount = count;

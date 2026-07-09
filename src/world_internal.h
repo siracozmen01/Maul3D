@@ -152,19 +152,23 @@ typedef enum m3Op
 // Euler-consistent worst case for 24 vertices: a simplicial hull has
 // F = 2V - 4 = 44 faces and E = 3V - 6 = 66 edges (132 half edges).
 // Sized so no valid 24-vertex hull can ever overflow the fixed block.
-#define M3_HULL_MAX_VERTS        24
-#define M3_HULL_MAX_FACES        44
-#define M3_HULL_MAX_FACE_INDICES 132
-#define M3_HULL_MAX_HALF_EDGES   132
-#define M3_HULL_MAX_INPUT        64 // QuickHull input point cap
+// 10-2: the parity caps. Euler for V = 64: F <= 2V - 4 = 124,
+// half-edges <= 6V - 12 = 372. Geometry is create-time state the
+// hash covers by INDEX, so raising the caps moves no hash; only
+// the snapshot block size (format v38).
+#define M3_HULL_MAX_VERTS        64
+#define M3_HULL_MAX_FACES        124
+#define M3_HULL_MAX_FACE_INDICES 372
+#define M3_HULL_MAX_HALF_EDGES   372
+#define M3_HULL_MAX_INPUT        256 // QuickHull input point cap
 
 // Half-edge adjacency (the Gauss-map edge query reads the two faces
 // flanking every edge). Twins sit at 2k and 2k+1 by construction.
 typedef struct m3HullHalfEdge
 {
-    uint8_t origin;
-    uint8_t twin;
-    uint8_t next;
+    uint16_t twin; // half-edge indices outgrow a byte at 64 verts
+    uint16_t next;
+    uint8_t origin; // vertex (< 64) and face (< 124) stay bytes
     uint8_t face;
 } m3HullHalfEdge;
 
@@ -180,14 +184,14 @@ typedef struct m3HullData
     m3Vec3 faceNormals[M3_HULL_MAX_FACES];
     m3real faceOffsets[M3_HULL_MAX_FACES];
     uint8_t faceVertCounts[M3_HULL_MAX_FACES];
-    uint8_t faceVertStart[M3_HULL_MAX_FACES];
+    uint16_t faceVertStart[M3_HULL_MAX_FACES]; // offsets reach 372 (10-2)
     uint8_t faceIndices[M3_HULL_MAX_FACE_INDICES];
     int32_t edgeCount; // half-edge count (twice the undirected edges)
     m3HullHalfEdge edges[M3_HULL_MAX_HALF_EDGES];
     m3Vec3 center; // vertex centroid, orients the edge separation
 } m3HullData;
 
-_Static_assert(sizeof(m3HullData) == 1820, "hull data must be padding-free");
+_Static_assert(sizeof(m3HullData) == 5808, "hull data must be padding-free");
 
 // Static triangle mesh content (lifetime 3): fixed caps keep it one
 // snapshot block per slot, so the snapshot law stays uniform (no

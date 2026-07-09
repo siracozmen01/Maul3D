@@ -168,7 +168,7 @@ static void TestDriveDeterminism(void)
     // bits; a mid-drive rollback re-drives the tail bit-exact; the
     // journaled session replays with every command in the record.
     static uint8_t journal[65536];
-    static uint8_t snap[393216];
+    static uint8_t snap[2097152];
     uint64_t hashes[2];
     for (int32_t run = 0; run < 2; ++run)
     {
@@ -273,7 +273,7 @@ static void TestBounceTwinsAndRollback(void)
     // onto the same bits. Journaled create replays with the id
     // verified.
     static uint8_t journal[65536];
-    static uint8_t snap[393216];
+    static uint8_t snap[2097152];
     uint64_t hashes[2];
     for (int32_t run = 0; run < 2; ++run)
     {

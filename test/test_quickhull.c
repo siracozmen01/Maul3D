@@ -235,6 +235,40 @@ static void TestHalfEdgeTwinLaw(void)
     }
 }
 
+// 10-2: the parity cap. A dense sphere cloud must produce a hull
+// RICHER than the old 24-vertex ceiling, cap at 64, and hold the
+// half-edge laws; input past M3_HULL_MAX_INPUT refuses.
+static void TestBigHullCap(void)
+{
+    m3Vec3 cloud[256];
+    int32_t n = 0;
+    for (int32_t i = 0; i < 128; ++i)
+    {
+        float t = (float)i / 128.0f;
+        float phi = 2.399963f * (float)i; // golden angle spiral
+        float y = 1.0f - 2.0f * t;
+        float r = sqrtf(1.0f - y * y);
+        cloud[n++] = (m3Vec3){r * cosf(phi), y, r * sinf(phi)};
+    }
+    m3HullData hull;
+    CHECK(m3ComputeHull(cloud, n, &hull), "a 128-point sphere cloud builds");
+    CHECK(hull.vertexCount > 24, "the hull outgrows the old ceiling");
+    CHECK(hull.vertexCount <= 64, "and respects the new one");
+    CHECK(hull.faceCount <= 124, "faces respect Euler at 64");
+    CHECK(hull.edgeCount <= 372, "half edges respect Euler at 64");
+    // Twin law sweep at the new scale.
+    for (int32_t e = 0; e < hull.edgeCount; ++e)
+    {
+        CHECK(hull.edges[hull.edges[e].twin].twin == e, "twins pair at 64-vert scale");
+    }
+    m3Vec3 tooMany[257];
+    for (int32_t i = 0; i < 257; ++i)
+    {
+        tooMany[i] = cloud[i % n];
+    }
+    CHECK(!m3ComputeHull(tooMany, 257, &hull), "input past the cap refuses");
+}
+
 int main(void)
 {
     TestCubeMergesToQuads();
@@ -243,6 +277,7 @@ int main(void)
     TestOctahedron();
     TestDegenerateRefusals();
     TestFuzzSweep();
+    TestBigHullCap();
     TestHalfEdgeTwinLaw();
     if (s_failures == 0)
     {

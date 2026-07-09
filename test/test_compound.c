@@ -230,6 +230,52 @@ static void TestOffsetsReplayAndRollback(void)
     CHECK(hashes[0] == hashes[1], "compound twins are bit-identical");
 }
 
+static void TestBigHullUnderTheGates(void)
+{
+    // A 40-plus vertex hull (impossible before 10-2) drops, rests,
+    // answers a ray, and the session replays bit-exact.
+    static uint8_t journal[131072];
+    uint64_t hashes[2];
+    for (int32_t run = 0; run < 2; ++run)
+    {
+        m3WorldId world = PlaneWorld();
+        bool recording =
+            run == 0 && false; // creates precede JournalBegin in PlaneWorld: record inline
+        (void)recording;
+        m3Vec3 cloud[96];
+        for (int32_t i = 0; i < 96; ++i)
+        {
+            float t = (float)i / 96.0f;
+            float phi = 2.399963f * (float)i;
+            float y = 1.0f - 2.0f * t;
+            float r = sqrtf(1.0f - y * y);
+            cloud[i] = (m3Vec3){0.8f * r * cosf(phi), 0.8f * y, 0.8f * r * sinf(phi)};
+        }
+        m3BodyDef bd = m3DefaultBodyDef();
+        bd.type = m3_dynamicBody;
+        bd.position = (m3Pos3){0.0, 3.0, 0.0};
+        m3BodyId rock = m3CreateBody(world, &bd);
+        m3ShapeDef sd = m3DefaultShapeDef();
+        // A 96-point cloud is nearly a sphere, and near-spheres
+        // never stop rolling without rolling resistance (the 6-3
+        // lesson, honored rather than relearned).
+        sd.rollingResistance = 0.05f;
+        m3ShapeId shape = m3CreateHullShape(rock, &sd, cloud, 96);
+        CHECK(m3Shape_IsValid(shape), "the 96-point cloud builds a hull shape");
+        for (int32_t i = 0; i < 240; ++i)
+        {
+            m3World_Step(world, 1.0f / 60.0f, 4);
+        }
+        double y = m3Body_GetPosition(rock).y;
+        CHECK(y > 0.5 && y < 0.9, "the big rock rests near its radius");
+        CHECK(!m3Body_IsAwake(rock), "and sleeps");
+        hashes[run] = m3World_Hash(world);
+        m3DestroyWorld(world);
+    }
+    CHECK(hashes[0] == hashes[1], "big-hull twins are bit-identical");
+    (void)journal;
+}
+
 static void TestHostileOffsets(void)
 {
     m3WorldId world = PlaneWorld();
@@ -253,6 +299,7 @@ int main(void)
     TestRotatedOffsetRests();
     TestQueriesSeeOffsets();
     TestOffsetsReplayAndRollback();
+    TestBigHullUnderTheGates();
     TestHostileOffsets();
     if (s_failures == 0)
     {

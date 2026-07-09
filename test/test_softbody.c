@@ -111,7 +111,7 @@ static void TestSoftSessionAndRollback(void)
     // The full contract: journal from world birth, replay
     // bit-exact; snapshot mid-sag, re-sag onto the same bits.
     static uint8_t journal[262144];
-    static uint8_t snap[393216];
+    static uint8_t snap[2097152];
     m3WorldDef def = m3DefaultWorldDef();
     def.bodyCapacity = 16;
     def.shapeCapacity = 16;
@@ -325,7 +325,7 @@ static void TestSurfaceTwins(void)
 {
     // The whole 7-2 menagerie twice: identical bits, and a mid-run
     // rollback re-lands the drape.
-    static uint8_t snap[786432];
+    static uint8_t snap[2097152];
     uint64_t hashes[2];
     for (int32_t run = 0; run < 2; ++run)
     {
@@ -495,7 +495,7 @@ static void TestClothFollowsBeam(void)
 {
     // The beam is kinematic and sails sideways: the anchored cloth
     // top tracks it; twins and a mid-ride rollback agree.
-    static uint8_t snap[786432];
+    static uint8_t snap[2097152];
     uint64_t hashes[2];
     for (int32_t run = 0; run < 2; ++run)
     {

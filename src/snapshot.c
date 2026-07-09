@@ -22,7 +22,8 @@
 #endif
 
 #define M3_SNAPSHOT_MAGIC   0x4D33534Eu // 'M3SN'
-#define M3_SNAPSHOT_VERSION 37u
+#define M3_SNAPSHOT_VERSION 38u
+// v38: hull capacity 64 (10-2): bigger hull blocks, same law.
 // v37: compound shape offsets (10-1).
 // v36: joint drive springs and targets (8-6b).
 // v35: joint break thresholds (8-6a).

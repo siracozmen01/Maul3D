@@ -1189,7 +1189,7 @@ bool m3ComputeHull(const m3Vec3* points, int32_t count, m3HullData* out)
         m3QhFace* face = (m3QhFace*)node;
         out->faceNormals[faceCount] = face->normal;
         out->faceOffsets[faceCount] = face->offset + m3Dot3(face->normal, origin);
-        out->faceVertStart[faceCount] = (uint8_t)indexCount;
+        out->faceVertStart[faceCount] = (uint16_t)indexCount;
         int32_t n = 0;
         m3QhEdge* edge = face->edge;
         do
