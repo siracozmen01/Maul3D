@@ -440,12 +440,11 @@ m3Manifold m3CollideHulls(const m3HullData* hullA, const m3HullData* hullB, m3Qu
 static void SphereWorldCenter(const m3World* world, int32_t shape, double* cx, double* cy,
                               double* cz)
 {
-    int32_t body = world->shapeBody[shape];
-    const m3Transform* xf = &world->transforms[body];
-    m3Vec3 r = m3RotateVec3(xf->q, world->shapeGeom[shape].v);
-    *cx = xf->p.x + (double)r.x;
-    *cy = xf->p.y + (double)r.y;
-    *cz = xf->p.z + (double)r.z;
+    m3Transform xf = m3ShapeWorldTransform(world, shape);
+    m3Vec3 r = m3RotateVec3(xf.q, world->shapeGeom[shape].v);
+    *cx = xf.p.x + (double)r.x;
+    *cy = xf.p.y + (double)r.y;
+    *cz = xf.p.z + (double)r.z;
 }
 
 // Offset from a body's world center of mass to a world point (float
@@ -1513,8 +1512,10 @@ static void CollideMeshConvex(m3World* world, m3Manifold* fresh, int32_t meshSha
     const m3MeshData* mesh = &world->meshData[world->shapeMeshIndex[meshShape]];
     int32_t meshBody = world->shapeBody[meshShape];
     int32_t otherBody = world->shapeBody[otherShape];
-    const m3Transform* xfM = &world->transforms[meshBody];
-    const m3Transform* xfO = &world->transforms[otherBody];
+    m3Transform xfMv = m3ShapeWorldTransform(world, meshShape);
+    m3Transform xfOv = m3ShapeWorldTransform(world, otherShape);
+    const m3Transform* xfM = &xfMv;
+    const m3Transform* xfO = &xfOv;
     uint8_t otherType = world->shapeType[otherShape];
 
     // Localize the convex shape into the mesh frame (doubles here).
@@ -1898,8 +1899,10 @@ static void CollideVoxelConvex(m3World* world, m3Manifold* fresh, int32_t voxelS
     m3real cell = chunk->cellSize;
     int32_t voxelBody = world->shapeBody[voxelShape];
     int32_t otherBody = world->shapeBody[otherShape];
-    const m3Transform* xfV = &world->transforms[voxelBody];
-    const m3Transform* xfO = &world->transforms[otherBody];
+    m3Transform xfVv = m3ShapeWorldTransform(world, voxelShape);
+    m3Transform xfOv = m3ShapeWorldTransform(world, otherShape);
+    const m3Transform* xfV = &xfVv;
+    const m3Transform* xfO = &xfOv;
     uint8_t otherType = world->shapeType[otherShape];
 
     m3Quat conjV = {-xfV->q.x, -xfV->q.y, -xfV->q.z, xfV->q.w};
@@ -2230,7 +2233,8 @@ void m3UpdateContactsRange(m3World* world, int32_t start, int32_t end, const uin
             const m3HullData* hull = &world->hullData[world->shapeHullIndex[hullShape]];
             int32_t planeBody = world->shapeBody[planeShape];
             int32_t hullBody = world->shapeBody[hullShape];
-            const m3Transform* xf = &world->transforms[hullBody];
+            m3Transform xfS = m3ShapeWorldTransform(world, hullShape);
+            const m3Transform* xf = &xfS;
             m3Vec3 n = world->shapeGeom[planeShape].v;
             m3real offset = world->shapeGeom[planeShape].s;
 
@@ -2328,8 +2332,10 @@ void m3UpdateContactsRange(m3World* world, int32_t start, int32_t end, const uin
             // manifold rotates out to world with COM-relative anchors.
             int32_t bodyA = world->shapeBody[shapeA];
             int32_t bodyB = world->shapeBody[shapeB];
-            const m3Transform* xfA = &world->transforms[bodyA];
-            const m3Transform* xfB = &world->transforms[bodyB];
+            m3Transform xfAv = m3ShapeWorldTransform(world, shapeA);
+            m3Transform xfBv = m3ShapeWorldTransform(world, shapeB);
+            const m3Transform* xfA = &xfAv;
+            const m3Transform* xfB = &xfBv;
             m3Quat conjA = {-xfA->q.x, -xfA->q.y, -xfA->q.z, xfA->q.w};
             m3Quat qRel = m3MulQuat(conjA, xfB->q);
             m3Vec3 dp = {(m3real)(xfB->p.x - xfA->p.x), (m3real)(xfB->p.y - xfA->p.y),
@@ -2369,7 +2375,8 @@ void m3UpdateContactsRange(m3World* world, int32_t start, int32_t end, const uin
             int32_t capShape = planeShape == shapeA ? shapeB : shapeA;
             int32_t planeBody = world->shapeBody[planeShape];
             int32_t capBody = world->shapeBody[capShape];
-            const m3Transform* xf = &world->transforms[capBody];
+            m3Transform xfS = m3ShapeWorldTransform(world, capShape);
+            const m3Transform* xf = &xfS;
             m3Vec3 n = world->shapeGeom[planeShape].v;
             m3real offset = world->shapeGeom[planeShape].s;
             m3real radius = world->shapeGeom[capShape].s;
@@ -2428,8 +2435,10 @@ void m3UpdateContactsRange(m3World* world, int32_t start, int32_t end, const uin
             int32_t capShape = hullShape == shapeA ? shapeB : shapeA;
             int32_t hullBody = world->shapeBody[hullShape];
             int32_t capBody = world->shapeBody[capShape];
-            const m3Transform* xfH = &world->transforms[hullBody];
-            const m3Transform* xfC = &world->transforms[capBody];
+            m3Transform xfHv = m3ShapeWorldTransform(world, hullShape);
+            m3Transform xfCv = m3ShapeWorldTransform(world, capShape);
+            const m3Transform* xfH = &xfHv;
+            const m3Transform* xfC = &xfCv;
             m3Quat conjH = {-xfH->q.x, -xfH->q.y, -xfH->q.z, xfH->q.w};
             m3Quat qRel = m3MulQuat(conjH, xfC->q);
             m3Vec3 dp = {(m3real)(xfC->p.x - xfH->p.x), (m3real)(xfC->p.y - xfH->p.y),
@@ -2470,8 +2479,10 @@ void m3UpdateContactsRange(m3World* world, int32_t start, int32_t end, const uin
             memset(&fresh, 0, sizeof(fresh));
             int32_t bodyA = world->shapeBody[shapeA];
             int32_t bodyB = world->shapeBody[shapeB];
-            const m3Transform* xfA = &world->transforms[bodyA];
-            const m3Transform* xfB = &world->transforms[bodyB];
+            m3Transform xfAv = m3ShapeWorldTransform(world, shapeA);
+            m3Transform xfBv = m3ShapeWorldTransform(world, shapeB);
+            const m3Transform* xfA = &xfAv;
+            const m3Transform* xfB = &xfBv;
             m3Quat conjA = {-xfA->q.x, -xfA->q.y, -xfA->q.z, xfA->q.w};
             m3DistanceInput input;
             memset(&input, 0, sizeof(input));

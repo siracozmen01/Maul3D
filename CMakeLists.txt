@@ -300,6 +300,11 @@ target_link_libraries(test_replayfile PRIVATE maul3d)
 maul3d_apply_flags(test_replayfile)
 add_test(NAME replayfile COMMAND test_replayfile)
 
+add_executable(test_compound test/test_compound.c)
+target_link_libraries(test_compound PRIVATE maul3d)
+maul3d_apply_flags(test_compound)
+add_test(NAME compound COMMAND test_compound)
+
 add_executable(test_fuzz test/test_fuzz.c)
 target_link_libraries(test_fuzz PRIVATE maul3d)
 maul3d_apply_flags(test_fuzz)

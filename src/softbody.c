@@ -286,7 +286,8 @@ static void SoftCollideParticle(m3World* world, int32_t slot, int32_t k, int32_t
                                 uint8_t stype, int32_t body, m3real radius, m3real invH)
 {
     (void)slot;
-    const m3Transform* xf = &world->transforms[body];
+    m3Transform xfS = m3ShapeWorldTransform(world, shape);
+    const m3Transform* xf = &xfS;
     m3real mu = world->shapeFriction[shape];
 
     if (stype == (uint8_t)m3_planeShape)

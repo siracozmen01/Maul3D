@@ -22,8 +22,8 @@ typedef struct m3Aabb3d
 
 static m3Aabb3d SphereAabb(const m3World* world, int32_t shape)
 {
-    int32_t body = world->shapeBody[shape];
-    const m3Transform* xf = &world->transforms[body];
+    m3Transform xfS = m3ShapeWorldTransform(world, shape);
+    const m3Transform* xf = &xfS;
 
     if (world->shapeType[shape] == (uint8_t)m3_hullShape)
     {

@@ -64,6 +64,11 @@ extern "C"
         bool isSensor;
         bool enableHitEvents;      // 8-5: default false, streams cost
         bool enablePreSolveEvents; // 8-5: default false, veto calls cost
+        /// Compound offset (10-1): the shape's transform relative to
+        /// its body. Identity by default; a near-unit rotation is
+        /// demanded, garbage refuses at create.
+        m3Vec3 localPosition;
+        m3Quat localRotation;
         int32_t internalValue;
     } m3ShapeDef;
 

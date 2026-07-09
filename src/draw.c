@@ -94,8 +94,8 @@ static uint32_t ShapeColor(const m3World* world, int32_t shape, const m3DebugDra
 static void DrawShape(const m3DrawContext* ctx, int32_t shape)
 {
     const m3World* world = ctx->world;
-    int32_t body = world->shapeBody[shape];
-    const m3Transform* xf = &world->transforms[body];
+    m3Transform xfS = m3ShapeWorldTransform(world, shape);
+    const m3Transform* xf = &xfS;
     uint32_t color = ShapeColor(world, shape, ctx->draw);
     uint8_t type = world->shapeType[shape];
 

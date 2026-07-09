@@ -466,6 +466,9 @@ typedef struct m3World
     float* shapeFriction;
     float* shapeRestitution;
     uint8_t* shapeHitEvents;       // 8-5: emit hit events (default 0)
+    m3Vec3* shapeLocalPos;         // 10-1 compound offset (default zero)
+    m3Quat* shapeLocalRot;         // 10-1 compound rotation (default identity)
+    uint8_t* shapeHasOffset;       // fast identity short-circuit
     uint8_t* shapePreSolve;        // 8-5: run the pre-solve veto (default 0)
     float* shapeRollingResistance; // hashed only when nonzero (the
                                    // additive-state golden rule)
@@ -720,6 +723,29 @@ void m3JointReactionMagnitudes(const m3World* world, int32_t j, m3real invH, m3r
                                m3real* outTorque);
 void m3JointSetSpringInternal(m3World* world, int32_t j, int32_t enable, float hertz, float zeta);
 void m3JointSetTargetInternal(m3World* world, int32_t j, float scalar, m3Quat q);
+
+// The compound gate (10-1): THE one way to read where a shape sits
+// in the world. Bodies still move; shapes may ride at an offset.
+// Identity short-circuits through the flag so default scenes pay a
+// branch and nothing else.
+static inline m3Transform m3ShapeWorldTransform(const m3World* world, int32_t shape)
+{
+    int32_t body = world->shapeBody[shape];
+    m3Transform xf = world->transforms[body];
+    if (world->shapeHasOffset[shape] != 0)
+    {
+        m3Vec3 r = m3RotateVec3(xf.q, world->shapeLocalPos[shape]);
+        xf.p.x += (double)r.x;
+        xf.p.y += (double)r.y;
+        xf.p.z += (double)r.z;
+        xf.q = m3MulQuat(xf.q, world->shapeLocalRot[shape]);
+    }
+    return xf;
+}
+
+// The compound gate (10-1): THE one way to read where a shape sits
+// in the world. Bodies still move; shapes may ride at an offset.
+static inline m3Transform m3ShapeWorldTransform(const struct m3World* world, int32_t shape);
 
 void m3SetGravityInternal(m3World* world, m3Vec3 gravity);
 void m3SetShapeFrictionInternal(m3World* world, int32_t slot, float value);

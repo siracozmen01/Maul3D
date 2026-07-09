@@ -325,9 +325,10 @@ static void RayTestShape(m3RayCastContext* ctx, int32_t shape)
     {
         return; // filtered out (8-1)
     }
-    const m3Transform* xf = &world->transforms[body];
+    m3Transform xfS = m3ShapeWorldTransform(world, shape);
+    const m3Transform* xf = &xfS;
 
-    // Localize the double origin into the body frame.
+    // Localize the double origin into the SHAPE frame (10-1).
     m3Vec3 rel = {(m3real)(ctx->origin.x - xf->p.x), (m3real)(ctx->origin.y - xf->p.y),
                   (m3real)(ctx->origin.z - xf->p.z)};
     m3Vec3 o = m3InvRotateVec3(xf->q, rel);

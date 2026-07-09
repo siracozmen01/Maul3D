@@ -22,7 +22,8 @@
 #endif
 
 #define M3_SNAPSHOT_MAGIC   0x4D33534Eu // 'M3SN'
-#define M3_SNAPSHOT_VERSION 36u
+#define M3_SNAPSHOT_VERSION 37u
+// v37: compound shape offsets (10-1).
 // v36: joint drive springs and targets (8-6b).
 // v35: joint break thresholds (8-6a).
 // v34: hit threshold + shape event flags (8-5).
@@ -225,6 +226,9 @@ static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3Wal
     M3_BLOCK(world->shapeRollingResistance, shapeCap * (int32_t)sizeof(float));
     M3_BLOCK(world->shapeHitEvents, shapeCap * (int32_t)sizeof(uint8_t));
     M3_BLOCK(world->shapePreSolve, shapeCap * (int32_t)sizeof(uint8_t));
+    M3_BLOCK(world->shapeLocalPos, shapeCap * (int32_t)sizeof(m3Vec3));
+    M3_BLOCK(world->shapeLocalRot, shapeCap * (int32_t)sizeof(m3Quat));
+    M3_BLOCK(world->shapeHasOffset, shapeCap * (int32_t)sizeof(uint8_t));
     M3_BLOCK(world->shapeCategory, shapeCap * (int32_t)sizeof(uint64_t));
     M3_BLOCK(world->shapeMask, shapeCap * (int32_t)sizeof(uint64_t));
     M3_BLOCK(world->shapeGroup, shapeCap * (int32_t)sizeof(int32_t));
@@ -645,6 +649,13 @@ uint64_t m3World_Hash(m3WorldId worldId)
             // off-default (additive rule, seventh use).
             h = m3Hash64(h, &world->shapeHitEvents[i], 1);
             h = m3Hash64(h, &world->shapePreSolve[i], 1);
+        }
+        if (world->shapeHasOffset[i] != 0)
+        {
+            // Compound offsets fold off-identity (additive rule,
+            // tenth use).
+            h = m3Hash64(h, &world->shapeLocalPos[i], (int32_t)sizeof(m3Vec3));
+            h = m3Hash64(h, &world->shapeLocalRot[i], (int32_t)sizeof(m3Quat));
         }
         if (world->shapeRollingResistance[i] != 0.0f)
         {

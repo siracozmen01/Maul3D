@@ -333,6 +333,9 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     M3_ALLOC(world->shapeSensor, shapeCap, uint8_t);
     M3_ALLOC(world->shapeHitEvents, shapeCap, uint8_t);
     M3_ALLOC(world->shapePreSolve, shapeCap, uint8_t);
+    M3_ALLOC(world->shapeLocalPos, shapeCap, m3Vec3);
+    M3_ALLOC(world->shapeLocalRot, shapeCap, m3Quat);
+    M3_ALLOC(world->shapeHasOffset, shapeCap, uint8_t);
     for (int32_t i = 0; i < shapeCap; ++i)
     {
         world->shapeMeshIndex[i] = -1;
@@ -527,6 +530,9 @@ void m3DestroyWorld(m3WorldId worldId)
     m3Free(world->shapeSensor);
     m3Free(world->shapeHitEvents);
     m3Free(world->shapePreSolve);
+    m3Free(world->shapeLocalPos);
+    m3Free(world->shapeLocalRot);
+    m3Free(world->shapeHasOffset);
     m3Free(world->hitEvents);
     m3Free(world->moveEvents);
     m3Free(world->jointBreakEvents);

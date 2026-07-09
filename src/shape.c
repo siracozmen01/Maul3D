@@ -38,6 +38,7 @@ m3ShapeDef m3DefaultShapeDef(void)
     def.categoryBits = 1ull;
     def.maskBits = ~0ull;
     def.groupIndex = 0;
+    def.localRotation = (m3Quat){0.0f, 0.0f, 0.0f, 1.0f};
     def.internalValue = M3_SHAPE_COOKIE;
     return def;
 }
@@ -71,6 +72,45 @@ static m3Mat3 InvertSymmetric(m3Mat3 m)
 
 // Density-scaled mass, centroid, and centroid inertia of one shape.
 // Returns 0 for shapes that carry no mass (planes).
+// Compose a shape's mass properties through its compound offset
+// (10-1): the raw props live in the SHAPE frame; the body wants
+// them in ITS frame. c' = p + R c, I' = R I R^T. Identity offsets
+// short-circuit: default scenes never enter the rotation.
+static void ComposeMassProps(const m3World* world, int32_t s, m3Vec3* com, m3Mat3* inertia)
+{
+    if (world->shapeHasOffset[s] == 0)
+    {
+        return;
+    }
+    m3Quat q = world->shapeLocalRot[s];
+    *com = m3Add3(world->shapeLocalPos[s], m3RotateVec3(q, *com));
+    m3Mat3 r;
+    r.cx = m3RotateVec3(q, (m3Vec3){1.0f, 0.0f, 0.0f});
+    r.cy = m3RotateVec3(q, (m3Vec3){0.0f, 1.0f, 0.0f});
+    r.cz = m3RotateVec3(q, (m3Vec3){0.0f, 0.0f, 1.0f});
+    // I' = R I R^T, built column by column: first T = I R^T, then
+    // I' = R T. Columns of R^T are rows of R.
+    m3Mat3 t;
+    t.cx = (m3Vec3){inertia->cx.x * r.cx.x + inertia->cy.x * r.cx.y + inertia->cz.x * r.cx.z,
+                    inertia->cx.y * r.cx.x + inertia->cy.y * r.cx.y + inertia->cz.y * r.cx.z,
+                    inertia->cx.z * r.cx.x + inertia->cy.z * r.cx.y + inertia->cz.z * r.cx.z};
+    t.cy = (m3Vec3){inertia->cx.x * r.cy.x + inertia->cy.x * r.cy.y + inertia->cz.x * r.cy.z,
+                    inertia->cx.y * r.cy.x + inertia->cy.y * r.cy.y + inertia->cz.y * r.cy.z,
+                    inertia->cx.z * r.cy.x + inertia->cy.z * r.cy.y + inertia->cz.z * r.cy.z};
+    t.cz = (m3Vec3){inertia->cx.x * r.cz.x + inertia->cy.x * r.cz.y + inertia->cz.x * r.cz.z,
+                    inertia->cx.y * r.cz.x + inertia->cy.y * r.cz.y + inertia->cz.y * r.cz.z,
+                    inertia->cx.z * r.cz.x + inertia->cy.z * r.cz.y + inertia->cz.z * r.cz.z};
+    inertia->cx = (m3Vec3){r.cx.x * t.cx.x + r.cy.x * t.cx.y + r.cz.x * t.cx.z,
+                           r.cx.y * t.cx.x + r.cy.y * t.cx.y + r.cz.y * t.cx.z,
+                           r.cx.z * t.cx.x + r.cy.z * t.cx.y + r.cz.z * t.cx.z};
+    inertia->cy = (m3Vec3){r.cx.x * t.cy.x + r.cy.x * t.cy.y + r.cz.x * t.cy.z,
+                           r.cx.y * t.cy.x + r.cy.y * t.cy.y + r.cz.y * t.cy.z,
+                           r.cx.z * t.cy.x + r.cy.z * t.cy.y + r.cz.z * t.cy.z};
+    inertia->cz = (m3Vec3){r.cx.x * t.cz.x + r.cy.x * t.cz.y + r.cz.x * t.cz.z,
+                           r.cx.y * t.cz.x + r.cy.y * t.cz.y + r.cz.y * t.cz.z,
+                           r.cx.z * t.cz.x + r.cy.z * t.cz.y + r.cz.z * t.cz.z};
+}
+
 static int ShapeMassProps(const m3World* world, int32_t s, float* massOut, m3Vec3* comOut,
                           m3Mat3* inertiaOut)
 {
@@ -161,6 +201,7 @@ void m3RecomputeMass(m3World* world, int32_t bodyIndex)
         {
             continue;
         }
+        ComposeMassProps(world, s, &c, &ic);
         mass += m;
         center = m3Add3(center, m3MulSV3(m, c));
     }
@@ -188,6 +229,7 @@ void m3RecomputeMass(m3World* world, int32_t bodyIndex)
         {
             continue;
         }
+        ComposeMassProps(world, s, &c, &ic);
         m3Vec3 d = m3Sub3(c, center);
         float d2 = m3Dot3(d, d);
         // I += Ic + m * (|d|^2 Identity - d outer d), the full 3D
@@ -327,6 +369,14 @@ int32_t m3CreateShapeInternal(m3World* world, int32_t bodyIndex, uint8_t type,
     world->shapeSensor[index] = def->isSensor ? 1 : 0;
     world->shapeHitEvents[index] = def->enableHitEvents ? 1 : 0;
     world->shapePreSolve[index] = def->enablePreSolveEvents ? 1 : 0;
+    world->shapeLocalPos[index] = def->localPosition;
+    world->shapeLocalRot[index] = def->localRotation;
+    world->shapeHasOffset[index] = (def->localPosition.x != 0.0f || def->localPosition.y != 0.0f ||
+                                    def->localPosition.z != 0.0f || def->localRotation.x != 0.0f ||
+                                    def->localRotation.y != 0.0f || def->localRotation.z != 0.0f ||
+                                    def->localRotation.w != 1.0f)
+                                       ? 1
+                                       : 0;
     // Push onto the body's list head (canonical: creation order is
     // recoverable because replay recreates in the same order).
     world->shapeNext[index] = world->bodyShapeHead[bodyIndex];
@@ -453,6 +503,9 @@ void m3DestroyShapeInternal(m3World* world, int32_t index)
     world->shapeSensor[index] = 0;
     world->shapeHitEvents[index] = 0;
     world->shapePreSolve[index] = 0;
+    world->shapeLocalPos[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
+    world->shapeLocalRot[index] = (m3Quat){0.0f, 0.0f, 0.0f, 1.0f};
+    world->shapeHasOffset[index] = 0;
     world->shapeNext[index] = -1;
     if (world->proxyIds[index] != M3_TREE_NULL)
     {
@@ -507,6 +560,15 @@ static m3ShapeId CreateShapeCommon(m3BodyId bodyId, const m3ShapeDef* def, uint8
     if (bodyIndex < 0 || def == NULL || def->internalValue != M3_SHAPE_COOKIE)
     {
         // Contract, not invariant: bad input returns the null id.
+        return m3_nullShapeId;
+    }
+    float rotLen2 =
+        def->localRotation.x * def->localRotation.x + def->localRotation.y * def->localRotation.y +
+        def->localRotation.z * def->localRotation.z + def->localRotation.w * def->localRotation.w;
+    if (!m3FiniteV3(def->localPosition) || !m3FiniteQuat(def->localRotation) || rotLen2 < 0.99f ||
+        rotLen2 > 1.01f)
+    {
+        // The compound offset demands a near-unit rotation (10-1).
         return m3_nullShapeId;
     }
     if (!m3FiniteF(def->density) || !(def->density > 0.0f) || !m3FiniteF(def->friction) ||
