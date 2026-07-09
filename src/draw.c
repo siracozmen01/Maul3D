@@ -391,8 +391,10 @@ static void SolidCapsule(const m3SolidContext* ctx, const m3Transform* xf, m3Vec
         m3Vec3 b = m3Add3(p2, ra);
         m3Vec3 c = m3Add3(p2, rb);
         m3Vec3 d = m3Add3(p1, rb);
-        SolidTri(ctx, xf, a, b, c, color);
-        SolidTri(ctx, xf, a, c, d, color);
+        // Wound to match the caps under the tangent-basis handedness
+        // (the winding gate in test_draw holds all of it outward).
+        SolidTri(ctx, xf, a, c, b, color);
+        SolidTri(ctx, xf, a, d, c, color);
     }
     // Hemisphere caps: p2 along +axis, p1 along -axis.
     m3Vec3 negAxis = m3Neg3(axis);

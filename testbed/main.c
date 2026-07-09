@@ -740,7 +740,10 @@ static tbScene SceneTower(void)
     m3BodyId post = m3CreateBody(scene.world, &pd);
     m3BodyDef wd = m3DefaultBodyDef();
     wd.type = m3_dynamicBody;
-    wd.position = (m3Pos3){-6.0, 8.0, -6.0};
+    // Pulled back along -x so the pendulum swings THROUGH the post
+    // line and arrives exactly at the tower (the first draft pulled
+    // it sideways and it swung parallel to the stack forever).
+    wd.position = (m3Pos3){-12.0, 8.0, 0.0};
     m3BodyId ball = m3CreateBody(scene.world, &wd);
     m3ShapeDef bs = m3DefaultShapeDef();
     bs.density = 8.0f;
@@ -867,7 +870,11 @@ static tbScene SceneJointCart(void)
         scene.axles[w] = m3CreateJoint(&jd);
         m3Joint_SetSpring(scene.axles[w], true, 4.0f, 0.7f);
         m3Joint_SetTargetTranslation(scene.axles[w], 0.0f);
-        m3Joint_SetBreakThresholds(scene.axles[w], 0.0f, 60.0f);
+        // The break cap sits ABOVE the drive torque: plain driving
+        // never snaps an axle (the first tuning had them inverted
+        // and the cart shed wheels pulling away); rubble impacts
+        // spike the collinearity torque past it honestly.
+        m3Joint_SetBreakThresholds(scene.axles[w], 0.0f, 170.0f);
     }
     return scene;
 }
@@ -1620,7 +1627,7 @@ int main(void)
             {
                 if (m3Joint_IsValid(scene.axles[w]))
                 {
-                    m3Joint_SetMotor(scene.axles[w], spin != 0.0f, spin, 90.0f);
+                    m3Joint_SetMotor(scene.axles[w], spin != 0.0f, spin, 70.0f);
                 }
             }
         }

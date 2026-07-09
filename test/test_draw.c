@@ -328,8 +328,111 @@ static void TestDrawStreamDeterminism(void)
     CHECK(segments[0] == segments[1] && segments[0] > 0, "twin counts match and are live");
 }
 
+// The solid walk's winding law: on a CONVEX shape centered at the
+// origin, every emitted triangle's normal must point AWAY from the
+// center (counter-clockwise seen from outside). The Windows run
+// found the voxel table mirrored and fort walls transparent; this
+// test makes every family's winding a gate.
+typedef struct WindingSink
+{
+    m3Pos3 center;
+    int32_t total;
+    int32_t inward;
+} WindingSink;
+
+static void WindingTriangle(m3Pos3 a, m3Pos3 b, m3Pos3 c, uint32_t color, void* context)
+{
+    (void)color;
+    WindingSink* sink = (WindingSink*)context;
+    double ux = b.x - a.x, uy = b.y - a.y, uz = b.z - a.z;
+    double vx = c.x - a.x, vy = c.y - a.y, vz = c.z - a.z;
+    double nx = uy * vz - uz * vy;
+    double ny = uz * vx - ux * vz;
+    double nz = ux * vy - uy * vx;
+    double cx = (a.x + b.x + c.x) / 3.0 - sink->center.x;
+    double cy = (a.y + b.y + c.y) / 3.0 - sink->center.y;
+    double cz = (a.z + b.z + c.z) / 3.0 - sink->center.z;
+    sink->total += 1;
+    if (nx * cx + ny * cy + nz * cz <= 0.0)
+    {
+        sink->inward += 1;
+    }
+}
+
+static void CheckConvexWinding(m3WorldId world, m3Pos3 center, const char* label)
+{
+    WindingSink sink;
+    memset(&sink, 0, sizeof(sink));
+    sink.center = center;
+    m3SolidDraw solid;
+    memset(&solid, 0, sizeof(solid));
+    solid.DrawTriangle = WindingTriangle;
+    solid.context = &sink;
+    m3World_DrawSolid(world, &solid);
+    CHECK(sink.total > 0, label);
+    if (sink.inward != 0)
+    {
+        printf("FAIL: %s emits %d of %d triangles wound inward\n", label, sink.inward, sink.total);
+        s_failures += 1;
+    }
+}
+
+static void TestSolidWindings(void)
+{
+    m3WorldDef def = m3DefaultWorldDef();
+    def.bodyCapacity = 8;
+    def.shapeCapacity = 8;
+    def.voxelCapacity = 2;
+
+    // One convex shape per world, centered, so the away-from-center
+    // law is exact.
+    {
+        m3WorldId world = m3CreateWorld(&def);
+        m3BodyDef bd = m3DefaultBodyDef();
+        m3BodyId body = m3CreateBody(world, &bd);
+        m3ShapeDef sd = m3DefaultShapeDef();
+        m3Sphere ball = {{0.0f, 0.0f, 0.0f}, 0.7f};
+        m3CreateSphereShape(body, &sd, &ball);
+        CheckConvexWinding(world, (m3Pos3){0.0, 0.0, 0.0}, "sphere solid triangles");
+        m3DestroyWorld(world);
+    }
+    {
+        m3WorldId world = m3CreateWorld(&def);
+        m3BodyDef bd = m3DefaultBodyDef();
+        m3BodyId body = m3CreateBody(world, &bd);
+        m3ShapeDef sd = m3DefaultShapeDef();
+        m3Capsule pill = {{0.0f, -0.5f, 0.0f}, {0.0f, 0.5f, 0.0f}, 0.35f};
+        m3CreateCapsuleShape(body, &sd, &pill);
+        CheckConvexWinding(world, (m3Pos3){0.0, 0.0, 0.0}, "capsule solid triangles");
+        m3DestroyWorld(world);
+    }
+    {
+        m3WorldId world = m3CreateWorld(&def);
+        m3BodyDef bd = m3DefaultBodyDef();
+        m3BodyId body = m3CreateBody(world, &bd);
+        m3ShapeDef sd = m3DefaultShapeDef();
+        m3CreateBoxShape(body, &sd, (m3Vec3){0.5f, 0.6f, 0.7f});
+        CheckConvexWinding(world, (m3Pos3){0.0, 0.0, 0.0}, "hull solid triangles");
+        m3DestroyWorld(world);
+    }
+    {
+        // A single full voxel: one merged box centered at cell center.
+        m3WorldId world = m3CreateWorld(&def);
+        m3BodyDef bd = m3DefaultBodyDef();
+        m3BodyId body = m3CreateBody(world, &bd);
+        m3ShapeDef sd = m3DefaultShapeDef();
+        static uint8_t voxels[16 * 16 * 16];
+        memset(voxels, 0, sizeof(voxels));
+        voxels[0] = 1;
+        m3CreateVoxelChunkShape(body, &sd, voxels, NULL, 1.0f);
+        CheckConvexWinding(world, (m3Pos3){0.5, 0.5, 0.5}, "voxel solid triangles");
+        m3DestroyWorld(world);
+    }
+}
+
 int main(void)
 {
+    TestSolidWindings();
     TestDrawCoverage();
     TestDrawIsPureObserver();
     TestDrawStreamDeterminism();
