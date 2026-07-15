@@ -662,6 +662,170 @@ m3ShapeId m3CreateCapsuleShape(m3BodyId bodyId, const m3ShapeDef* def, const m3C
     return CreateShapeCommon(bodyId, def, (uint8_t)m3_capsuleShape, &geom);
 }
 
+m3ShapeId m3CreateCylinderShape(m3BodyId bodyId, const m3ShapeDef* def, const m3Cylinder* cylinder,
+                                int32_t segments)
+{
+    // The honest cylinder (15-1): a 2N-vertex prism through the
+    // interned hull path. Everything downstream (mass, SAT, casts,
+    // CCD, the blast's projected area) treats the prism exactly;
+    // the N-gon side is the documented trade, and the analytic
+    // round cylinder stays on the ledger until a consumer needs it.
+    if (cylinder == NULL || !(cylinder->radius > 0.0f) || !m3FiniteF(cylinder->radius) ||
+        !m3FiniteV3(cylinder->point1) || !m3FiniteV3(cylinder->point2))
+    {
+        return m3_nullShapeId;
+    }
+    m3Vec3 axis = m3Sub3(cylinder->point2, cylinder->point1);
+    if (!(m3Dot3(axis, axis) > 0.0f))
+    {
+        return m3_nullShapeId; // a flat cylinder is a disc, refused
+    }
+    if (segments < 3)
+    {
+        segments = 3; // a quality knob clamps, it does not refuse
+    }
+    if (segments > 32)
+    {
+        segments = 32; // 2N stays inside the 64-vertex hull law
+    }
+    m3Vec3 n = m3Normalize3(axis);
+    m3Vec3 t1;
+    m3Vec3 t2;
+    m3MakeTangentBasis(n, &t1, &t2);
+    m3Vec3 points[64];
+    m3real step = 2.0f * M3_PI / (m3real)segments;
+    for (int32_t k = 0; k < segments; ++k)
+    {
+        m3CosSin cs = m3ComputeCosSin(step * (m3real)k);
+        m3Vec3 rim =
+            m3Add3(m3MulSV3(cylinder->radius * cs.c, t1), m3MulSV3(cylinder->radius * cs.s, t2));
+        points[k] = m3Add3(cylinder->point1, rim);
+        points[segments + k] = m3Add3(cylinder->point2, rim);
+    }
+    return m3CreateHullShape(bodyId, def, points, 2 * segments);
+}
+
+bool m3SetShapeGeomInternal(m3World* world, int32_t slot, uint8_t type, const m3ShapeGeom* geom)
+{
+    // The validation wall (15-2): both doors pass through here.
+    // Only geometry that LIVES in m3ShapeGeom swaps (sphere and
+    // capsule, conversions included); interned slabs are immutable.
+    uint8_t current = world->shapeType[slot];
+    if (current != (uint8_t)m3_sphereShape && current != (uint8_t)m3_capsuleShape)
+    {
+        return false;
+    }
+    if (type == (uint8_t)m3_sphereShape)
+    {
+        if (!m3FiniteV3(geom->v) || !m3FiniteF(geom->s) || !(geom->s > 0.0f))
+        {
+            return false;
+        }
+    }
+    else if (type == (uint8_t)m3_capsuleShape)
+    {
+        if (!m3FiniteV3(geom->v) || !m3FiniteV3(geom->v2) || !m3FiniteF(geom->s) ||
+            !(geom->s > 0.0f))
+        {
+            return false;
+        }
+        m3Vec3 axis = m3Sub3(geom->v2, geom->v);
+        if (!(m3Dot3(axis, axis) > 0.0f))
+        {
+            return false; // a zero-length capsule is a sphere
+        }
+    }
+    else
+    {
+        return false;
+    }
+    // Wake around BOTH silhouettes: a shrink frees what leaned on
+    // the old bounds, a grow disturbs what sits inside the new.
+    double oldLo[3];
+    double oldHi[3];
+    m3ShapeFatAabb(world, slot, oldLo, oldHi);
+    world->shapeType[slot] = type;
+    m3ShapeGeom fresh = *geom;
+    fresh.s2 = 0.0f;
+    world->shapeGeom[slot] = fresh;
+    double newLo[3];
+    double newHi[3];
+    m3ShapeFatAabb(world, slot, newLo, newHi);
+    double lo[3] = {newLo[0] < oldLo[0] ? newLo[0] : oldLo[0],
+                    newLo[1] < oldLo[1] ? newLo[1] : oldLo[1],
+                    newLo[2] < oldLo[2] ? newLo[2] : oldLo[2]};
+    double hi[3] = {newHi[0] > oldHi[0] ? newHi[0] : oldHi[0],
+                    newHi[1] > oldHi[1] ? newHi[1] : oldHi[1],
+                    newHi[2] > oldHi[2] ? newHi[2] : oldHi[2]};
+    int32_t body = world->shapeBody[slot];
+    m3RecomputeMass(world, body);
+    m3WakeRegionAabb(world, lo, hi);
+    world->awake[body] = 1;
+    world->sleepTimes[body] = 0.0f;
+    return true;
+}
+
+static bool SetShapeGeomPublic(m3ShapeId shapeId, uint8_t type, const m3ShapeGeom* geom)
+{
+    m3World* world = m3WorldFromIndex0(shapeId.world0);
+    if (world == NULL)
+    {
+        return false;
+    }
+    int32_t slot = shapeId.index1 - 1;
+    if (slot < 0 || slot >= world->shapePool.maxIndex || world->shapePool.alive[slot] == 0 ||
+        world->shapePool.generations[slot] != shapeId.generation)
+    {
+        return false;
+    }
+    if (!m3SetShapeGeomInternal(world, slot, type, geom))
+    {
+        return false; // refused swaps journal nothing
+    }
+    if (world->journalActive != 0)
+    {
+        struct
+        {
+            m3ShapeId id;
+            uint32_t type;
+            m3ShapeGeom geom;
+        } record;
+        memset(&record, 0, sizeof(record));
+        record.id = shapeId;
+        record.type = type;
+        record.geom = world->shapeGeom[slot];
+        m3JournalRecord(world, m3_opSetShapeGeom, &record, (int32_t)sizeof(record));
+    }
+    return true;
+}
+
+bool m3Shape_SetSphere(m3ShapeId shapeId, const m3Sphere* sphere)
+{
+    if (sphere == NULL)
+    {
+        return false;
+    }
+    m3ShapeGeom geom;
+    memset(&geom, 0, sizeof(geom));
+    geom.v = sphere->center;
+    geom.s = sphere->radius;
+    return SetShapeGeomPublic(shapeId, (uint8_t)m3_sphereShape, &geom);
+}
+
+bool m3Shape_SetCapsule(m3ShapeId shapeId, const m3Capsule* capsule)
+{
+    if (capsule == NULL)
+    {
+        return false;
+    }
+    m3ShapeGeom geom;
+    memset(&geom, 0, sizeof(geom));
+    geom.v = capsule->point1;
+    geom.s = capsule->radius;
+    geom.v2 = capsule->point2;
+    return SetShapeGeomPublic(shapeId, (uint8_t)m3_capsuleShape, &geom);
+}
+
 m3ShapeId m3CreateHullShape(m3BodyId bodyId, const m3ShapeDef* def, const m3Vec3* points,
                             int32_t count)
 {

@@ -111,6 +111,34 @@ extern "C"
     M3_API m3ShapeId m3CreateCapsuleShape(m3BodyId bodyId, const m3ShapeDef* def,
                                           const m3Capsule* capsule);
 
+    /// A cylinder, honestly faceted (15-1): the factory mints a
+    /// 2N-vertex prism through the interned hull path (N = segments,
+    /// clamped to [3, 32] so 2N fits the 64-vertex hull), so mass,
+    /// contacts, casts, carving, and CCD all inherit exact hull math
+    /// for the prism. The documented trade: the side is an N-gon,
+    /// not a curve; 24 segments roll visually smooth at meter
+    /// scales. The analytic round cylinder stays on the ledger for
+    /// the day a consumer needs it. Degenerate axes and radii refuse
+    /// loudly like every hull.
+    typedef struct m3Cylinder
+    {
+        m3Vec3 point1; // center of one cap
+        m3Vec3 point2; // center of the other
+        m3real radius;
+    } m3Cylinder;
+
+    M3_API m3ShapeId m3CreateCylinderShape(m3BodyId bodyId, const m3ShapeDef* def,
+                                           const m3Cylinder* cylinder, int32_t segments);
+
+    /// Runtime geometry replacement (15-2): swap a sphere or capsule
+    /// shape's geometry in place; conversions between the two are
+    /// legal. Hulls, meshes, voxels, and planes refuse loudly
+    /// (interned slabs are immutable by law). Journaled; mass,
+    /// extents, and the broadphase follow, and sleepers around both
+    /// the old and the new bounds wake.
+    M3_API bool m3Shape_SetSphere(m3ShapeId shapeId, const m3Sphere* sphere);
+    M3_API bool m3Shape_SetCapsule(m3ShapeId shapeId, const m3Capsule* capsule);
+
     /// A convex hull built from a point cloud (QuickHull, coplanar
     /// faces merged, mass integrated). Between 4 and 64 finite points;
     /// degenerate clouds (coplanar, collinear) and hulls that exceed

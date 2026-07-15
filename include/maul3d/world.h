@@ -361,6 +361,29 @@ extern "C"
                                            m3ShapeId* shapes, int32_t capacity,
                                            m3QueryFilter filter);
 
+    /// The exact overlap family (15-3): capsule, oriented box, and
+    /// raw convex cloud queries with the same contract as the
+    /// sphere: shapes within EXACT reach (GJK per candidate, planes
+    /// and voxel/mesh handled per family), ascending shape index,
+    /// filtered, read-only. Clouds carry base-relative points (the
+    /// cast convention), at most 64 of them.
+    M3_API int32_t m3World_OverlapCapsule(m3WorldId worldId, m3Pos3 p1, m3Pos3 p2, m3real radius,
+                                          m3ShapeId* shapes, int32_t capacity);
+    M3_API int32_t m3World_OverlapCapsuleEx(m3WorldId worldId, m3Pos3 p1, m3Pos3 p2, m3real radius,
+                                            m3ShapeId* shapes, int32_t capacity,
+                                            m3QueryFilter filter);
+    M3_API int32_t m3World_OverlapBox(m3WorldId worldId, m3Pos3 center, m3Vec3 halfExtents,
+                                      m3Quat rotation, m3ShapeId* shapes, int32_t capacity);
+    M3_API int32_t m3World_OverlapBoxEx(m3WorldId worldId, m3Pos3 center, m3Vec3 halfExtents,
+                                        m3Quat rotation, m3ShapeId* shapes, int32_t capacity,
+                                        m3QueryFilter filter);
+    M3_API int32_t m3World_OverlapHullPoints(m3WorldId worldId, m3Pos3 base, const m3Vec3* points,
+                                             int32_t count, m3real radius, m3ShapeId* shapes,
+                                             int32_t capacity);
+    M3_API int32_t m3World_OverlapHullPointsEx(m3WorldId worldId, m3Pos3 base, const m3Vec3* points,
+                                               int32_t count, m3real radius, m3ShapeId* shapes,
+                                               int32_t capacity, m3QueryFilter filter);
+
     /// Explosion definition (13-2): one journaled call pushes every
     /// dynamic convex shape in range. The impulse scales with the
     /// area the shape shows to the blast (the reference model),

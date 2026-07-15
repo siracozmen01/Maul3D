@@ -4,7 +4,29 @@ All notable changes to Maul3D. Versions are tags on green CI SHAs;
 every entry's determinism gates were verified across all CI cells at
 tag time.
 
-## Unreleased (v1.11 in tree)
+## Unreleased (v1.12 in tree)
+
+The modeling gaps: cylinders, live reshaping, and richer queries.
+
+- The honest cylinder: m3CreateCylinderShape mints a 2N-vertex
+  prism through the interned hull path (segments clamp 3..32).
+  Exact hull math everywhere downstream; the N-gon side is the
+  documented trade, and the analytic round cylinder stays on the
+  ledger until a consumer needs it.
+- Runtime geometry replacement (op 69): m3Shape_SetSphere and
+  m3Shape_SetCapsule, conversions included; interned families
+  refuse. Mass follows the volume, sleepers around both the old
+  and new bounds wake, refused swaps journal nothing.
+- The overlap family: m3World_OverlapCapsule, oriented
+  m3World_OverlapBox, m3World_OverlapHullPoints (base + up to 64
+  relative points + radius). Exact per family (GJK, min plane
+  distance, BVH-gathered voxel boxes and mesh triangles),
+  ascending ids, filtered, pure.
+- Suites 44 (cylinder), 45 (reshape), 46 (overlapfamily) and the
+  phase 15 mutation storm (300 journal-aimed bit flips over an
+  op-69-dense session with a rolling prism).
+
+## v1.11 (2026-07-15)
 
 The adoption gate: the engine explains itself.
 

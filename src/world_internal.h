@@ -161,6 +161,7 @@ typedef enum m3Op
     m3_opSetMaximumAngularSpeed = 66, // world spin cap (13-1)
     m3_opWorldExplode = 67,           // explosion def (13-2)
     m3_opSetBodyName = 68,            // body + 32 name bytes (14-3)
+    m3_opSetShapeGeom = 69,           // shape + type + geom swap (15-2)
 } m3Op;
 
 // Debug names (14-3): journaled and snapshot like userData, NEVER
@@ -859,6 +860,7 @@ void m3SetShapeFrictionInternal(m3World* world, int32_t slot, float value);
 void m3SetShapeRestitutionInternal(m3World* world, int32_t slot, float value);
 void m3SetShapeRollingInternal(m3World* world, int32_t slot, float value);
 void m3SetShapeDensityInternal(m3World* world, int32_t slot, float value, int32_t updateMass);
+bool m3SetShapeGeomInternal(m3World* world, int32_t slot, uint8_t type, const m3ShapeGeom* geom);
 void m3SetContactTuningInternal(m3World* world, float hertz, float dampingRatio, float pushSpeed);
 void m3SetRestitutionThresholdInternal(m3World* world, float value);
 void m3SetMaximumLinearSpeedInternal(m3World* world, float value);

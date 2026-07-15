@@ -345,6 +345,21 @@ target_link_libraries(test_introspection PRIVATE maul3d)
 maul3d_apply_flags(test_introspection)
 add_test(NAME introspection COMMAND test_introspection)
 
+add_executable(test_cylinder test/test_cylinder.c)
+target_link_libraries(test_cylinder PRIVATE maul3d)
+maul3d_apply_flags(test_cylinder)
+add_test(NAME cylinder COMMAND test_cylinder)
+
+add_executable(test_reshape test/test_reshape.c)
+target_link_libraries(test_reshape PRIVATE maul3d)
+maul3d_apply_flags(test_reshape)
+add_test(NAME reshape COMMAND test_reshape)
+
+add_executable(test_overlapfamily test/test_overlapfamily.c)
+target_link_libraries(test_overlapfamily PRIVATE maul3d)
+maul3d_apply_flags(test_overlapfamily)
+add_test(NAME overlapfamily COMMAND test_overlapfamily)
+
 add_executable(test_fuzz test/test_fuzz.c)
 target_link_libraries(test_fuzz PRIVATE maul3d)
 maul3d_apply_flags(test_fuzz)

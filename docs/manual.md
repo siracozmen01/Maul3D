@@ -737,6 +737,35 @@ debug abort; returning nonzero declares the failure handled
 hook: the engine has no log stream to route, and a dead API is
 worse than a missing one.
 
+## The honest cylinder, reshaping, and the overlap family
+
+m3CreateCylinderShape mints a cylinder as a 2N-vertex prism
+through the interned hull path (N = segments, clamped to 3..32
+so 2N fits the 64-vertex hull law). Everything downstream (mass,
+contacts, casts, CCD, carving, the blast's projected area)
+treats the prism exactly; the documented trade is that the side
+is an N-gon, not a curve, and 24 segments roll visually smooth
+at meter scales. The analytic round cylinder stays on the ledger
+for the day a consumer needs true roundness.
+
+m3Shape_SetSphere and m3Shape_SetCapsule swap a shape's geometry
+in place, conversions between the two included (journaled, op
+69). Hulls, meshes, voxel chunks, and planes refuse: interned
+slabs are immutable by law. A swap recomputes mass from the new
+volume, wakes everything around BOTH the old and the new bounds
+(a shrink frees what leaned on the old silhouette), and the
+broadphase picks the new box up the same step machinery that
+tracks every mover.
+
+The overlap family joins the sphere: m3World_OverlapCapsule, an
+oriented m3World_OverlapBox, and m3World_OverlapHullPoints (a
+base plus up to 64 base-relative points and an optional radius,
+the cast convention). All answer EXACTLY per family: convex
+candidates through the GJK core, planes by minimum point
+distance, voxel chunks and meshes by BVH gather and per-box or
+per-triangle distance. Ascending shape ids, query filters, and
+the observer purity law throughout.
+
 ## The replay studio
 
 An M3J1 file is [header | initial snapshot | journal], encoded

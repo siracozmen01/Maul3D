@@ -2230,6 +2230,37 @@ static bool JournalReplayApply(m3World* world, const void* data, int32_t size)
             m3SetBodyNameInternal(world, index, record.name);
             break;
         }
+        case m3_opSetShapeGeom:
+        {
+            struct
+            {
+                m3ShapeId id;
+                uint32_t type;
+                m3ShapeGeom geom;
+            } record;
+            if (bytes != (int32_t)sizeof(record))
+            {
+                return false;
+            }
+            memcpy(&record, payload, sizeof(record));
+            if (record.type > 255u)
+            {
+                return false;
+            }
+            record.id.world0 = world->worldIndex0;
+            int32_t slot = record.id.index1 - 1;
+            if (slot < 0 || slot >= world->shapePool.maxIndex ||
+                world->shapePool.alive[slot] == 0 ||
+                world->shapePool.generations[slot] != record.id.generation)
+            {
+                return false;
+            }
+            if (!m3SetShapeGeomInternal(world, slot, (uint8_t)record.type, &record.geom))
+            {
+                return false; // hostile swaps fail the replay loudly
+            }
+            break;
+        }
         case m3_opSetAllowFastRotation:
         {
             struct

@@ -1386,3 +1386,309 @@ int32_t m3Body_GetContactData(m3BodyId bodyId, m3ContactData* out, int32_t capac
     }
     return written;
 }
+
+// --- Proxy overlaps (15-3) --------------------------------------------------
+
+typedef struct m3ProxyOverlapContext
+{
+    m3World* world;
+    m3Pos3 base;
+    const m3Vec3* points; // base-relative query cloud, <= 64
+    int32_t pointCount;
+    m3real radius;
+    double lo[3];
+    double hi[3];
+    int32_t indices[256];
+    int32_t count;
+    m3QueryFilter filter;
+} m3ProxyOverlapContext;
+
+// GJK between the localized query cloud and an arbitrary point set
+// (a shape core, a voxel merged box, a mesh triangle), radii applied
+// analytically like the whole distance family.
+static int ProxyCloudReach(const m3Vec3* cloud, int32_t cloudCount, m3real cloudRadius,
+                           const m3Vec3* target, int32_t targetCount, m3real targetRadius)
+{
+    m3DistanceInput input;
+    memset(&input, 0, sizeof(input));
+    input.proxyA.points = target;
+    input.proxyA.count = targetCount;
+    input.proxyA.radius = 0.0f;
+    input.proxyB.points = cloud;
+    input.proxyB.count = cloudCount;
+    input.proxyB.radius = 0.0f;
+    input.q = m3MakeIdentityQuat();
+    input.p = (m3Vec3){0.0f, 0.0f, 0.0f};
+    input.useRadii = false;
+    m3SimplexCache cache;
+    cache.count = 0;
+    cache.metric = 0.0f;
+    m3DistanceOutput out = m3ShapeDistance(&input, &cache);
+    return out.distance <= cloudRadius + targetRadius;
+}
+
+static int ProxyReachesShape(const m3ProxyOverlapContext* ctx, int32_t shape)
+{
+    m3World* world = ctx->world;
+    uint8_t type = world->shapeType[shape];
+    m3Transform xf = m3ShapeWorldTransform(world, shape);
+    m3Vec3 local[64];
+    for (int32_t k = 0; k < ctx->pointCount; ++k)
+    {
+        m3Vec3 w = {(m3real)(ctx->base.x + (double)ctx->points[k].x - xf.p.x),
+                    (m3real)(ctx->base.y + (double)ctx->points[k].y - xf.p.y),
+                    (m3real)(ctx->base.z + (double)ctx->points[k].z - xf.p.z)};
+        local[k] = m3InvRotateVec3(xf.q, w);
+    }
+    if (type == (uint8_t)m3_planeShape)
+    {
+        m3real best = 0.0f;
+        for (int32_t k = 0; k < ctx->pointCount; ++k)
+        {
+            m3real d = m3Dot3(world->shapeGeom[shape].v, local[k]) - world->shapeGeom[shape].s;
+            if (k == 0 || d < best)
+            {
+                best = d;
+            }
+        }
+        return best <= ctx->radius;
+    }
+    if (type == (uint8_t)m3_voxelShape)
+    {
+        int32_t slot = world->shapeVoxelIndex[shape];
+        const m3VoxelSurface* surface = &world->voxelSurface[slot];
+        m3real cell = world->voxelData[slot].cellSize;
+        m3Vec3 blo = local[0];
+        m3Vec3 bhi = local[0];
+        for (int32_t k = 1; k < ctx->pointCount; ++k)
+        {
+            blo.x = local[k].x < blo.x ? local[k].x : blo.x;
+            blo.y = local[k].y < blo.y ? local[k].y : blo.y;
+            blo.z = local[k].z < blo.z ? local[k].z : blo.z;
+            bhi.x = local[k].x > bhi.x ? local[k].x : bhi.x;
+            bhi.y = local[k].y > bhi.y ? local[k].y : bhi.y;
+            bhi.z = local[k].z > bhi.z ? local[k].z : bhi.z;
+        }
+        blo = (m3Vec3){blo.x - ctx->radius, blo.y - ctx->radius, blo.z - ctx->radius};
+        bhi = (m3Vec3){bhi.x + ctx->radius, bhi.y + ctx->radius, bhi.z + ctx->radius};
+        uint16_t gather[M3_MESH_MAX_TRIS];
+        int32_t gatherCount = m3MeshBvhGather(&surface->bvh, blo, bhi, gather);
+        for (int32_t g = 0; g < gatherCount; ++g)
+        {
+            m3Vec3 lo;
+            m3Vec3 hi;
+            m3VoxelBoxBounds(surface, cell, gather[g], &lo, &hi);
+            m3Vec3 corners[8];
+            for (int32_t c = 0; c < 8; ++c)
+            {
+                corners[c] = (m3Vec3){(c & 1) != 0 ? hi.x : lo.x, (c & 2) != 0 ? hi.y : lo.y,
+                                      (c & 4) != 0 ? hi.z : lo.z};
+            }
+            if (ProxyCloudReach(local, ctx->pointCount, ctx->radius, corners, 8, 0.0f))
+            {
+                return 1;
+            }
+        }
+        return 0;
+    }
+    if (type == (uint8_t)m3_meshShape)
+    {
+        const m3MeshData* mesh = &world->meshData[world->shapeMeshIndex[shape]];
+        m3Vec3 blo = local[0];
+        m3Vec3 bhi = local[0];
+        for (int32_t k = 1; k < ctx->pointCount; ++k)
+        {
+            blo.x = local[k].x < blo.x ? local[k].x : blo.x;
+            blo.y = local[k].y < blo.y ? local[k].y : blo.y;
+            blo.z = local[k].z < blo.z ? local[k].z : blo.z;
+            bhi.x = local[k].x > bhi.x ? local[k].x : bhi.x;
+            bhi.y = local[k].y > bhi.y ? local[k].y : bhi.y;
+            bhi.z = local[k].z > bhi.z ? local[k].z : bhi.z;
+        }
+        blo = (m3Vec3){blo.x - ctx->radius, blo.y - ctx->radius, blo.z - ctx->radius};
+        bhi = (m3Vec3){bhi.x + ctx->radius, bhi.y + ctx->radius, bhi.z + ctx->radius};
+        uint16_t gather[M3_MESH_MAX_TRIS];
+        int32_t gatherCount =
+            m3MeshBvhGather(&world->meshBvh[world->shapeMeshIndex[shape]], blo, bhi, gather);
+        for (int32_t g = 0; g < gatherCount; ++g)
+        {
+            int32_t t = gather[g];
+            m3Vec3 tri[3] = {mesh->vertices[mesh->indices[3 * t + 0]],
+                             mesh->vertices[mesh->indices[3 * t + 1]],
+                             mesh->vertices[mesh->indices[3 * t + 2]]};
+            if (ProxyCloudReach(local, ctx->pointCount, ctx->radius, tri, 3, 0.0f))
+            {
+                return 1;
+            }
+        }
+        return 0;
+    }
+    m3Vec3 scratch[2];
+    m3DistanceProxy proxy = m3MakeShapeProxy(world, shape, scratch);
+    return ProxyCloudReach(local, ctx->pointCount, ctx->radius, proxy.points, proxy.count,
+                           proxy.radius);
+}
+
+static bool ProxyOverlapCallback(int32_t shape, void* userContext)
+{
+    m3ProxyOverlapContext* ctx = (m3ProxyOverlapContext*)userContext;
+    if (ctx->world->bodyEnabled[ctx->world->shapeBody[shape]] == 0)
+    {
+        return true;
+    }
+    if (!m3FilterPass(ctx->filter.categoryBits, ctx->filter.maskBits,
+                      ctx->world->shapeCategory[shape], ctx->world->shapeMask[shape]))
+    {
+        return true;
+    }
+    if (ctx->count >= 256)
+    {
+        return true;
+    }
+    if (!ProxyReachesShape(ctx, shape))
+    {
+        return true;
+    }
+    ctx->indices[ctx->count++] = shape;
+    return true;
+}
+
+static int32_t ProxyOverlapGather(m3World* world, m3ProxyOverlapContext* ctx, m3ShapeId* shapes,
+                                  int32_t capacity)
+{
+    m3TreeQuery(&world->tree, ctx->lo, ctx->hi, ProxyOverlapCallback, ctx);
+    int32_t maxShape = world->shapePool.maxIndex;
+    for (int32_t s = 0; s < maxShape && ctx->count < 256; ++s)
+    {
+        if (world->shapePool.alive[s] != 0 && world->shapeType[s] == (uint8_t)m3_planeShape &&
+            world->bodyEnabled[world->shapeBody[s]] != 0 &&
+            m3FilterPass(ctx->filter.categoryBits, ctx->filter.maskBits, world->shapeCategory[s],
+                         world->shapeMask[s]) &&
+            ProxyReachesShape(ctx, s))
+        {
+            ctx->indices[ctx->count++] = s;
+        }
+    }
+    for (int32_t a = 0; a < ctx->count; ++a)
+    {
+        for (int32_t b = a + 1; b < ctx->count; ++b)
+        {
+            if (ctx->indices[b] < ctx->indices[a])
+            {
+                int32_t tmp = ctx->indices[a];
+                ctx->indices[a] = ctx->indices[b];
+                ctx->indices[b] = tmp;
+            }
+        }
+    }
+    int32_t written = 0;
+    for (int32_t k = 0; k < ctx->count && written < capacity; ++k)
+    {
+        int32_t s = ctx->indices[k];
+        shapes[written++] = (m3ShapeId){s + 1, world->worldIndex0, world->shapePool.generations[s]};
+    }
+    return written;
+}
+
+int32_t m3World_OverlapHullPointsEx(m3WorldId worldId, m3Pos3 base, const m3Vec3* points,
+                                    int32_t count, m3real radius, m3ShapeId* shapes,
+                                    int32_t capacity, m3QueryFilter filter)
+{
+    m3World* world = m3WorldFromId(worldId);
+    if (world == NULL || points == NULL || count < 1 || count > 64 || shapes == NULL ||
+        capacity <= 0 || !m3FinitePos3(base) || !m3FiniteF(radius) || radius < 0.0f)
+    {
+        return 0;
+    }
+    for (int32_t k = 0; k < count; ++k)
+    {
+        if (!m3FiniteV3(points[k]))
+        {
+            return 0;
+        }
+    }
+    m3ProxyOverlapContext ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.world = world;
+    ctx.base = base;
+    ctx.points = points;
+    ctx.pointCount = count;
+    ctx.radius = radius;
+    ctx.filter = filter;
+    ctx.lo[0] = base.x + (double)points[0].x;
+    ctx.lo[1] = base.y + (double)points[0].y;
+    ctx.lo[2] = base.z + (double)points[0].z;
+    ctx.hi[0] = ctx.lo[0];
+    ctx.hi[1] = ctx.lo[1];
+    ctx.hi[2] = ctx.lo[2];
+    for (int32_t k = 1; k < count; ++k)
+    {
+        double x = base.x + (double)points[k].x;
+        double y = base.y + (double)points[k].y;
+        double z = base.z + (double)points[k].z;
+        ctx.lo[0] = x < ctx.lo[0] ? x : ctx.lo[0];
+        ctx.lo[1] = y < ctx.lo[1] ? y : ctx.lo[1];
+        ctx.lo[2] = z < ctx.lo[2] ? z : ctx.lo[2];
+        ctx.hi[0] = x > ctx.hi[0] ? x : ctx.hi[0];
+        ctx.hi[1] = y > ctx.hi[1] ? y : ctx.hi[1];
+        ctx.hi[2] = z > ctx.hi[2] ? z : ctx.hi[2];
+    }
+    for (int32_t a = 0; a < 3; ++a)
+    {
+        ctx.lo[a] -= (double)radius;
+        ctx.hi[a] += (double)radius;
+    }
+    return ProxyOverlapGather(world, &ctx, shapes, capacity);
+}
+
+int32_t m3World_OverlapHullPoints(m3WorldId worldId, m3Pos3 base, const m3Vec3* points,
+                                  int32_t count, m3real radius, m3ShapeId* shapes, int32_t capacity)
+{
+    return m3World_OverlapHullPointsEx(worldId, base, points, count, radius, shapes, capacity,
+                                       m3DefaultQueryFilter());
+}
+
+int32_t m3World_OverlapCapsuleEx(m3WorldId worldId, m3Pos3 p1, m3Pos3 p2, m3real radius,
+                                 m3ShapeId* shapes, int32_t capacity, m3QueryFilter filter)
+{
+    if (!m3FinitePos3(p1) || !m3FinitePos3(p2))
+    {
+        return 0;
+    }
+    m3Vec3 pts[2] = {{0.0f, 0.0f, 0.0f},
+                     {(m3real)(p2.x - p1.x), (m3real)(p2.y - p1.y), (m3real)(p2.z - p1.z)}};
+    return m3World_OverlapHullPointsEx(worldId, p1, pts, 2, radius, shapes, capacity, filter);
+}
+
+int32_t m3World_OverlapCapsule(m3WorldId worldId, m3Pos3 p1, m3Pos3 p2, m3real radius,
+                               m3ShapeId* shapes, int32_t capacity)
+{
+    return m3World_OverlapCapsuleEx(worldId, p1, p2, radius, shapes, capacity,
+                                    m3DefaultQueryFilter());
+}
+
+int32_t m3World_OverlapBoxEx(m3WorldId worldId, m3Pos3 center, m3Vec3 halfExtents, m3Quat rotation,
+                             m3ShapeId* shapes, int32_t capacity, m3QueryFilter filter)
+{
+    if (!m3FiniteV3(halfExtents) || !(halfExtents.x > 0.0f) || !(halfExtents.y > 0.0f) ||
+        !(halfExtents.z > 0.0f) || !m3FiniteQuat(rotation))
+    {
+        return 0;
+    }
+    m3Vec3 corners[8];
+    for (int32_t c = 0; c < 8; ++c)
+    {
+        m3Vec3 e = {(c & 1) != 0 ? halfExtents.x : -halfExtents.x,
+                    (c & 2) != 0 ? halfExtents.y : -halfExtents.y,
+                    (c & 4) != 0 ? halfExtents.z : -halfExtents.z};
+        corners[c] = m3RotateVec3(rotation, e);
+    }
+    return m3World_OverlapHullPointsEx(worldId, center, corners, 8, 0.0f, shapes, capacity, filter);
+}
+
+int32_t m3World_OverlapBox(m3WorldId worldId, m3Pos3 center, m3Vec3 halfExtents, m3Quat rotation,
+                           m3ShapeId* shapes, int32_t capacity)
+{
+    return m3World_OverlapBoxEx(worldId, center, halfExtents, rotation, shapes, capacity,
+                                m3DefaultQueryFilter());
+}

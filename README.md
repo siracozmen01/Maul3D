@@ -28,7 +28,8 @@ m3World_Restore(world, buffer, size); // bit-exact resimulation from here
 
 ## What is in the box
 
-- **Rigid bodies**: spheres, capsules, convex hulls (64 vertices),
+- **Rigid bodies**: spheres, capsules, cylinders (honest faceted
+  prisms through the hull path), convex hulls (64 vertices),
   triangle meshes (65k triangles with a BVH), heightfields, native
   infinite planes, and compound children with local transforms;
   static, kinematic, dynamic; forces, impulses, motion locks,
@@ -109,7 +110,7 @@ Determinism here means pinned IEEE arithmetic (no fast math, no FP
 contraction), fixed tessellations and canonical ordering on every
 path, journaled defs treated as untrusted bytes on replay, and a
 golden world hash that has moved exactly twice in the engine's
-life, both times argued on the record. Every commit runs 39 test
+life, both times argued on the record. Every commit runs 45 test
 suites in three build flavors plus a shared-library cell, ASAN and
 UBSAN, cross-platform hash equality across all cells, and seven
 pinned benchmark hashes that must not move: a 5000-body city block
@@ -118,7 +119,7 @@ mesh and hull rain fields, and the classic pyramid.
 
 ## Status and stability
 
-Current release: 1.9. The 1.x API surface is frozen: functions and
+Current release: 1.12. The 1.x API surface is frozen: functions and
 defs may be added in minor releases, but existing signatures,
 semantics and id layouts do not change until a 2.0. Defs are
 cookie-guarded, so a stale compiled caller fails loudly instead of
