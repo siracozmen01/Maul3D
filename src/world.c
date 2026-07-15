@@ -280,6 +280,7 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     M3_ALLOC(world->vehTrackMode, def->vehicleCapacity, uint8_t);
     M3_ALLOC(world->vehTrackLeft, def->vehicleCapacity, m3real);
     M3_ALLOC(world->vehTrackRight, def->vehicleCapacity, m3real);
+    M3_ALLOC(world->vehLeanGain, def->vehicleCapacity, m3real);
     M3_ALLOC(world->vehWheelCompression, def->vehicleCapacity * M3_VEHICLE_MAX_WHEELS, m3real);
     M3_ALLOC(world->vehWheelContact, def->vehicleCapacity * M3_VEHICLE_MAX_WHEELS, uint8_t);
     M3_ALLOC(world->vehTireGrip, def->vehicleCapacity, m3real);
@@ -564,6 +565,7 @@ void m3DestroyWorld(m3WorldId worldId)
     m3Free(world->vehTrackMode);
     m3Free(world->vehTrackLeft);
     m3Free(world->vehTrackRight);
+    m3Free(world->vehLeanGain);
     m3Free(world->vehWheelCompression);
     m3Free(world->vehWheelContact);
     m3Free(world->vehTireGrip);

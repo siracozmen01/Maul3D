@@ -4,7 +4,20 @@ All notable changes to Maul3D. Versions are tags on green CI SHAs;
 every entry's determinism gates were verified across all CI cells at
 tag time.
 
-## Unreleased (v1.19 in tree)
+## Unreleased (v1.20 in tree)
+
+The finale: ecosystem and vehicles.
+
+- Tank commands: m3Vehicle_SetTankCommands drives a
+  drivetrain-free vehicle per side (skid steer), journaled as op
+  78; snapshot v54 carries the track state and folds it only
+  when engaged.
+- The motorcycle lean stabilizer: m3VehicleDef.leanStabilization
+  (0 = off) holds a two-wheeler upright through the lean its turn
+  demands, rolling about the hub line so the tires do not veto
+  their own controller.
+
+## v1.19
 
 Proof and reach.
 

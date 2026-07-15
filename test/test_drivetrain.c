@@ -566,6 +566,78 @@ static void TestTankSteer(void)
     CHECK(fabs(straightZdrift) < fabs(straightX), "equal tracks hold a heading");
 }
 
+// A two-wheeler: narrow box, one wheel at each end, the front one
+// steerable. The lean gain is the experiment variable.
+static m3VehicleId MakeBike(m3WorldId world, m3Pos3 at, m3real leanGain, m3BodyId* outChassis)
+{
+    m3BodyDef bd = m3DefaultBodyDef();
+    bd.type = m3_dynamicBody;
+    bd.position = at;
+    m3BodyId chassis = m3CreateBody(world, &bd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    sd.density = 800.0f;
+    m3CreateBoxShape(chassis, &sd, (m3Vec3){0.7f, 0.3f, 0.1f});
+    if (outChassis != NULL)
+    {
+        *outChassis = chassis;
+    }
+    m3VehicleDef vd = m3DefaultVehicleDef();
+    vd.chassis = chassis;
+    vd.wheelCount = 2;
+    vd.driveForce = 400.0f;
+    vd.leanStabilization = leanGain;
+    vd.wheels[0].anchor = (m3Vec3){-0.6f, -0.3f, 0.0f};
+    vd.wheels[0].driven = true;
+    vd.wheels[1].anchor = (m3Vec3){0.6f, -0.3f, 0.0f};
+    vd.wheels[1].driven = true;
+    vd.wheels[1].steerable = true;
+    return m3CreateVehicle(world, &vd);
+}
+
+static void TestMotorcycleLean(void)
+{
+    // The stabilizer is the difference between a motorcycle and a
+    // falling ladder: with the gain the bike sprints, then holds a
+    // steady turn upright; without it the same bike is on its side
+    // before the turn even starts. Runs 0 and 2 are twins.
+    double upAtEnd[3];
+    uint64_t hashes[3];
+    for (int32_t run = 0; run < 3; ++run)
+    {
+        m3WorldDef wd = m3DefaultWorldDef();
+        wd.bodyCapacity = 16;
+        wd.shapeCapacity = 16;
+        m3WorldId world = m3CreateWorld(&wd);
+        m3BodyDef gd = m3DefaultBodyDef();
+        m3BodyId ground = m3CreateBody(world, &gd);
+        m3ShapeDef sd = m3DefaultShapeDef();
+        m3Plane floor = {{0.0f, 1.0f, 0.0f}, 0.0f};
+        m3CreatePlaneShape(ground, &sd, &floor);
+        m3BodyId frame;
+        m3VehicleId bike =
+            MakeBike(world, (m3Pos3){0.0, 0.75, 0.0}, run == 1 ? 0.0f : 25.0f, &frame);
+        m3Vehicle_SetCommands(bike, 1.0f, 0.0f, 0.0f);
+        for (int32_t i = 0; i < 45; ++i)
+        {
+            m3World_Step(world, 1.0f / 60.0f, 4);
+        }
+        m3Vehicle_SetCommands(bike, 0.0f, 0.15f, 0.0f);
+        for (int32_t i = 0; i < 240; ++i)
+        {
+            m3World_Step(world, 1.0f / 60.0f, 4);
+        }
+        m3Quat q = m3Body_GetRotation(frame);
+        m3Vec3 up = m3RotateVec3(q, (m3Vec3){0.0f, 1.0f, 0.0f});
+        upAtEnd[run] = (double)up.y;
+        hashes[run] = m3World_Hash(world);
+        m3DestroyWorld(world);
+    }
+    CHECK(hashes[0] == hashes[2], "twin bikes are bit-identical");
+    CHECK(hashes[0] != hashes[1], "the gain folds into the hash");
+    CHECK(upAtEnd[0] > 0.7, "the stabilized bike rides the turn upright");
+    CHECK(upAtEnd[1] < 0.5, "the raw two-wheeler falls over");
+}
+
 int main(void)
 {
     TestUphillBogAndClimb();
@@ -577,6 +649,7 @@ int main(void)
     TestShiftThrashStorm();
     TestDifferentials();
     TestTankSteer();
+    TestMotorcycleLean();
     if (s_failures == 0)
     {
         printf("test_drivetrain: all passed\n");

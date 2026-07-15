@@ -67,6 +67,7 @@ m3VehicleDef m3DefaultVehicleDef(void)
     def.driveForce = 800.0f;
     def.brakeForce = 1600.0f;
     def.tireGrip = 1.5f;
+    def.leanStabilization = 0.0f;
     def.internalValue = M3_VEHICLE_COOKIE;
     return def;
 }
@@ -91,7 +92,8 @@ int32_t m3CreateVehicleInternal(m3World* world, const m3VehicleDef* def)
     if (def->wheelCount < 1 || def->wheelCount > M3_VEHICLE_MAX_WHEELS ||
         !m3FiniteF(def->maxSteerAngle) || def->maxSteerAngle < 0.0f ||
         !m3FiniteF(def->driveForce) || def->driveForce < 0.0f || !m3FiniteF(def->brakeForce) ||
-        def->brakeForce < 0.0f || !m3FiniteF(def->tireGrip) || def->tireGrip < 0.0f)
+        def->brakeForce < 0.0f || !m3FiniteF(def->tireGrip) || def->tireGrip < 0.0f ||
+        !m3FiniteF(def->leanStabilization) || def->leanStabilization < 0.0f)
     {
         return -1;
     }
@@ -128,6 +130,7 @@ int32_t m3CreateVehicleInternal(m3World* world, const m3VehicleDef* def)
     world->vehDriveForce[slot] = def->driveForce;
     world->vehBrakeForce[slot] = def->brakeForce;
     world->vehTireGrip[slot] = def->tireGrip;
+    world->vehLeanGain[slot] = def->leanStabilization;
     world->vehThrottle[slot] = 0.0f;
     world->vehTrackMode[slot] = 0;
     world->vehTrackLeft[slot] = 0.0f;
@@ -182,6 +185,7 @@ void m3DestroyVehicleInternal(m3World* world, int32_t slot)
     world->vehDriveForce[slot] = 0.0f;
     world->vehBrakeForce[slot] = 0.0f;
     world->vehTireGrip[slot] = 0.0f;
+    world->vehLeanGain[slot] = 0.0f;
     world->vehThrottle[slot] = 0.0f;
     world->vehTrackMode[slot] = 0;
     world->vehTrackLeft[slot] = 0.0f;
@@ -597,6 +601,64 @@ void m3VehicleApplySuspension(m3World* world, float dt)
                 world->linearVelocities[chassis], m3MulSV3(world->invMass[chassis], impulses[a]));
             world->angularVelocities[chassis] = m3Add3(
                 world->angularVelocities[chassis], m3MulMV3(invI, m3Cross3(arms[a], impulses[a])));
+        }
+
+        // The lean stabilizer (23-2): a two-wheeler is an inverted
+        // pendulum, so an opt-in controller rolls the chassis toward
+        // the lean the turn demands. It works in angular velocity
+        // directly (inertia-free, the gain reads in 1/s^2) and only
+        // about the forward axis, so it cannot mint yaw or pitch.
+        // The target comes from the steer command, not the measured
+        // yaw, because the command is journaled state and the
+        // measurement would feed the controller its own noise.
+        m3real leanGain = world->vehLeanGain[slot];
+        if (leanGain > 0.0f)
+        {
+            m3Vec3 fwd = m3RotateVec3(xf->q, (m3Vec3){1.0f, 0.0f, 0.0f});
+            m3Vec3 up = m3RotateVec3(xf->q, (m3Vec3){0.0f, 1.0f, 0.0f});
+            m3real g2 = m3Dot3(world->gravity, world->gravity);
+            m3real gMag = g2 > 1.0e-6f ? sqrtf(g2) : 10.0f;
+            m3Vec3 worldUp =
+                g2 > 1.0e-6f ? m3MulSV3(-1.0f / gMag, world->gravity) : (m3Vec3){0.0f, 1.0f, 0.0f};
+            m3real xMin = 0.0f;
+            m3real xMax = 0.0f;
+            for (int32_t w = 0; w < world->vehWheelCount[slot]; ++w)
+            {
+                m3real ax = world->vehWheelAnchor[slot * M3_VEHICLE_MAX_WHEELS + w].x;
+                xMin = ax < xMin ? ax : xMin;
+                xMax = ax > xMax ? ax : xMax;
+            }
+            m3real wheelbase = xMax - xMin > 0.1f ? xMax - xMin : 0.1f;
+            m3real steerA = world->vehSteer[slot] * world->vehMaxSteer[slot];
+            m3real cs = cosf(steerA);
+            m3real tanSteer = cs > 0.1f ? sinf(steerA) / cs : 0.0f;
+            m3real v = m3Dot3(world->linearVelocities[chassis], fwd);
+            m3real latOverG = v * (v * tanSteer / wheelbase) / gMag;
+            m3real sTarget = latOverG / sqrtf(1.0f + latOverG * latOverG);
+            m3real sLean = m3Dot3(m3Cross3(up, worldUp), fwd);
+            m3real rollRate = m3Dot3(world->angularVelocities[chassis], fwd);
+            m3real damp = 2.0f * sqrtf(leanGain);
+            m3real drr = (-leanGain * (sTarget - sLean) - damp * rollRate) * dt;
+            // A bike leans about the CONTACT line, not its center:
+            // a pure roll about the CG sweeps the hubs sideways and
+            // the lateral tire kill vetoes it the same substep (the
+            // first probe watched gain 25 lose to its own tires).
+            // Rolling about the hub line means pairing the angular
+            // change with its conjugate lateral velocity at the CG.
+            m3real hubDrop = 0.0f;
+            for (int32_t w = 0; w < world->vehWheelCount[slot]; ++w)
+            {
+                int32_t k = slot * M3_VEHICLE_MAX_WHEELS + w;
+                m3Vec3 hub = m3Add3(world->vehWheelAnchor[k],
+                                    m3MulSV3(world->vehWheelRest[k], world->vehWheelDir[k]));
+                hubDrop -= hub.y;
+            }
+            hubDrop /= (m3real)world->vehWheelCount[slot];
+            m3Vec3 side = m3RotateVec3(xf->q, (m3Vec3){0.0f, 0.0f, 1.0f});
+            world->angularVelocities[chassis] =
+                m3Add3(world->angularVelocities[chassis], m3MulSV3(drr, fwd));
+            world->linearVelocities[chassis] =
+                m3Add3(world->linearVelocities[chassis], m3MulSV3(drr * hubDrop, side));
         }
     }
 }

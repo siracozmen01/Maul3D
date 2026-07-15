@@ -757,6 +757,7 @@ typedef struct m3World
     uint8_t* vehTrackMode;
     m3real* vehTrackLeft;
     m3real* vehTrackRight;
+    m3real* vehLeanGain;
     m3real* vehWheelCompression; // last step's suspension state
     uint8_t* vehWheelContact;
     m3real* vehTireGrip; // friction circle scale (5-2)

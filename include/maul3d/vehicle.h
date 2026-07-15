@@ -51,15 +51,23 @@ extern "C"
                           // the vehicle (the cascade rule)
         int32_t wheelCount;
         m3WheelDef wheels[M3_VEHICLE_MAX_WHEELS];
-        m3real maxSteerAngle; // radians; full steer command turns
-                              // every steerable wheel this far
-        m3real driveForce;    // newtons per driven wheel at full
-                              // throttle (the flat force model)
-        m3real brakeForce;    // newtons total at full brake, split
-                              // by each wheel's brakeShare
-        m3real tireGrip;      // friction circle scale: tangent
-                              // impulses never exceed grip times
-                              // the wheel's suspension load
+        m3real maxSteerAngle;     // radians; full steer command turns
+                                  // every steerable wheel this far
+        m3real driveForce;        // newtons per driven wheel at full
+                                  // throttle (the flat force model)
+        m3real brakeForce;        // newtons total at full brake, split
+                                  // by each wheel's brakeShare
+        m3real tireGrip;          // friction circle scale: tangent
+                                  // impulses never exceed grip times
+                                  // the wheel's suspension load
+        m3real leanStabilization; // 0 disables (the default). A
+                                  // positive gain rolls the chassis
+                                  // toward the lean angle the current
+                                  // speed and steer imply, critically
+                                  // damped; the natural frequency is
+                                  // sqrt(gain) rad/s. Meant for
+                                  // two-wheelers, which are inverted
+                                  // pendulums without it.
         uint64_t userData;
         int32_t internalValue;
     } m3VehicleDef;

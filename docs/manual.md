@@ -381,6 +381,25 @@ solver, from the same pass-start velocities.
 - Suspension compression, wheel contact, and spin angle read back
   per wheel for rendering; destroying the chassis destroys the
   vehicle.
+- Tracks (`m3Vehicle_SetTankCommands`: left, right, brake): a
+  drivetrain-free vehicle can drive its wheels per side instead,
+  split by the chassis-local anchor z sign (+z is the right
+  side). Opposite throttles pivot the hull in place; equal ones
+  run straight. Engaging suspends the normal throttle path,
+  `m3Vehicle_SetCommands` disengages, and a vehicle with an
+  active drivetrain refuses. Journaled state like every command.
+  Pivot turns want a stop first: at speed, the lateral tire kill
+  is a strong yaw damper and the attempt reads as a rollover
+  hazard, exactly like the real machine.
+- The lean stabilizer (`m3VehicleDef.leanStabilization`, 0 = off):
+  a two-wheeler is an inverted pendulum, so an opt-in controller
+  rolls the chassis toward the lean angle the current speed and
+  steer imply, critically damped, natural frequency sqrt(gain)
+  rad/s. It rotates about the wheel hub line (a pure center roll
+  would be vetoed by the tires' own lateral kill) and touches
+  only the roll axis, so it cannot mint yaw or drive. With it a
+  bike sprints and corners leaned in; without it the same bike is
+  on its side before the turn starts.
 
 ## The character controller
 
