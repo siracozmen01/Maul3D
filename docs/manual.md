@@ -538,6 +538,32 @@ stays version + solver revision + precision + FP policy, because
 a config-hash knob would refuse the journal instead of replaying
 it.
 
+Painted mesh materials (17-2): m3Shape_SetMeshMaterials gives a
+mesh shape up to eight surface materials and one group byte per
+triangle. The struck triangle's entry replaces the MESH side of
+the contact mix (friction, restitution, rolling resistance), and
+its surface velocity feeds the conveyor row per triangle: a
+moving walkway, an ice patch, and tarmac can share one level
+mesh. One welded manifold wears one material (the first,
+id-canonical point picks it, documented v1 contract). Unpainted
+meshes keep using their shape material everywhere, bit-exactly
+as before. Journaled, snapshotted, hostile paint refused loudly.
+
+The broadphase rebuild (17-4): m3World_RebuildBroadphase replaces
+the incrementally grown tree with a balanced top-down build over
+the live shapes, in one deterministic, journaled pass. Bulk level
+construction inserts one shape at a time and can leave the tree
+lopsided; call this once after building and queries walk a
+balanced tree. It changes NO answer: pairs are canonical and the
+tree is never hashed, so a rebuilt world steps bit-identically to
+its unrebuilt twin (the suite proves it by hash equality).
+
+Snapshot economics (17-1): hull and mesh content travel
+count-derived, so an empty slot costs bytes, not kilobytes, and a
+box hull costs its used prefix instead of a 5808-byte slab.
+Snapshot sizes GROW with world content: measure with
+m3World_SnapshotSize per keyframe, never once per session.
+
 ## Hit events, move events, and the pre-solve veto
 
 Hit events are opt-in per shape (`m3Shape_EnableHitEvents`) and

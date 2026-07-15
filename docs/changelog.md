@@ -4,7 +4,40 @@ All notable changes to Maul3D. Versions are tags on green CI SHAs;
 every entry's determinism gates were verified across all CI cells at
 tag time.
 
-## Unreleased (v1.13 in tree)
+## Unreleased (v1.14 in tree)
+
+Memory engineering and painted floors.
+
+- Count-derived hull snapshots (v46): the 5808-byte fixed hull
+  slabs left the snapshot's fixed prefix; an empty slot now costs
+  16 bytes and a box hull its used prefix. The 5000-body rollback
+  benchmark's snapshot shrank 65.9 MB to 19.7 MB and the snapshot
+  call 84 ms to 20 ms. The m3replay scrubber
+  learned per-keyframe snapshot sizes (count-derived snapshots
+  grow with the world).
+- Painted mesh materials (op 72, snapshot v47):
+  m3Shape_SetMeshMaterials paints up to 8 surface materials and a
+  group byte per triangle; the struck triangle's entry replaces
+  the mesh side of the contact mix and runs a per-triangle
+  conveyor through the tangential target. Group bits ride the
+  manifold point flags, so unpainted worlds hash exactly as
+  before.
+- Quantized mesh BVH: nodes shrank 36 to 20 bytes (uint16 grid
+  bounds against the root box, doubly-outward rounding, float
+  early-out for far queries). Bit-identical results, proven by
+  the pinned bench hashes; meshfield stepped 17 percent faster.
+- m3World_RebuildBroadphase (op 73): a deterministic, journaled,
+  balanced top-down rebuild of the broadphase after bulk level
+  construction. Changes no answer (hash-equality proven in the
+  suite); queries just walk a balanced tree.
+- The moving-platform carry check rode along: a crate on a
+  gliding kinematic platform rides by friction (test-first, no
+  code needed).
+- Suites 49 (world grew the hull-shrink gate, rebuild, platform
+  carry, painted floors) and the phase 17 mutation storm (300
+  journal-aimed bit flips over a paint + rebuild dense session).
+
+## v1.13 (2026-07-15)
 
 Machines: drives that budget honestly, wheels that steer, diffs
 that lock, and five new joint types.
