@@ -255,6 +255,7 @@ static int CompareKeys(const void* a, const void* b)
 typedef struct m3QueryCtx
 {
     m3World* world;
+    const m3Aabb3d* cache; // per-step fresh bounds (21-2)
     m3Aabb3d selfBounds;
     int32_t self;
     int32_t overflow;
@@ -273,8 +274,10 @@ static bool QueryHit(int32_t other, void* context)
     // moves when its fresh bounds escape), so the tree can return a
     // SUPERSET of the true fat overlaps. Re-test with fresh bounds so
     // the pair list equals the brute-force referee STRUCTURALLY, not
-    // by luck.
-    m3Aabb3d fresh = SphereAabb(ctx->world, other);
+    // by luck. The bounds come from the per-step cache (21-2): the
+    // first shape of this profile recomputed a hull's 64-vertex box
+    // once PER HIT; memoized values are bit-identical by definition.
+    m3Aabb3d fresh = ctx->cache != NULL ? ctx->cache[other] : SphereAabb(ctx->world, other);
     if (!Overlap(&ctx->selfBounds, &fresh))
     {
         return true;
@@ -292,6 +295,25 @@ m3Result m3UpdatePairs(m3World* world)
     world->pairCount = 0;
     int32_t maxShape = world->shapePool.maxIndex;
 
+    // Fresh bounds, once per shape per step (21-2): the refresh,
+    // the self query, and every hit re-test read this cache. Pure
+    // memoization: the values are what the old per-call computes
+    // produced, so the pair set cannot move by a bit. A scratch
+    // stall falls back to the direct computes, same values.
+    m3Aabb3d* cache =
+        (m3Aabb3d*)m3StackAlloc(&world->scratch, maxShape > 0 ? maxShape * (int32_t)sizeof(m3Aabb3d)
+                                                              : (int32_t)sizeof(m3Aabb3d));
+    if (cache != NULL)
+    {
+        for (int32_t i = 0; i < maxShape; ++i)
+        {
+            if (world->shapePool.alive[i] != 0 && world->proxyIds[i] != M3_TREE_NULL)
+            {
+                cache[i] = SphereAabb(world, i);
+            }
+        }
+    }
+
     // Refresh proxies in shape order: a leaf moves only when its tight
     // bounds escape the fat bounds, so the tree shape (and therefore
     // everything downstream) is a pure function of the op history.
@@ -301,7 +323,7 @@ m3Result m3UpdatePairs(m3World* world)
         {
             continue;
         }
-        m3Aabb3d tight = SphereAabb(world, i);
+        m3Aabb3d tight = cache != NULL ? cache[i] : SphereAabb(world, i);
         if (!m3TreeContains(&world->tree, world->proxyIds[i], tight.lo, tight.hi))
         {
             // Reinsert FAT, like creation does. The first draft
@@ -357,9 +379,10 @@ m3Result m3UpdatePairs(m3World* world)
         {
             continue;
         }
-        m3Aabb3d fat = SphereAabb(world, i);
+        m3Aabb3d fat = cache != NULL ? cache[i] : SphereAabb(world, i);
         m3QueryCtx ctx;
         ctx.world = world;
+        ctx.cache = cache;
         ctx.selfBounds = fat;
         ctx.self = i;
         ctx.overflow = 0;
