@@ -653,6 +653,52 @@ transform, the character config), so snapshots, hashes, and
 rollback cover it with no new machinery. Read it back with
 m3Character_GetStance.
 
+## The angular speed cap
+
+The linear speed cap (8-4) has an angular twin: every substep,
+any dynamic body spinning past the world cap is scaled back onto
+it. The default (800 rad/s) is a catastrophe guard in the same
+philosophy as the 400 m/s linear default: far above anything a
+legal scene does, it exists to stop solver-explosion artifacts,
+not gameplay. Hosts that want the reference's tight clamp set a
+low cap with m3World_SetMaximumAngularSpeed (journaled, hashed
+only off-default) and flag their legal fast spinners, wheels
+above all, with m3Body_SetAllowFastRotation (journaled). The
+flag lives beside the motion locks, survives lock writes, and
+reads back with m3Body_GetAllowFastRotation.
+
+## Explosions
+
+m3World_Explode is one journaled call that does a whole
+demolition. Fill an m3ExplosionDef (from m3DefaultExplosionDef,
+cookie included): position, radius, falloff, impulsePerArea,
+optionally voxelCarve and softPush, optionally a query filter.
+Every dynamic sphere, capsule, and hull in range takes an
+impulse scaled by the AREA it shows to the blast (the reference
+projected-area model), directed from the center through the
+closest point on the shape, which means off-center hits spin
+their targets through the real lever arm. Past the radius the
+impulse fades linearly to zero across the falloff band. The
+blast wakes everything it reaches; a negative impulsePerArea
+implodes.
+
+voxelCarve > 0 bites a sphere of that radius out of every voxel
+chunk in range through one surface rebuild and one fracture
+sweep per chunk; freed islands arrive as the usual fragment
+events for the host to spawn (the testbed kicks its newborn
+fragments radially for the look; the engine keeps events and
+bodies separate on purpose). softPush scales the same falloff
+push onto soft-body particles: the kick is applied exactly once
+by the next step, is real snapshot state in the window between
+the call and that step, and folds into the hash only while it
+exists.
+
+Hostile defs (NaN anywhere, negative radius, dead cookie) apply
+nothing and journal nothing; hostile tape bytes fail the replay
+loudly. Explosions are events, not state: two worlds that
+explode identically stay bit-identical through twins, replay,
+and rollback.
+
 ## The replay studio
 
 An M3J1 file is [header | initial snapshot | journal], encoded

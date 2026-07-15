@@ -1206,8 +1206,12 @@ static bool JournalReplayApply(m3World* world, const void* data, int32_t size)
                 return false;
             }
             memcpy(&record, payload, sizeof(record));
-            if (!(record.dt > 0.0f) || record.substeps < 1)
+            if (!(record.dt > 0.0f) || record.substeps < 1 || record.substeps > M3_MAX_SUBSTEPS)
             {
+                // The upper bound is the 13-4 red-team scar: one
+                // flipped bit turned substeps 4 into a billion and a
+                // two-second replay into hours. Hostile tapes refuse
+                // in proportion to their crime.
                 return false;
             }
             m3StepInternal(world, record.dt, record.substeps);

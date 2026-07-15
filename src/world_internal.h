@@ -82,6 +82,11 @@
 // contacts (task 8) have something to work with.
 #define M3_AABB_MARGIN (4.0f * 0.005f)
 
+// Hard ceiling on substeps per step, enforced at the public wall
+// and the replay wall alike (13-4): far above any legitimate use,
+// low enough that a flipped tape bit cannot buy a billion substeps.
+#define M3_MAX_SUBSTEPS 256
+
 // Journal ops. The stream is [i32 op][i32 size][payload], replayed
 // through the same internal functions the public API uses.
 typedef enum m3Op
@@ -134,25 +139,25 @@ typedef enum m3Op
     m3_opSetMaximumLinearSpeed = 46,   // world speed cap
     m3_opEnableSleeping = 47,          // world toggle (off wakes everyone)
     m3_opEnableContinuous = 48,
-    m3_opSetHitEventThreshold = 49, // world hit speed gate (8-5)
-    m3_opEnableShapeHitEvents = 50, // shape + on/off
-    m3_opEnableShapePreSolve = 51,  // shape + on/off
-    m3_opJointSetLimits = 52,       // joint + enable + lower + upper (8-6a)
-    m3_opJointSetMotor = 53,        // joint + enable + speed + effort
-    m3_opJointSetCollide = 54,      // joint + collide-connected flag
-    m3_opJointSetBreak = 55,        // joint + force + torque caps
-    m3_opJointSetSpring = 56,       // joint + enable + hertz + zeta (8-6b)
-    m3_opJointSetTarget = 57,       // joint + scalar + quat drive target
-    m3_opDestroyShape = 58,         // shape id (10-4: the red team
-                                    // found bodies could shed shapes
-                                    // only by dying)
-    m3_opSoftBodyAnchorSoft = 59,   // lattice<->lattice pin (11-2)
-    m3_opSetWind = 60,              // world wind field (11-3)
-    m3_opSetSurfaceVelocity = 61,   // shape conveyor velocity        // world toggle
-    m3_opVehicleDrivetrain = 62,    // vehicle + drivetrain def (12-1)
-    m3_opVehicleGear = 63,          // vehicle + gear select
-    m3_opCharacterStance = 64,      // character + halfHeight + radius (12-3)
-    m3_opSetAllowFastRotation = 65, // body + 0/1 spin-cap escape (13-1)
+    m3_opSetHitEventThreshold = 49,   // world hit speed gate (8-5)
+    m3_opEnableShapeHitEvents = 50,   // shape + on/off
+    m3_opEnableShapePreSolve = 51,    // shape + on/off
+    m3_opJointSetLimits = 52,         // joint + enable + lower + upper (8-6a)
+    m3_opJointSetMotor = 53,          // joint + enable + speed + effort
+    m3_opJointSetCollide = 54,        // joint + collide-connected flag
+    m3_opJointSetBreak = 55,          // joint + force + torque caps
+    m3_opJointSetSpring = 56,         // joint + enable + hertz + zeta (8-6b)
+    m3_opJointSetTarget = 57,         // joint + scalar + quat drive target
+    m3_opDestroyShape = 58,           // shape id (10-4: the red team
+                                      // found bodies could shed shapes
+                                      // only by dying)
+    m3_opSoftBodyAnchorSoft = 59,     // lattice<->lattice pin (11-2)
+    m3_opSetWind = 60,                // world wind field (11-3)
+    m3_opSetSurfaceVelocity = 61,     // shape conveyor velocity        // world toggle
+    m3_opVehicleDrivetrain = 62,      // vehicle + drivetrain def (12-1)
+    m3_opVehicleGear = 63,            // vehicle + gear select
+    m3_opCharacterStance = 64,        // character + halfHeight + radius (12-3)
+    m3_opSetAllowFastRotation = 65,   // body + 0/1 spin-cap escape (13-1)
     m3_opSetMaximumAngularSpeed = 66, // world spin cap (13-1)
     m3_opWorldExplode = 67,           // explosion def (13-2)
 } m3Op;
@@ -777,8 +782,8 @@ void m3WakeRegionAabb(m3World* world, const double lo[3], const double hi[3]);
 // catastrophe guard far above legal tumbling, not the reference's
 // aggressive dt-derived clamp. Hosts wanting the tight reference
 // behavior set a low cap and flag their wheels.
-#define M3_MAX_ANGULAR_SPEED_DEFAULT      800.0f
-#define M3_HIT_EVENT_THRESHOLD_DEFAULT    1.0f
+#define M3_MAX_ANGULAR_SPEED_DEFAULT   800.0f
+#define M3_HIT_EVENT_THRESHOLD_DEFAULT 1.0f
 
 // bodyLocks bit 6: this body bypasses the angular speed cap (the
 // reference allowFastRotation escape hatch). Bits 0..5 stay the

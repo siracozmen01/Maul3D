@@ -133,8 +133,9 @@ extern "C"
                                 float gustScale);
 
     /// Advance the simulation: collide, then the Soft Step solver
-    /// with the given substep count. Deterministic: same inputs, same
-    /// bits, on every platform and backend. Journaled.
+    /// with the given substep count (1..256; out of range refuses
+    /// loudly). Deterministic: same inputs, same bits, on every
+    /// platform and backend. Journaled.
     M3_API void m3World_Step(m3WorldId worldId, float dt, int32_t substeps);
 
     /// Snapshot and rollback, first-class from day one. The format is

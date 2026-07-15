@@ -185,8 +185,7 @@ static void TestTwinsReplayRollback(void)
     for (int32_t run = 0; run < 2; ++run)
     {
         m3WorldId world = BlastWorld();
-        bool recording =
-            run == 0 && m3World_JournalBegin(world, journal, (int32_t)sizeof(journal));
+        bool recording = run == 0 && m3World_JournalBegin(world, journal, (int32_t)sizeof(journal));
         m3BodyId a = Crate(world, 4.0, 0.0, 0.0);
         m3BodyId b = Crate(world, -4.0, 0.0, 1.0);
         Crate(world, 0.0, 4.0, -2.0);

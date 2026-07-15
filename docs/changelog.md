@@ -4,8 +4,42 @@ All notable changes to Maul3D. Versions are tags on green CI SHAs;
 every entry's determinism gates were verified across all CI cells at
 tag time.
 
-## Unreleased
+## v1.10 (2026-07-15)
 
+The explosion release, opening Roadmap 4: one call demolishes,
+and the spin clamp the reference always paired with an escape
+hatch finally ships with one.
+
+- Explosions (op 67): m3World_Explode with m3ExplosionDef.
+  Impulse per facing area (the reference projected-area model
+  over spheres, capsules, and hull face fans), recentered GJK
+  closest points, lever-arm spin, linear falloff band, wake on
+  reach, query filter, negative impulse implodes. Hostile defs
+  bounce at the cookie and at the replay wall.
+- Voxel charge coupling: voxelCarve bites a sphere out of every
+  chunk in range through one surface rebuild and one fracture
+  sweep per chunk; freed islands arrive as fragment events. The
+  testbed blastyard scene detonates at the crosshair and kicks
+  newborn fragments radially.
+- Soft push: softPush lands the same falloff push on soft
+  particles as pending kicks integrated exactly once by the next
+  step; the blast-to-step window is real snapshot state, hashed
+  only while it exists (snapshot v43 with the angular cap).
+- Angular speed cap (ops 65/66): the reference spin clamp with
+  m3Body_SetAllowFastRotation as the per-body escape hatch
+  (bodyLocks bit 6, free of the snapshot). The default 800 rad/s
+  is a catastrophe guard like the linear 400 m/s: pinned scenes
+  keep their bits, the knob folds into the hash only
+  off-default, in its own block.
+- Suites 40 and 41 (angularcap, explosion) plus the phase 13
+  mutation storm in the container gate: 300 journal-aimed
+  mutations over a session dense in ops 65, 66, and 67.
+- A red-team scar with a cure: the phase 13 storm flipped one
+  bit in a journaled step op and bought a BILLION substeps (the
+  replay wall never bounded the count; a two-second replay
+  became hours of honest math). Substeps now cap at 256 at the
+  public wall and the replay wall alike; hostile tapes refuse
+  loudly instead of running forever.
 - The testbed grew up: thirteen categorized scenes (benchmarks,
   destruction, geared and wheel-joint vehicles, the crouch veto,
   cloth in gusting wind over a conveyor, a rolling heightfield),

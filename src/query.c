@@ -1116,10 +1116,9 @@ static bool ExplodeCallback(int32_t shape, void* userContext)
         if (def->voxelCarve > 0.0f)
         {
             m3Transform vxf = m3ShapeWorldTransform(world, shape);
-            m3Vec3 vlocal = m3InvRotateVec3(
-                vxf.q,
-                (m3Vec3){(m3real)(def->position.x - vxf.p.x), (m3real)(def->position.y - vxf.p.y),
-                         (m3real)(def->position.z - vxf.p.z)});
+            m3Vec3 vlocal = m3InvRotateVec3(vxf.q, (m3Vec3){(m3real)(def->position.x - vxf.p.x),
+                                                            (m3real)(def->position.y - vxf.p.y),
+                                                            (m3real)(def->position.z - vxf.p.z)});
             m3VoxelCarveSphereInternal(world, shape, vlocal, def->voxelCarve);
         }
         return true;
@@ -1143,9 +1142,9 @@ static bool ExplodeCallback(int32_t shape, void* userContext)
     // Work in the shape's local frame so distance and direction stay
     // precise far from the origin (the reference recentering).
     m3Transform xf = m3ShapeWorldTransform(world, shape);
-    m3Vec3 local = m3InvRotateVec3(
-        xf.q, (m3Vec3){(m3real)(def->position.x - xf.p.x), (m3real)(def->position.y - xf.p.y),
-                       (m3real)(def->position.z - xf.p.z)});
+    m3Vec3 local = m3InvRotateVec3(xf.q, (m3Vec3){(m3real)(def->position.x - xf.p.x),
+                                                  (m3real)(def->position.y - xf.p.y),
+                                                  (m3real)(def->position.z - xf.p.z)});
     m3Vec3 scratch[2];
     m3DistanceProxy proxy = m3MakeShapeProxy(world, shape, scratch);
     m3Vec3 point = local;
@@ -1258,8 +1257,8 @@ bool m3WorldExplodeInternal(m3World* world, const m3ExplosionDef* def)
                     scale = scale < 0.0f ? 0.0f : (scale > 1.0f ? 1.0f : scale);
                 }
                 m3real magnitude = def->impulsePerArea * def->softPush * area * scale;
-                world->softKick[k] = m3Add3(
-                    world->softKick[k], m3MulSV3(magnitude * world->softInvMass[k], direction));
+                world->softKick[k] = m3Add3(world->softKick[k],
+                                            m3MulSV3(magnitude * world->softInvMass[k], direction));
             }
         }
     }

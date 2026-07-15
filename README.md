@@ -39,6 +39,10 @@ m3World_Restore(world, buffer, size); // bit-exact resimulation from here
   fracture events with island recipes for host-spawned fragments,
   voxel CCD, and seam welding; carve the floor and the character,
   the car, and the rope all react the same step.
+- **Explosions in one call**: m3World_Explode pushes every body
+  by the area it shows to the blast (falloff band, wake,
+  implosions), carves voxel chunks, and shoves soft particles,
+  all journaled and bit-exact under rollback.
 - **A soft-step solver** adapted from the Box2D v3 lineage:
   speculative contacts, warm starting, graph coloring, sub-steps;
   hybrid f64 positions keep worlds exact far from the origin.
@@ -89,9 +93,11 @@ CI enforces that equality on every commit.
 
 The interactive testbed (raylib, viewer only, outside the engine's
 dependency surface) builds with `-DMAUL3D_BUILD_TESTBED=ON`:
-thirteen scenes across benchmarks, voxel destruction, three kinds
-of vehicle, a playable character with the crouch veto, cloth in
-gusting wind over a conveyor, and a rolling heightfield; solid
+fourteen scenes across benchmarks, voxel destruction (including a
+blastyard where one keypress detonates, carves the wall, and kicks
+the fragments), three kinds of vehicle, a playable character with
+the crouch veto, cloth in gusting wind over a conveyor, and a
+rolling heightfield; solid
 shading with shadows, a solver panel, and a Recording panel that
 seals the live session into an M3J1 replay and verifies it
 bit-exact on a button. Hold R and time runs backward through a
