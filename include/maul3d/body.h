@@ -88,6 +88,15 @@ extern "C"
     /// wheels and other legal fast spinners). Journaled.
     M3_API void m3Body_SetAllowFastRotation(m3BodyId bodyId, bool allow);
     M3_API bool m3Body_GetAllowFastRotation(m3BodyId bodyId);
+    /// Debug name, up to 31 bytes plus the terminator; longer names
+    /// truncate silently. Journaled and carried by snapshots, never
+    /// part of the hash (a label moves no matter). GetName returns
+    /// the empty string for unnamed bodies and stale ids.
+    M3_API void m3Body_SetName(m3BodyId bodyId, const char* name);
+    M3_API const char* m3Body_GetName(m3BodyId bodyId);
+    /// Who touches me now (14-3): fills up to capacity entries and
+    /// returns the count written. See m3ContactData in world.h.
+    M3_API int32_t m3Body_GetContactData(m3BodyId bodyId, m3ContactData* out, int32_t capacity);
     /// Sleep controls: a per-body velocity threshold (zero restores
     /// the world default) and a can-sleep switch.
     M3_API void m3Body_SetSleepControls(m3BodyId bodyId, float threshold, bool canSleep);

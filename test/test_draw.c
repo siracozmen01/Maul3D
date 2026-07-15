@@ -272,6 +272,17 @@ static void TestDrawIsPureObserver(void)
     m3World_DrawSolid(world, &solid); // the solid pass is held to the
                                       // same purity law
     m3World_DrawSolid(world, &solid);
+    m3ExtraDraw extras;
+    memset(&extras, 0, sizeof(extras));
+    extras.DrawSegment = SinkSegment;
+    extras.DrawPoint = SinkPoint;
+    extras.context = &sink;
+    extras.drawIslands = true;
+    extras.drawMassAxes = true;
+    extras.drawTreeBoxes = true;
+    m3World_DrawExtras(world, &extras); // the extras walk obeys the
+                                        // same purity law (14-2)
+    m3World_DrawExtras(world, &extras);
 
     CHECK(m3World_Snapshot(world, after, bytes) == bytes, "snapshot after writes");
     CHECK(memcmp(before, after, (size_t)bytes) == 0, "a draw pass moves no bits");
@@ -430,12 +441,57 @@ static void TestSolidWindings(void)
     }
 }
 
+static void TestExtrasEmit(void)
+{
+    // The extras layers actually say something: after a settled
+    // stack, islands mark every labeled dynamic body, mass axes
+    // draw three segments per dynamic body, tree boxes appear once
+    // the world holds more than one leaf, and twin worlds emit
+    // bit-identical extra streams.
+    DrawSink sinks[2];
+    for (int32_t run = 0; run < 2; ++run)
+    {
+        m3WorldId world = MakeZoo();
+        for (int32_t i = 0; i < 60; ++i)
+        {
+            m3World_Step(world, 1.0f / 60.0f, 4);
+        }
+        sinks[run] = MakeSink();
+        m3ExtraDraw extras;
+        memset(&extras, 0, sizeof(extras));
+        extras.DrawSegment = SinkSegment;
+        extras.DrawPoint = SinkPoint;
+        extras.context = &sinks[run];
+        extras.drawIslands = true;
+        m3World_DrawExtras(world, &extras);
+        if (run == 0)
+        {
+            CHECK(sinks[0].points > 0, "islands mark the dynamic bodies");
+            int32_t islandPoints = sinks[0].points;
+            extras.drawIslands = false;
+            extras.drawMassAxes = true;
+            m3World_DrawExtras(world, &extras);
+            CHECK(sinks[0].segments == 3 * islandPoints, "three axes per labeled dynamic body");
+            int32_t axisSegments = sinks[0].segments;
+            extras.drawMassAxes = false;
+            extras.drawTreeBoxes = true;
+            m3World_DrawExtras(world, &extras);
+            CHECK(sinks[0].segments > axisSegments, "internal tree boxes emit");
+            extras.drawIslands = true;
+            extras.drawMassAxes = true;
+        }
+        m3DestroyWorld(world);
+    }
+    CHECK(sinks[0].points == sinks[1].points, "twin extras emit the same counts");
+}
+
 int main(void)
 {
     TestSolidWindings();
     TestDrawCoverage();
     TestDrawIsPureObserver();
     TestDrawStreamDeterminism();
+    TestExtrasEmit();
     if (s_failures == 0)
     {
         printf("test_draw: all green\n");

@@ -174,9 +174,12 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     M3_ALLOC(world->bodyCanSleep, cap, uint8_t);
     M3_ALLOC(world->bodyHasTarget, cap, uint8_t);
     M3_ALLOC(world->bodyTarget, cap, m3Transform);
+    M3_ALLOC(world->bodyIsland, cap, int32_t);
+    M3_ALLOC(world->bodyNames, cap * M3_BODY_NAME_CAPACITY, char);
     M3_ALLOC(world->bodyShapeHead, cap, int32_t);
     for (int32_t i = 0; i < cap; ++i)
     {
+        world->bodyIsland[i] = -1; // observer label, no island yet
         world->bodyShapeHead[i] = -1;
     }
 
@@ -440,6 +443,8 @@ void m3DestroyWorld(m3WorldId worldId)
     m3Free(world->bodyCanSleep);
     m3Free(world->bodyHasTarget);
     m3Free(world->bodyTarget);
+    m3Free(world->bodyIsland);
+    m3Free(world->bodyNames);
     m3Free(world->bodyShapeHead);
     m3IdPoolDestroy(&world->shapePool);
     m3Free(world->shapeBody);
@@ -757,6 +762,66 @@ void m3World_SetMaximumAngularSpeed(m3WorldId worldId, float value)
         m3JournalRecord(world, m3_opSetMaximumAngularSpeed, &value, (int32_t)sizeof(value));
     }
     m3SetMaximumAngularSpeedInternal(world, value);
+}
+
+// Live slots without a scan: the pool hands out from the free queue
+// or bumps maxIndex, and retirement is the only other exit (14-1).
+static int32_t PoolLive(const m3IdPool* pool)
+{
+    return pool->maxIndex - pool->freeCount - pool->retiredCount;
+}
+
+m3Counters m3World_GetCounters(m3WorldId worldId)
+{
+    m3Counters counters;
+    memset(&counters, 0, sizeof(counters));
+    m3World* world = m3WorldFromId(worldId);
+    if (world == NULL)
+    {
+        return counters;
+    }
+    counters.bodyCount = PoolLive(&world->bodyPool);
+    counters.shapeCount = PoolLive(&world->shapePool);
+    counters.jointCount = PoolLive(&world->jointPool);
+    counters.contactCount = world->pairCount;
+    counters.characterCount = PoolLive(&world->charPool);
+    counters.vehicleCount = PoolLive(&world->vehPool);
+    counters.softBodyCount = PoolLive(&world->softPool);
+    counters.voxelChunkCount = PoolLive(&world->voxelPool);
+    counters.hullCount = PoolLive(&world->hullPool);
+    counters.meshCount = PoolLive(&world->meshPool);
+    int32_t awake = 0;
+    int32_t maxBody = world->bodyPool.maxIndex;
+    for (int32_t i = 0; i < maxBody; ++i)
+    {
+        if (world->bodyPool.alive[i] != 0 && world->types[i] == (uint8_t)m3_dynamicBody &&
+            world->awake[i] != 0)
+        {
+            awake += 1;
+        }
+    }
+    counters.awakeCount = awake;
+    counters.islandCount = world->lastIslandCount;
+    counters.colorCount = world->lastColorCount;
+    counters.treeHeight =
+        world->tree.root != M3_TREE_NULL ? world->tree.nodes[world->tree.root].height : 0;
+    counters.scratchPeak = world->lastScratchPeak;
+    counters.scratchCapacity = world->scratch.capacity;
+    counters.snapshotBytes = m3World_SnapshotSize(worldId);
+    m3DebugAllocCounts(&counters.allocCalls, &counters.freeCalls);
+    return counters;
+}
+
+m3Profile m3World_GetProfile(m3WorldId worldId)
+{
+    m3World* world = m3WorldFromId(worldId);
+    if (world == NULL)
+    {
+        m3Profile zero;
+        memset(&zero, 0, sizeof(zero));
+        return zero;
+    }
+    return world->profile;
 }
 
 void m3World_EnableSleeping(m3WorldId worldId, bool flag)
@@ -2141,6 +2206,28 @@ static bool JournalReplayApply(m3World* world, const void* data, int32_t size)
                 return false;
             }
             m3SetMaximumAngularSpeedInternal(world, value);
+            break;
+        }
+        case m3_opSetBodyName:
+        {
+            struct
+            {
+                m3BodyId id;
+                char name[M3_BODY_NAME_CAPACITY];
+            } record;
+            if (bytes != (int32_t)sizeof(record))
+            {
+                return false;
+            }
+            memcpy(&record, payload, sizeof(record));
+            record.id.world0 = world->worldIndex0;
+            int32_t index = m3BodySlot(world, record.id);
+            if (index < 0)
+            {
+                return false;
+            }
+            record.name[M3_BODY_NAME_CAPACITY - 1] = 0;
+            m3SetBodyNameInternal(world, index, record.name);
             break;
         }
         case m3_opSetAllowFastRotation:

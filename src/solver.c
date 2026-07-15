@@ -3084,6 +3084,14 @@ static void IslandSleepPass(m3World* world, int32_t* parent, const m3Pos3* com0,
 
 void m3StepInternal(m3World* world, float dt, int32_t substeps)
 {
+    // The step profile (14-1): coarse wall-clock brackets, written
+    // to the world only at the single complete-step exit, so a
+    // stalled step keeps the previous profile. Observer data only.
+    m3Profile prof;
+    memset(&prof, 0, sizeof(prof));
+    double tStep = m3NowMs();
+    double t0 = tStep;
+
     // The documented growth (allocator.h, finally exercised by the
     // 6-1 city block): a step that starves the scratch stalls
     // loudly and harmlessly; the NEXT step arrives with double the
@@ -3126,10 +3134,19 @@ void m3StepInternal(m3World* world, float dt, int32_t substeps)
     // The suspension pass (5-1): vehicle impulses land here so the
     // narrowphase and solver see the sprung chassis the same way
     // they see gravity. Serial, slot order, canonical.
+    t0 = m3NowMs();
     m3VehicleApplySuspension(world, dt);
+    prof.vehicles = (float)(m3NowMs() - t0);
 
-    if (m3UpdatePairs(world) != m3_success ||
-        m3UpdateContacts(world, oldKeys, oldManifolds, oldCount) != m3_success)
+    t0 = m3NowMs();
+    m3Result pairsResult = m3UpdatePairs(world);
+    prof.broadphase = (float)(m3NowMs() - t0);
+    t0 = m3NowMs();
+    m3Result contactsResult = pairsResult == m3_success
+                                  ? m3UpdateContacts(world, oldKeys, oldManifolds, oldCount)
+                                  : pairsResult;
+    prof.narrowphase = (float)(m3NowMs() - t0);
+    if (pairsResult != m3_success || contactsResult != m3_success)
     {
         return; // scratch starve (transient, grown next step) or a
                 // full pair table: the world stalls, never corrupts
@@ -3138,6 +3155,7 @@ void m3StepInternal(m3World* world, float dt, int32_t substeps)
     // Contact events: a canonical merge walk of the old and new pair
     // lists (both sorted). Serial and after the parallel narrowphase
     // on purpose: appends must happen in pair order, bit-stably.
+    t0 = m3NowMs();
     world->beginEventCount = 0;
     world->endEventCount = 0;
     world->sensorBeginEventCount = 0;
@@ -3222,6 +3240,8 @@ void m3StepInternal(m3World* world, float dt, int32_t substeps)
     // The stash served the warm carry and the event walk: done.
     m3Free(oldKeys);
     m3Free(oldManifolds);
+    prof.events = (float)(m3NowMs() - t0);
+    t0 = m3NowMs();
 
     // Pre-flight sizing (V-STALL; repositioned by V-LAYOUT): a
     // starved step is deterministic SIZE-DRIVEN state evolution,
@@ -3307,6 +3327,9 @@ void m3StepInternal(m3World* world, float dt, int32_t substeps)
         deltaRot[i] = m3MakeIdentityQuat();
     }
 
+    prof.prepare = (float)(m3NowMs() - t0);
+    t0 = m3NowMs();
+
     m3real h = dt / (m3real)substeps;
     m3real invH = h > 0.0f ? 1.0f / h : 0.0f;
     int32_t constraintCount = PrepareContacts(world, constraints, h);
@@ -3315,6 +3338,14 @@ void m3StepInternal(m3World* world, float dt, int32_t substeps)
     if (!BuildColoring(world, constraints, constraintCount, &coloring))
     {
         return; // transient scratch stall, grown next step
+    }
+    int32_t usedColors = 0;
+    for (int32_t c = 0; c < M3_GRAPH_COLORS + 1; ++c)
+    {
+        if (coloring.starts[c + 1] > coloring.starts[c])
+        {
+            usedColors += 1;
+        }
     }
 
     int32_t maxJointSlots = world->jointPool.maxIndex;
@@ -3535,14 +3566,41 @@ void m3StepInternal(m3World* world, float dt, int32_t substeps)
         }
     }
 
+    prof.solve = (float)(m3NowMs() - t0);
+    t0 = m3NowMs();
     if (world->continuousEnabled != 0)
     {
         SolveContinuousPhase(world, com0, rot0);
     }
+    prof.continuous = (float)(m3NowMs() - t0);
+    // Island census before the sleep pass retires anyone: awake
+    // dynamic union-find roots, an observer count (14-1), and the
+    // per-body island label the extras draw tints by (14-2).
+    // Sleeping bodies keep the label of the island they slept in.
+    int32_t islands = 0;
+    for (int32_t i = 0; i < maxBody; ++i)
+    {
+        if (world->bodyPool.alive[i] != 0 && world->types[i] == (uint8_t)m3_dynamicBody &&
+            world->awake[i] != 0)
+        {
+            int32_t root = i;
+            while (islandParent[root] != root)
+            {
+                root = islandParent[root];
+            }
+            world->bodyIsland[i] = root;
+            if (root == i)
+            {
+                islands += 1;
+            }
+        }
+    }
+    t0 = m3NowMs();
     if (world->sleepEnabled != 0)
     {
         IslandSleepPass(world, islandParent, com0, rot0, dt);
     }
+    prof.sleep = (float)(m3NowMs() - t0);
 
     // Body move events (8-5): one per mover, ascending body order
     // (the mover list is built that way), post-step transform, and
@@ -3556,10 +3614,19 @@ void m3StepInternal(m3World* world, float dt, int32_t substeps)
         e->transform = world->transforms[i];
         e->fellAsleep = world->types[i] == (uint8_t)m3_dynamicBody && world->awake[i] == 0;
     }
+    t0 = m3NowMs();
     m3CharacterCarryRiders(world, com0, rot0);
+    prof.characters = (float)(m3NowMs() - t0);
+    t0 = m3NowMs();
     m3SoftBodyPass(world, dt, substeps);
+    prof.softBodies = (float)(m3NowMs() - t0);
 
     world->stepCount += 1;
+    prof.step = (float)(m3NowMs() - tStep);
+    world->profile = prof;
+    world->lastIslandCount = islands;
+    world->lastColorCount = usedColors;
+    world->lastScratchPeak = world->scratch.top;
 }
 
 void m3World_Step(m3WorldId worldId, float dt, int32_t substeps)

@@ -1295,3 +1295,94 @@ void m3World_Explode(m3WorldId worldId, const m3ExplosionDef* def)
         m3JournalRecord(world, m3_opWorldExplode, def, (int32_t)sizeof(*def));
     }
 }
+
+// --- Contact readback (14-3) ------------------------------------------------
+
+static void FillContactData(const m3World* world, int32_t pair, m3ContactData* out)
+{
+    const m3Manifold* manifold = &world->manifolds[pair];
+    uint64_t key = world->pairKeys[pair];
+    int32_t shapeA = (int32_t)(key >> 32);
+    int32_t shapeB = (int32_t)(key & 0xFFFFFFFFu);
+    out->shapeA = (m3ShapeId){shapeA + 1, world->worldIndex0, world->shapePool.generations[shapeA]};
+    out->shapeB = (m3ShapeId){shapeB + 1, world->worldIndex0, world->shapePool.generations[shapeB]};
+    out->normal = manifold->normal;
+    int32_t count = manifold->pointCount;
+    out->pointCount = count;
+    int32_t bodyA = world->shapeBody[shapeA];
+    m3Vec3 rcA = m3RotateVec3(world->transforms[bodyA].q, world->localCenters[bodyA]);
+    for (int32_t k = 0; k < count; ++k)
+    {
+        const m3ManifoldPoint* point = &world->manifolds[pair].points[k];
+        // Anchors are measured from body A's center in world axes:
+        // COM plus anchor is the world contact point at read time.
+        out->points[k] =
+            (m3Pos3){world->transforms[bodyA].p.x + (double)(rcA.x + point->anchorA.x),
+                     world->transforms[bodyA].p.y + (double)(rcA.y + point->anchorA.y),
+                     world->transforms[bodyA].p.z + (double)(rcA.z + point->anchorA.z)};
+        out->separations[k] = point->separation;
+        out->normalImpulses[k] = point->normalImpulse;
+    }
+    for (int32_t k = count; k < 4; ++k)
+    {
+        out->points[k] = (m3Pos3){0.0, 0.0, 0.0};
+        out->separations[k] = 0.0f;
+        out->normalImpulses[k] = 0.0f;
+    }
+}
+
+int32_t m3Shape_GetContactData(m3ShapeId shapeId, m3ContactData* out, int32_t capacity)
+{
+    m3World* world = m3WorldFromIndex0(shapeId.world0);
+    if (world == NULL || out == NULL || capacity <= 0)
+    {
+        return 0;
+    }
+    int32_t shape = shapeId.index1 - 1;
+    if (shape < 0 || shape >= world->shapePool.maxIndex || world->shapePool.alive[shape] == 0 ||
+        world->shapePool.generations[shape] != shapeId.generation)
+    {
+        return 0;
+    }
+    int32_t written = 0;
+    for (int32_t i = 0; i < world->pairCount && written < capacity; ++i)
+    {
+        uint64_t key = world->pairKeys[i];
+        int32_t shapeA = (int32_t)(key >> 32);
+        int32_t shapeB = (int32_t)(key & 0xFFFFFFFFu);
+        if ((shapeA == shape || shapeB == shape) && world->manifolds[i].pointCount > 0)
+        {
+            FillContactData(world, i, &out[written]);
+            written += 1;
+        }
+    }
+    return written;
+}
+
+int32_t m3Body_GetContactData(m3BodyId bodyId, m3ContactData* out, int32_t capacity)
+{
+    m3World* world = m3WorldFromIndex0(bodyId.world0);
+    if (world == NULL || out == NULL || capacity <= 0)
+    {
+        return 0;
+    }
+    int32_t body = m3BodySlot(world, bodyId);
+    if (body < 0)
+    {
+        return 0;
+    }
+    int32_t written = 0;
+    for (int32_t i = 0; i < world->pairCount && written < capacity; ++i)
+    {
+        uint64_t key = world->pairKeys[i];
+        int32_t shapeA = (int32_t)(key >> 32);
+        int32_t shapeB = (int32_t)(key & 0xFFFFFFFFu);
+        if ((world->shapeBody[shapeA] == body || world->shapeBody[shapeB] == body) &&
+            world->manifolds[i].pointCount > 0)
+        {
+            FillContactData(world, i, &out[written]);
+            written += 1;
+        }
+    }
+    return written;
+}

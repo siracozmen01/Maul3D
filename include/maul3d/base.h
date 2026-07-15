@@ -30,7 +30,7 @@ extern "C"
 
     /// Library version, encoded as major * 10000 + minor * 100 + patch.
 #define M3_VERSION_MAJOR 1
-#define M3_VERSION_MINOR 10
+#define M3_VERSION_MINOR 11
 #define M3_VERSION_PATCH 0
 
     /// The linked library's version as major * 10000 + minor * 100 +
@@ -115,6 +115,14 @@ extern "C"
     /// The debug assert sink (prints and aborts). Internal invariants
     /// only; never called for user input, never present in release.
     M3_API void m3AssertFail(const char* condition, const char* file, int line);
+
+    /// Host assert hook (14-3): installed globally, called before
+    /// the abort. Return nonzero to declare the failure handled and
+    /// skip the abort (test harnesses, crash reporters); return
+    /// zero to keep the default print-and-abort. NULL restores the
+    /// default. Observer machinery: never touches simulation state.
+    typedef int (*m3AssertFn)(const char* condition, const char* file, int line);
+    M3_API void m3SetAssertHandler(m3AssertFn handler);
 
 #ifdef __cplusplus
 }

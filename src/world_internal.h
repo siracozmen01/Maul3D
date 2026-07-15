@@ -160,7 +160,12 @@ typedef enum m3Op
     m3_opSetAllowFastRotation = 65,   // body + 0/1 spin-cap escape (13-1)
     m3_opSetMaximumAngularSpeed = 66, // world spin cap (13-1)
     m3_opWorldExplode = 67,           // explosion def (13-2)
+    m3_opSetBodyName = 68,            // body + 32 name bytes (14-3)
 } m3Op;
+
+// Debug names (14-3): journaled and snapshot like userData, NEVER
+// hashed (a name moves no matter).
+#define M3_BODY_NAME_CAPACITY 32
 
 // Immutable interned hull data (lifetime 3): vertices, face planes,
 // and face vertex loops for the SAT (2b-5), plus unit-density mass
@@ -496,6 +501,12 @@ typedef struct m3World
     uint8_t* bodyCanSleep;     // 0 = never sleeps
     uint8_t* bodyHasTarget;    // kinematic servo pending (one step)
     m3Transform* bodyTarget;   // the servo pose
+    int32_t* bodyIsland;       // OBSERVER ONLY (14-2): the island
+                               // root labeled by the last step's
+                               // census, -1 before any step. Never
+                               // a snapshot block, never hashed.
+    char* bodyNames;           // cap * M3_BODY_NAME_CAPACITY (14-3):
+                               // journaled + snapshot, never hashed
     int32_t* bodyShapeHead;    // head of each body's shape list, -1 none
 
     // Shape identity and SoA shape state (persistent, walked).
@@ -749,6 +760,14 @@ typedef struct m3World
     int32_t journalCursor;
     int32_t journalActive;
     int32_t journalOverflow;
+
+    // Observer tail (14-1): profile and step statistics. NEVER
+    // snapshot blocks, NEVER hash inputs; the walker and the hash
+    // enumerate arrays explicitly and skip this region by design.
+    m3Profile profile;       // last completed step
+    int32_t lastIslandCount; // last completed step
+    int32_t lastColorCount;  // last completed step
+    int32_t lastScratchPeak; // bytes, last completed step
 } m3World;
 
 // Registry lookup: NULL for a stale or null id.
@@ -770,6 +789,9 @@ void m3SetMotionLocksInternal(m3World* world, int32_t index, uint8_t locks);
 void m3SetSleepControlsInternal(m3World* world, int32_t index, float threshold, int canSleep);
 void m3SetAwakeInternal(m3World* world, int32_t index, int awake);
 void m3WakeRegionAabb(m3World* world, const double lo[3], const double hi[3]);
+
+// Monotonic milliseconds (core.c): the profile clock. Observer only.
+double m3NowMs(void);
 
 // Tuning defaults (8-4): the reference values, shared by the def,
 // the solver reads, and the off-default hash folds.
@@ -842,6 +864,7 @@ void m3SetRestitutionThresholdInternal(m3World* world, float value);
 void m3SetMaximumLinearSpeedInternal(m3World* world, float value);
 void m3SetMaximumAngularSpeedInternal(m3World* world, float value);
 void m3SetAllowFastRotationInternal(m3World* world, int32_t index, int32_t allow);
+void m3SetBodyNameInternal(m3World* world, int32_t index, const char* name);
 bool m3WorldExplodeInternal(m3World* world, const m3ExplosionDef* def);
 int32_t m3VoxelCarveSphereInternal(m3World* world, int32_t shape, m3Vec3 center, m3real radius);
 void m3EnableSleepingInternal(m3World* world, int32_t on);

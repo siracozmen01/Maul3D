@@ -4,6 +4,28 @@ All notable changes to Maul3D. Versions are tags on green CI SHAs;
 every entry's determinism gates were verified across all CI cells at
 tag time.
 
+## Unreleased (v1.11 in tree)
+
+The adoption gate: the engine explains itself.
+
+- Introspection (14-1): m3Counters (live census, tree height,
+  scratch high water, snapshot size, allocation calls) and
+  m3Profile (wall-clock per step phase), both pure observers
+  with a twin-polling purity gate. The step now carries an
+  island census and a solver color count.
+- Extra draw layers (14-2): m3World_DrawExtras with island tint
+  points, center-of-mass axis frames, and internal broadphase
+  tree boxes; a separate additive struct, the frozen draw
+  structs untouched, the purity law extended over the new walk.
+- Debug names, contact readback, and the assert hook (14-3):
+  m3Body_SetName (op 68, journaled, snapshot-carried, never
+  hashed), m3Body_GetContactData / m3Shape_GetContactData in
+  canonical pair order, m3SetAssertHandler ahead of the debug
+  abort. No log hook on purpose: there is no log stream.
+- Suite 42 (introspection) and the extras gates in the draw
+  suite; the testbed grew a Stats panel and toggles for the new
+  layers. Snapshot v43 additionally carries body names.
+
 ## v1.10 (2026-07-15)
 
 The explosion release, opening Roadmap 4: one call demolishes,
@@ -40,6 +62,15 @@ hatch finally ships with one.
   became hours of honest math). Substeps now cap at 256 at the
   public wall and the replay wall alike; hostile tapes refuse
   loudly instead of running forever.
+- The storm's second bite, caught by the UBSAN cell after tag
+  content froze: replay handed raw soft defs to an internal that
+  trusted its caller, and a flipped bit could mint NaN particle
+  positions (a NaN voxel cell index is undefined behavior). The
+  soft def wall moved into the internal where BOTH doors pass,
+  and the 8-4 speed cap now covers particles in the integrator.
+- Portability cure: MSVC C4310 in the fast-rotation flag clear
+  (a constant truncation); mask the live byte, cast the
+  expression, same bits everywhere.
 - The testbed grew up: thirteen categorized scenes (benchmarks,
   destruction, geared and wheel-joint vehicles, the crouch veto,
   cloth in gusting wind over a conveyor, a rolling heightfield),

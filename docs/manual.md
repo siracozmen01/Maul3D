@@ -699,6 +699,44 @@ loudly. Explosions are events, not state: two worlds that
 explode identically stay bit-identical through twins, replay,
 and rollback.
 
+## Introspection
+
+m3World_GetCounters reports the live census: bodies, shapes,
+joints, contacts, characters, vehicles, soft bodies, voxel
+chunks, interned hull and mesh slabs, awake dynamic bodies, the
+last step's island and solver-color counts, the broadphase tree
+height, the step scratch high water against its reserve, the
+exact snapshot size, and the process-wide persistent
+allocation/free call counts. m3World_GetProfile reports
+wall-clock milliseconds per phase of the last completed step
+(vehicles, broadphase, narrowphase, events, prepare, solve,
+continuous, sleep, characters, soft bodies, and the whole).
+
+Both are PURE observers: reading them never touches the
+simulation, the snapshot, or the hash, and a suite holds that
+promise with a twin that polls every tick against a twin that
+never looks. Counter values are deterministic; profile times are
+honest wall-clock and never will be.
+
+m3World_DrawExtras adds the analysis layers on top of the base
+draw: island tint points (colors cycled by island root, sleeping
+bodies keep the tint of the island they slept in), center-of-mass
+axis frames, and the broadphase tree's internal node boxes. A
+separate additive struct, the frozen m3DebugDraw and m3SolidDraw
+stay untouched, and the same purity gate covers the new walk.
+
+Bodies take debug names (m3Body_SetName, 31 bytes plus the
+terminator, journaled, carried by snapshots, NEVER hashed) and
+answer "who touches me" through m3Body_GetContactData and
+m3Shape_GetContactData: manifold entries in canonical pair order
+with world points, separations, and last-step normal impulses.
+
+m3SetAssertHandler installs a global host hook ahead of the
+debug abort; returning nonzero declares the failure handled
+(test harnesses, crash reporters). There is deliberately NO log
+hook: the engine has no log stream to route, and a dead API is
+worse than a missing one.
+
 ## The replay studio
 
 An M3J1 file is [header | initial snapshot | journal], encoded

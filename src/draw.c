@@ -528,3 +528,92 @@ void m3World_DrawSolid(m3WorldId worldId, const m3SolidDraw* draw)
         }
     }
 }
+
+// --- Extras (14-2) ----------------------------------------------------------
+
+static void ExtraBoxEdges(const m3ExtraDraw* draw, const double lo[3], const double hi[3],
+                          uint32_t color)
+{
+    m3Pos3 c[8];
+    for (int32_t k = 0; k < 8; ++k)
+    {
+        c[k] = (m3Pos3){(k & 1) != 0 ? hi[0] : lo[0], (k & 2) != 0 ? hi[1] : lo[1],
+                        (k & 4) != 0 ? hi[2] : lo[2]};
+    }
+    static const int32_t edges[12][2] = {{0, 1}, {2, 3}, {4, 5}, {6, 7}, {0, 2}, {1, 3},
+                                         {4, 6}, {5, 7}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
+    for (int32_t k = 0; k < 12; ++k)
+    {
+        draw->DrawSegment(c[edges[k][0]], c[edges[k][1]], color, draw->context);
+    }
+}
+
+void m3World_DrawExtras(m3WorldId worldId, const m3ExtraDraw* draw)
+{
+    m3World* world = m3WorldFromId(worldId);
+    if (world == NULL || draw == NULL)
+    {
+        return;
+    }
+    // A fixed island palette, cycled by root slot: twins label the
+    // same roots, so twins draw the same stream.
+    static const uint32_t palette[8] = {0xFF6B6B, 0x4ECDC4, 0xFFE66D, 0x95E86E,
+                                        0xB48BFF, 0xFF9F68, 0x6BC5FF, 0xF078B0};
+    int32_t maxBody = world->bodyPool.maxIndex;
+    if (draw->drawIslands && draw->DrawPoint != NULL)
+    {
+        for (int32_t i = 0; i < maxBody; ++i)
+        {
+            if (world->bodyPool.alive[i] == 0 || world->types[i] != (uint8_t)m3_dynamicBody ||
+                world->bodyEnabled[i] == 0 || world->bodyIsland[i] < 0)
+            {
+                continue;
+            }
+            m3Vec3 rc = m3RotateVec3(world->transforms[i].q, world->localCenters[i]);
+            m3Pos3 com = {world->transforms[i].p.x + (double)rc.x,
+                          world->transforms[i].p.y + (double)rc.y,
+                          world->transforms[i].p.z + (double)rc.z};
+            draw->DrawPoint(com, 0.15f, palette[world->bodyIsland[i] & 7], draw->context);
+        }
+    }
+    if (draw->drawMassAxes && draw->DrawSegment != NULL)
+    {
+        for (int32_t i = 0; i < maxBody; ++i)
+        {
+            if (world->bodyPool.alive[i] == 0 || world->types[i] != (uint8_t)m3_dynamicBody ||
+                world->bodyEnabled[i] == 0)
+            {
+                continue;
+            }
+            m3Quat q = world->transforms[i].q;
+            m3Vec3 rc = m3RotateVec3(q, world->localCenters[i]);
+            m3Pos3 o = {world->transforms[i].p.x + (double)rc.x,
+                        world->transforms[i].p.y + (double)rc.y,
+                        world->transforms[i].p.z + (double)rc.z};
+            static const m3Vec3 axes[3] = {
+                {0.5f, 0.0f, 0.0f}, {0.0f, 0.5f, 0.0f}, {0.0f, 0.0f, 0.5f}};
+            static const uint32_t axisColors[3] = {0xFF3333, 0x33FF33, 0x3366FF};
+            for (int32_t a = 0; a < 3; ++a)
+            {
+                m3Vec3 d = m3RotateVec3(q, axes[a]);
+                m3Pos3 tip = {o.x + (double)d.x, o.y + (double)d.y, o.z + (double)d.z};
+                draw->DrawSegment(o, tip, axisColors[a], draw->context);
+            }
+        }
+    }
+    if (draw->drawTreeBoxes && draw->DrawSegment != NULL)
+    {
+        for (int32_t n = 0; n < world->tree.capacity; ++n)
+        {
+            const m3TreeNode* node = &world->tree.nodes[n];
+            if (node->height <= 0)
+            {
+                continue; // free slots and leaves: the base walk
+                          // already offers the leaf fat bounds
+            }
+            uint32_t g = 0x30u + 0x18u * (uint32_t)(node->height > 8 ? 8 : node->height);
+            uint32_t color = (g << 16) | (g << 8) | (g + 0x10u);
+            ExtraBoxEdges(draw, node->lo, node->hi, color);
+        }
+    }
+}

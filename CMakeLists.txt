@@ -340,6 +340,11 @@ target_link_libraries(test_explosion PRIVATE maul3d)
 maul3d_apply_flags(test_explosion)
 add_test(NAME explosion COMMAND test_explosion)
 
+add_executable(test_introspection test/test_introspection.c)
+target_link_libraries(test_introspection PRIVATE maul3d)
+maul3d_apply_flags(test_introspection)
+add_test(NAME introspection COMMAND test_introspection)
+
 add_executable(test_fuzz test/test_fuzz.c)
 target_link_libraries(test_fuzz PRIVATE maul3d)
 maul3d_apply_flags(test_fuzz)

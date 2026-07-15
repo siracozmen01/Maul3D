@@ -394,6 +394,72 @@ extern "C"
     /// order. The value every gate compares.
     M3_API uint64_t m3World_Hash(m3WorldId worldId);
 
+    /// Live contact readback (14-3): one entry per manifold touching
+    /// the queried body or shape, in canonical pair order. Pure
+    /// observer data; points are world space at read time.
+    typedef struct m3ContactData
+    {
+        m3ShapeId shapeA;
+        m3ShapeId shapeB;
+        m3Vec3 normal; // from shape A toward shape B
+        int32_t pointCount;
+        m3Pos3 points[4];
+        float separations[4];    // negative = penetration
+        float normalImpulses[4]; // last step's warm-start payload
+    } m3ContactData;
+
+    /// Live-world counters (14-1): pure observer data. Reading them
+    /// never touches the simulation, the snapshot, or the hash. The
+    /// count fields are themselves deterministic (twins report
+    /// identical counts); islandCount, colorCount, and scratchPeak
+    /// describe the last completed step and are zero before it.
+    typedef struct m3Counters
+    {
+        int32_t bodyCount;
+        int32_t shapeCount;
+        int32_t jointCount;
+        int32_t contactCount; // live broadphase pairs with manifolds
+        int32_t awakeCount;   // awake dynamic bodies
+        int32_t islandCount;  // dynamic islands in the last step
+        int32_t colorCount;   // solver graph colors in the last step
+        int32_t characterCount;
+        int32_t vehicleCount;
+        int32_t softBodyCount;
+        int32_t voxelChunkCount;
+        int32_t hullCount; // interned hull slabs
+        int32_t meshCount; // interned mesh slabs
+        int32_t treeHeight;
+        int32_t scratchPeak;     // step scratch high water, bytes
+        int32_t scratchCapacity; // step scratch reserve, bytes
+        int32_t snapshotBytes;   // exact m3World_Snapshot size now
+        int64_t allocCalls;      // process-global persistent allocs
+        int64_t freeCalls;
+    } m3Counters;
+
+    M3_API m3Counters m3World_GetCounters(m3WorldId worldId);
+
+    /// Wall-clock milliseconds per phase of the LAST COMPLETED step
+    /// (14-1): honest observer timing from a monotonic clock. Never
+    /// deterministic, never hashed, never serialized; zero before
+    /// the first step, and a step that stalls on scratch growth
+    /// keeps the previous profile.
+    typedef struct m3Profile
+    {
+        float step;        // the whole of m3World_Step
+        float vehicles;    // suspension and drivetrain pass
+        float broadphase;  // pair update
+        float narrowphase; // manifold generation
+        float events;      // contact/sensor event merge walk
+        float prepare;     // sizing, sweep capture, island wake
+        float solve;       // constraint preparation and substeps
+        float continuous;  // CCD sweeps including voxel TOI
+        float sleep;       // island sleep pass
+        float characters;  // rider carry
+        float softBodies;  // the soft body pass
+    } m3Profile;
+
+    M3_API m3Profile m3World_GetProfile(m3WorldId worldId);
+
     /// Journal: every mutation of the world is a discrete recorded op,
     /// and replaying the stream through the same internal functions
     /// reproduces the world bit for bit. Begin hands the world a

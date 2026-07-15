@@ -57,6 +57,30 @@ extern "C"
     /// same purity test: a draw pass never moves the world hash.
     M3_API void m3World_DrawSolid(m3WorldId worldId, const m3SolidDraw* draw);
 
+    /// Extra layers (14-2): the analysis views on top of the base
+    /// walk. A SEPARATE additive struct again; m3DebugDraw and
+    /// m3SolidDraw stay frozen ABI. Read-only like both, held by
+    /// the same purity gate.
+    typedef struct m3ExtraDraw
+    {
+        void (*DrawSegment)(m3Pos3 p1, m3Pos3 p2, uint32_t color, void* context);
+        void (*DrawPoint)(m3Pos3 p, m3real size, uint32_t color, void* context);
+        void* context;
+        /// Awake dynamic bodies marked in a color cycled by their
+        /// island; sleeping bodies keep the tint of the island they
+        /// fell asleep in. Labels refresh every completed step.
+        bool drawIslands;
+        /// Center-of-mass frames on dynamic bodies: three half-meter
+        /// axes in the body rotation (x red, y green, z blue).
+        bool drawMassAxes;
+        /// The broadphase tree's INTERNAL node boxes (the leaves are
+        /// the fat AABBs the base walk already offers), brightness
+        /// stepped by node height.
+        bool drawTreeBoxes;
+    } m3ExtraDraw;
+
+    M3_API void m3World_DrawExtras(m3WorldId worldId, const m3ExtraDraw* draw);
+
 #ifdef __cplusplus
 }
 #endif

@@ -73,6 +73,8 @@ int32_t m3CreateBodyInternal(m3World* world, const m3BodyDef* def)
     world->userData[index] = def->userData;
     world->bodyEnabled[index] = 1;
     world->bodyLocks[index] = 0;
+    world->bodyIsland[index] = -1; // observer label (14-2)
+    memset(world->bodyNames + (size_t)index * M3_BODY_NAME_CAPACITY, 0, M3_BODY_NAME_CAPACITY);
     world->bodySleepThreshold[index] = M3_SLEEP_VELOCITY_DEFAULT;
     world->bodyCanSleep[index] = 1;
     world->bodyHasTarget[index] = 0;
@@ -117,6 +119,8 @@ void m3DestroyBodyInternal(m3World* world, int32_t index)
     world->bodyTorque[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
     world->bodyEnabled[index] = 0;
     world->bodyLocks[index] = 0;
+    world->bodyIsland[index] = -1; // observer label (14-2)
+    memset(world->bodyNames + (size_t)index * M3_BODY_NAME_CAPACITY, 0, M3_BODY_NAME_CAPACITY);
     world->bodySleepThreshold[index] = 0.0f;
     world->bodyCanSleep[index] = 0;
     world->bodyHasTarget[index] = 0;
@@ -682,6 +686,57 @@ bool m3Body_GetAllowFastRotation(m3BodyId bodyId)
     int32_t index;
     m3World* world = ResolveBody(bodyId, &index);
     return world != NULL && (world->bodyLocks[index] & M3_LOCKS_ALLOW_FAST_ROTATION) != 0;
+}
+
+void m3SetBodyNameInternal(m3World* world, int32_t index, const char* name)
+{
+    char* slot = world->bodyNames + (size_t)index * M3_BODY_NAME_CAPACITY;
+    memset(slot, 0, M3_BODY_NAME_CAPACITY);
+    if (name != NULL)
+    {
+        // Truncation is silent and the terminator is forced: names
+        // are debug labels, not data (14-3).
+        for (int32_t i = 0; i < M3_BODY_NAME_CAPACITY - 1 && name[i] != 0; ++i)
+        {
+            slot[i] = name[i];
+        }
+    }
+}
+
+void m3Body_SetName(m3BodyId bodyId, const char* name)
+{
+    int32_t index;
+    m3World* world = ResolveBody(bodyId, &index);
+    if (world == NULL)
+    {
+        return;
+    }
+    if (world->journalActive != 0)
+    {
+        struct
+        {
+            m3BodyId id;
+            char name[M3_BODY_NAME_CAPACITY];
+        } record;
+        memset(&record, 0, sizeof(record));
+        record.id = bodyId;
+        if (name != NULL)
+        {
+            for (int32_t i = 0; i < M3_BODY_NAME_CAPACITY - 1 && name[i] != 0; ++i)
+            {
+                record.name[i] = name[i];
+            }
+        }
+        m3JournalRecord(world, m3_opSetBodyName, &record, (int32_t)sizeof(record));
+    }
+    m3SetBodyNameInternal(world, index, name);
+}
+
+const char* m3Body_GetName(m3BodyId bodyId)
+{
+    int32_t index;
+    m3World* world = ResolveBody(bodyId, &index);
+    return world != NULL ? world->bodyNames + (size_t)index * M3_BODY_NAME_CAPACITY : "";
 }
 
 void m3Body_SetSleepControls(m3BodyId bodyId, float threshold, bool canSleep)

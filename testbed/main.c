@@ -1365,6 +1365,10 @@ int main(void)
     bool showContacts = false;
     bool showJoints = true;
     bool showWire = false;
+    bool showIslands = false;
+    bool showMassAxes = false;
+    bool showTreeBoxes = false;
+    bool showStats = false;
     bool showShadows = true;
     bool sleepTint = true;
     bool browser = false;
@@ -1817,6 +1821,18 @@ int main(void)
         draw.drawAabbs = showAabbs;
         m3World_Draw(scene.world, &draw);
 
+        if (showIslands || showMassAxes || showTreeBoxes)
+        {
+            m3ExtraDraw extras;
+            memset(&extras, 0, sizeof(extras));
+            extras.DrawSegment = DrawSegmentCb;
+            extras.DrawPoint = DrawPointCb;
+            extras.drawIslands = showIslands;
+            extras.drawMassAxes = showMassAxes;
+            extras.drawTreeBoxes = showTreeBoxes;
+            m3World_DrawExtras(scene.world, &extras);
+        }
+
         for (int32_t soft = 0; soft < 2; ++soft)
         {
             m3SoftBodyId body = soft == 0 ? scene.jelly : scene.cloth;
@@ -1917,6 +1933,35 @@ int main(void)
         UiCheck(&ui, "Joints", &showJoints);
         UiCheck(&ui, "Contacts (F2)", &showContacts);
         UiCheck(&ui, "AABBs (F1)", &showAabbs);
+        UiCheck(&ui, "Islands", &showIslands);
+        UiCheck(&ui, "Mass axes", &showMassAxes);
+        UiCheck(&ui, "Tree boxes", &showTreeBoxes);
+        UiCheck(&ui, "Stats", &showStats);
+        if (showStats)
+        {
+            m3Counters tc = m3World_GetCounters(scene.world);
+            m3Profile tp = m3World_GetProfile(scene.world);
+            UiLabel(&ui,
+                    TextFormat("bodies %d awake %d contacts %d", tc.bodyCount, tc.awakeCount,
+                               tc.contactCount),
+                    (Color){170, 190, 220, 255});
+            UiLabel(&ui,
+                    TextFormat("islands %d colors %d tree h%d", tc.islandCount, tc.colorCount,
+                               tc.treeHeight),
+                    (Color){170, 190, 220, 255});
+            UiLabel(&ui,
+                    TextFormat("scratch %dk/%dk snap %dk", tc.scratchPeak / 1024,
+                               tc.scratchCapacity / 1024, tc.snapshotBytes / 1024),
+                    (Color){170, 190, 220, 255});
+            UiLabel(&ui,
+                    TextFormat("pairs %.2f contact %.2f solve %.2f", (double)tp.broadphase,
+                               (double)tp.narrowphase, (double)tp.solve),
+                    (Color){150, 200, 170, 255});
+            UiLabel(&ui,
+                    TextFormat("ccd %.2f soft %.2f step %.2f", (double)tp.continuous,
+                               (double)tp.softBodies, (double)tp.step),
+                    (Color){150, 200, 170, 255});
+        }
         ui.y += 4;
         UiHeader(&ui, "Recording");
         UiLabel(&ui, s_recordStatus,

@@ -182,6 +182,8 @@ static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3Wal
     M3_BLOCK(world->minExtents, cap * (int32_t)sizeof(float));
     M3_BLOCK(world->maxExtents, cap * (int32_t)sizeof(float));
     M3_BLOCK(world->userData, cap * (int32_t)sizeof(uint64_t));
+    M3_BLOCK(world->bodyNames,
+             cap * M3_BODY_NAME_CAPACITY); // v43: debug names (14-3), never hashed
     M3_BLOCK(world->bodyForce, cap * (int32_t)sizeof(m3Vec3));
     M3_BLOCK(world->bodyTorque, cap * (int32_t)sizeof(m3Vec3));
     M3_BLOCK(world->bodyEnabled, cap * (int32_t)sizeof(uint8_t));
