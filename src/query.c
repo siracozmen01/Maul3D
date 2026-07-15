@@ -1430,6 +1430,14 @@ static int ProxyCloudReach(const m3Vec3* cloud, int32_t cloudCount, m3real cloud
 static int ProxyReachesShape(const m3ProxyOverlapContext* ctx, int32_t shape)
 {
     m3World* world = ctx->world;
+    if (ctx->pointCount < 1)
+    {
+        // The public walls refuse empty clouds already; this guard
+        // exists so every compiler can PROVE local[0] is written
+        // below (mingw's maybe-uninitialized fired on the release
+        // asset build, the one gcc the CI matrix does not run).
+        return 0;
+    }
     uint8_t type = world->shapeType[shape];
     m3Transform xf = m3ShapeWorldTransform(world, shape);
     m3Vec3 local[64];
