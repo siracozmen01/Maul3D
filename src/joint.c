@@ -20,6 +20,7 @@ m3JointDef m3DefaultJointDef(void)
     def.localAxisA = (m3Vec3){0.0f, 0.0f, 1.0f};
     def.localAxisB = (m3Vec3){0.0f, 0.0f, 1.0f};
     def.genericMotorAxis = 255; // no motor unless chosen
+    def.ratio = 1.0f;
     def.internalValue = M3_JOINT_COOKIE;
     return def;
 }
@@ -91,6 +92,52 @@ int32_t m3JointSlot(const m3World* world, m3JointId jointId)
 
 int32_t m3CreateJointInternal(m3World* world, const m3JointDef* def, int32_t bodyA, int32_t bodyB)
 {
+    // The type whitelist lives HERE, not only in the public wall,
+    // because replay hands this function raw journal bytes: a
+    // flipped type byte must refuse loudly instead of minting a
+    // joint no solver branch owns (which would fall into the hard
+    // point weld and lie).
+    if (def->type < 0 || def->type > (int32_t)m3_pulleyJoint)
+    {
+        return -1;
+    }
+    // Gear and pulley geometry walls (16-6), same law: internal
+    // validation because replay bytes land here raw.
+    if (def->type == (int32_t)m3_gearJoint &&
+        (!m3FiniteV3(def->localAxisA) || !m3FiniteV3(def->localAxisB) ||
+         !(m3Dot3(def->localAxisA, def->localAxisA) > 1.0e-8f) ||
+         !(m3Dot3(def->localAxisB, def->localAxisB) > 1.0e-8f) || !m3FiniteF(def->ratio) ||
+         def->ratio == 0.0f))
+    {
+        return -1; // a gear needs real axes and a real ratio
+    }
+    m3real pulleyLen1 = 0.0f;
+    m3real pulleyLen2 = 0.0f;
+    if (def->type == (int32_t)m3_pulleyJoint)
+    {
+        if (!m3FinitePos3(def->groundAnchorA) || !m3FinitePos3(def->groundAnchorB) ||
+            !m3FiniteF(def->ratio) || !(def->ratio > 0.0f) || !m3FiniteV3(def->localAnchorA) ||
+            !m3FiniteV3(def->localAnchorB))
+        {
+            return -1;
+        }
+        const m3Transform* xfA = &world->transforms[bodyA];
+        const m3Transform* xfB = &world->transforms[bodyB];
+        m3Vec3 aA = m3RotateVec3(xfA->q, def->localAnchorA);
+        m3Vec3 aB = m3RotateVec3(xfB->q, def->localAnchorB);
+        m3Vec3 u1 = {(m3real)(xfA->p.x + (double)aA.x - def->groundAnchorA.x),
+                     (m3real)(xfA->p.y + (double)aA.y - def->groundAnchorA.y),
+                     (m3real)(xfA->p.z + (double)aA.z - def->groundAnchorA.z)};
+        m3Vec3 u2 = {(m3real)(xfB->p.x + (double)aB.x - def->groundAnchorB.x),
+                     (m3real)(xfB->p.y + (double)aB.y - def->groundAnchorB.y),
+                     (m3real)(xfB->p.z + (double)aB.z - def->groundAnchorB.z)};
+        pulleyLen1 = m3Length3(u1);
+        pulleyLen2 = m3Length3(u2);
+        if (!(pulleyLen1 > 1.0e-3f) || !(pulleyLen2 > 1.0e-3f))
+        {
+            return -1; // a rope end ON its pulley has no direction
+        }
+    }
     // The wheel frame (12-2), built BEFORE the slot is taken so a
     // refused geometry leaks nothing. Frame x = the suspension axis
     // (from A), frame z = the axle captured from B's world image and
@@ -145,9 +192,9 @@ int32_t m3CreateJointInternal(m3World* world, const m3JointDef* def, int32_t bod
         world->jointFrameQA[index] = (m3Quat){0.0f, 0.0f, 0.0f, 1.0f};
         world->jointFrameQB[index] = m3NormalizeQuat(m3MulQuat(conjB, xfA->q));
     }
-    else if (def->type == (int32_t)m3_distanceJoint)
+    else if (def->type == (int32_t)m3_distanceJoint || def->type == (int32_t)m3_pulleyJoint)
     {
-        // Frames are unused by the axial row: identity keeps the
+        // Frames are unused by the axial row(s): identity keeps the
         // stored state canonical and the hash honest.
         world->jointFrameQA[index] = (m3Quat){0.0f, 0.0f, 0.0f, 1.0f};
         world->jointFrameQB[index] = (m3Quat){0.0f, 0.0f, 0.0f, 1.0f};
@@ -190,6 +237,8 @@ int32_t m3CreateJointInternal(m3World* world, const m3JointDef* def, int32_t bod
         m3Quat conjA = {-xfA->q.x, -xfA->q.y, -xfA->q.z, xfA->q.w};
         world->jointMotor[index] = m3RotateVec3(conjA, gap);
     }
+    world->jointGroundA[index] = (m3Pos3){0.0, 0.0, 0.0};
+    world->jointGroundB[index] = (m3Pos3){0.0, 0.0, 0.0};
     world->jointBreak[index] = (m3Vec3){0.0f, 0.0f, 0.0f}; // unbreakable default
     world->jointSpring[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
     world->jointTargetScalar[index] = 0.0f;
@@ -198,6 +247,32 @@ int32_t m3CreateJointInternal(m3World* world, const m3JointDef* def, int32_t bod
     // For the spherical, z carries the cone angle (x and y stay the
     // twist range): no snapshot growth, all of it already hashed.
     world->jointLimits[index] = (m3Vec3){def->lowerLimit, def->upperLimit, def->coneAngle};
+    // Gear and pulley bakes (16-6) live BELOW the generic limit
+    // write on purpose: both reuse slots that line overwrites (the
+    // pulley constant learned this the hard way).
+    if (def->type == (int32_t)m3_gearJoint)
+    {
+        // The gear bake: the create spins phiA0/phiB0 (each body's
+        // twist about its own gear axis) plus the ratio ride the
+        // motor slot; the solver holds (phiA - phiA0) + ratio *
+        // (phiB - phiB0) = 0 under the documented mounting contract.
+        const m3Transform* xfA = &world->transforms[bodyA];
+        const m3Transform* xfB = &world->transforms[bodyB];
+        world->jointMotor[index] =
+            (m3Vec3){m3GearSpin(xfA->q, world->jointFrameQA[index]),
+                     m3GearSpin(xfB->q, world->jointFrameQB[index]), def->ratio};
+    }
+    else if (def->type == (int32_t)m3_pulleyJoint)
+    {
+        // The rope law: length1 + ratio * length2 at create IS the
+        // constant (a documented jointLimits.z reuse beside the
+        // distance rest and the spherical cone); the ratio rides
+        // the motor slot's z like the gear's.
+        world->jointGroundA[index] = def->groundAnchorA;
+        world->jointGroundB[index] = def->groundAnchorB;
+        world->jointMotor[index] = (m3Vec3){0.0f, 0.0f, def->ratio};
+        world->jointLimits[index].z = pulleyLen1 + def->ratio * pulleyLen2;
+    }
     world->jointGenericModes[index] = 0;
     world->jointGenLinLower[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
     world->jointGenLinUpper[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
@@ -302,6 +377,8 @@ void m3DestroyJointInternal(m3World* world, int32_t index)
     world->jointGenLinUpper[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
     world->jointGenAngLower[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
     world->jointGenAngUpper[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
+    world->jointGroundA[index] = (m3Pos3){0.0, 0.0, 0.0};
+    world->jointGroundB[index] = (m3Pos3){0.0, 0.0, 0.0};
     world->jointNextA[index] = -1;
     world->jointNextB[index] = -1;
     m3IdPoolFree(&world->jointPool, index);
@@ -314,7 +391,8 @@ m3JointId m3CreateJoint(const m3JointDef* def)
          def->type != (int32_t)m3_prismaticJoint && def->type != (int32_t)m3_fixedJoint &&
          def->type != (int32_t)m3_distanceJoint && def->type != (int32_t)m3_genericJoint &&
          def->type != (int32_t)m3_wheelJoint && def->type != (int32_t)m3_filterJoint &&
-         def->type != (int32_t)m3_parallelJoint && def->type != (int32_t)m3_motorJoint))
+         def->type != (int32_t)m3_parallelJoint && def->type != (int32_t)m3_motorJoint &&
+         def->type != (int32_t)m3_gearJoint && def->type != (int32_t)m3_pulleyJoint))
     {
         return m3_nullJointId;
     }
@@ -615,7 +693,19 @@ void m3JointReactionMagnitudes(const m3World* world, int32_t j, m3real invH, m3r
         force += fabsf(lim.x) + fabsf(lim.y);
         torque = sqrtf(perp.x * perp.x + perp.y * perp.y) + fabsf(perp.z);
         break;
-    default: // fixed: weld rows
+    case (uint8_t)m3_gearJoint:
+        // One angular row on two axes (16-6): report the LARGER
+        // side of the mesh, conservative for the break law.
+        *outForce = 0.0f;
+        *outTorque = invH * fabsf(perp.z) * m3MaxF(1.0f, fabsf(world->jointMotor[j].z));
+        return;
+    case (uint8_t)m3_pulleyJoint:
+        // The rope impulse rides perp.z; the B side carries ratio
+        // times it (16-6): again the larger side.
+        *outForce = invH * fabsf(perp.z) * m3MaxF(1.0f, world->jointMotor[j].z);
+        *outTorque = 0.0f;
+        return;
+    default: // fixed and motor: weld rows
         torque = m3Length3(ang);
         break;
     }

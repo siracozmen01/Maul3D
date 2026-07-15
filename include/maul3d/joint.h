@@ -44,6 +44,26 @@ extern "C"
         /// Without a spring the servo idles completely free. A
         /// fresh servo aims at its own create pose.
         m3_motorJoint = 9,
+        /// GEAR (16-6): couples spin so that spinA + ratio * spinB
+        /// keeps its create value, where spinX is body X's rotation
+        /// about its own axis localAxisX. Positive ratio is the
+        /// external mesh (counter-rotation: ratio 2 turns B half as
+        /// fast, backwards); negative couples same-direction (belt
+        /// or internal ring). MOUNTING CONTRACT (documented): both
+        /// bodies must be hinged on a common rigid frame (revolute
+        /// or wheel joints to the same chassis); the gear adds no
+        /// reaction on that frame and holds no other degree of
+        /// freedom. Angle drift is corrected softly, so the mesh
+        /// cannot creep under load.
+        m3_gearJoint = 10,
+        /// PULLEY (16-6): a rope from localAnchorA up over the
+        /// WORLD point groundAnchorA, across to groundAnchorB and
+        /// down to localAnchorB: length1 + ratio * length2 keeps
+        /// its create value (ratio > 0). The rope is RIGID both
+        /// ways (it can push; pair it with a distance rope when
+        /// slack matters). Block and tackle: ratio 2 lifts B twice
+        /// as slow with twice the force.
+        m3_pulleyJoint = 11,
     } m3JointType;
 
     /// Per-axis behavior of the generic joint, in the joint frame
@@ -132,6 +152,13 @@ extern "C"
         m3real genericLinearUpper[3];
         m3real genericAngularLower[3];
         m3real genericAngularUpper[3];
+        /// Gear and pulley (16-6): the coupling ratio (gear: any
+        /// nonzero, sign picks the mesh; pulley: > 0) and the
+        /// pulley's two fixed WORLD anchor points. Growing this def
+        /// bumps the cookie: stale-compiled callers refuse loudly.
+        m3real ratio;
+        m3Pos3 groundAnchorA;
+        m3Pos3 groundAnchorB;
         int32_t internalValue;
     } m3JointDef;
 

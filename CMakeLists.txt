@@ -365,6 +365,11 @@ target_link_libraries(test_newjoints PRIVATE maul3d)
 maul3d_apply_flags(test_newjoints)
 add_test(NAME newjoints COMMAND test_newjoints)
 
+add_executable(test_gearpulley test/test_gearpulley.c)
+target_link_libraries(test_gearpulley PRIVATE maul3d)
+maul3d_apply_flags(test_gearpulley)
+add_test(NAME gearpulley COMMAND test_gearpulley)
+
 add_executable(test_fuzz test/test_fuzz.c)
 target_link_libraries(test_fuzz PRIVATE maul3d)
 maul3d_apply_flags(test_fuzz)

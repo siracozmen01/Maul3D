@@ -237,6 +237,8 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     M3_ALLOC(world->jointGenLinUpper, def->jointCapacity, m3Vec3);
     M3_ALLOC(world->jointGenAngLower, def->jointCapacity, m3Vec3);
     M3_ALLOC(world->jointGenAngUpper, def->jointCapacity, m3Vec3);
+    M3_ALLOC(world->jointGroundA, def->jointCapacity, m3Pos3);
+    M3_ALLOC(world->jointGroundB, def->jointCapacity, m3Pos3);
     world->charPool = m3IdPoolCreate(def->characterCapacity);
     M3_ALLOC(world->charBody, def->characterCapacity, int32_t);
     M3_ALLOC(world->charRadius, def->characterCapacity, m3real);
@@ -492,6 +494,8 @@ void m3DestroyWorld(m3WorldId worldId)
     m3Free(world->jointGenLinUpper);
     m3Free(world->jointGenAngLower);
     m3Free(world->jointGenAngUpper);
+    m3Free(world->jointGroundA);
+    m3Free(world->jointGroundB);
     m3IdPoolDestroy(&world->charPool);
     m3Free(world->charBody);
     m3Free(world->charRadius);

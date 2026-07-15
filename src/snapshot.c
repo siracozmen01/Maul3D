@@ -22,7 +22,8 @@
 #endif
 
 #define M3_SNAPSHOT_MAGIC   0x4D33534Eu // 'M3SN'
-#define M3_SNAPSHOT_VERSION 44u
+#define M3_SNAPSHOT_VERSION 45u
+// v45: pulley world anchors (16-6).
 // v44: drivetrain differentials and wheel contact speeds (16-4);
 //      body debug names and soft explosion kicks rode v43's bump
 //      window in the same release train.
@@ -405,6 +406,8 @@ static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3Wal
     M3_BLOCK(world->jointGenLinUpper, world->jointCapacity * (int32_t)sizeof(m3Vec3));
     M3_BLOCK(world->jointGenAngLower, world->jointCapacity * (int32_t)sizeof(m3Vec3));
     M3_BLOCK(world->jointGenAngUpper, world->jointCapacity * (int32_t)sizeof(m3Vec3));
+    M3_BLOCK(world->jointGroundA, world->jointCapacity * (int32_t)sizeof(m3Pos3));
+    M3_BLOCK(world->jointGroundB, world->jointCapacity * (int32_t)sizeof(m3Pos3));
     M3_BLOCK(world->jointNextA, world->jointCapacity * (int32_t)sizeof(int32_t));
     M3_BLOCK(world->jointNextB, world->jointCapacity * (int32_t)sizeof(int32_t));
     M3_BLOCK(world->bodyJointHead, cap * (int32_t)sizeof(int32_t));
@@ -1042,6 +1045,13 @@ uint64_t m3World_Hash(m3WorldId worldId)
             h = m3Hash64(h, &world->jointGenLinUpper[i], (int32_t)sizeof(m3Vec3));
             h = m3Hash64(h, &world->jointGenAngLower[i], (int32_t)sizeof(m3Vec3));
             h = m3Hash64(h, &world->jointGenAngUpper[i], (int32_t)sizeof(m3Vec3));
+        }
+        if (world->jointType[i] == (uint8_t)m3_pulleyJoint)
+        {
+            // The same golden rule, tenth use: the rope's world
+            // anchors exist only under a pulley.
+            h = m3Hash64(h, &world->jointGroundA[i], (int32_t)sizeof(m3Pos3));
+            h = m3Hash64(h, &world->jointGroundB[i], (int32_t)sizeof(m3Pos3));
         }
     }
 

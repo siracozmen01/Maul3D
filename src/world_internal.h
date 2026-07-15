@@ -705,6 +705,12 @@ typedef struct m3World
     m3Vec3* jointGenLinUpper;
     m3Vec3* jointGenAngLower;
     m3Vec3* jointGenAngUpper;
+    // Pulley world anchors (16-6): fixed points the two rope
+    // segments hang from, double like every world position. Folded
+    // into the hash only for pulley-typed joints (the golden rule
+    // for additive state).
+    m3Pos3* jointGroundA;
+    m3Pos3* jointGroundB;
     m3IdPool jointPool;
     uint8_t* jointType;
     int32_t* jointBodyA;
@@ -953,6 +959,34 @@ static inline bool m3FinitePos3(m3Pos3 p)
 static inline bool m3FiniteQuat(m3Quat q)
 {
     return m3FiniteF(q.x) && m3FiniteF(q.y) && m3FiniteF(q.z) && m3FiniteF(q.w);
+}
+
+// The gear's spin readback (16-6): a body's rotation seen in its
+// own gear frame, twisted about that frame's z (the gear axis).
+// Shared by the create bake and the solver's drift measurement so
+// the two can never disagree.
+static inline m3real m3GearSpin(m3Quat q, m3Quat frame)
+{
+    m3Quat conjF = {-frame.x, -frame.y, -frame.z, frame.w};
+    m3Quat inFrame = m3MulQuat(conjF, m3MulQuat(q, frame));
+    m3real twist =
+        inFrame.w < 0.0f ? m3Atan2(-inFrame.z, -inFrame.w) : m3Atan2(inFrame.z, inFrame.w);
+    return 2.0f * twist;
+}
+
+// Wrap to (-pi, pi]: spin differences cross the seam every half
+// turn and the drift correction must chase the SHORT way.
+static inline m3real m3WrapPi(m3real a)
+{
+    while (a > M3_PI)
+    {
+        a -= 2.0f * M3_PI;
+    }
+    while (a < -M3_PI)
+    {
+        a += 2.0f * M3_PI;
+    }
+    return a;
 }
 
 // Broadphase v1 (the swappable seam): fills pairKeys in canonical
