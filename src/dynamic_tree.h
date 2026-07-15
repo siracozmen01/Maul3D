@@ -55,4 +55,15 @@ typedef bool (*m3TreeQueryFn)(int32_t userData, void* context);
 void m3TreeQuery(const m3Tree* tree, const double lo[3], const double hi[3], m3TreeQueryFn fn,
                  void* context);
 
+/// Rebuild the whole tree top-down (17-4): callers supply the leaf
+/// bounds and payloads in CANONICAL order; the build is a median
+/// split on the longest centroid axis (ties keep the input order),
+/// so the resulting shape is a pure function of the input list.
+/// Returns the new leaf node id per input in outNodes, or false
+/// when count exceeds capacity. Incremental SAH insertion after
+/// bulk creation leaves a lopsided tree; this replaces it with a
+/// balanced one in one deterministic pass.
+bool m3TreeRebuild(m3Tree* tree, const double (*los)[3], const double (*his)[3],
+                   const int32_t* userDatas, int32_t count, int32_t* outNodes);
+
 #endif // MAUL3D_DYNAMIC_TREE_H

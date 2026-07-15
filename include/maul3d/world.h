@@ -86,6 +86,14 @@ extern "C"
     /// asleep until disturbed (the reference behavior).
     M3_API void m3World_SetGravity(m3WorldId worldId, m3Vec3 gravity);
 
+    /// Rebuild the broadphase tree top-down into a balanced shape
+    /// (17-4). Bulk shape creation grows the tree one insertion at
+    /// a time and can leave it lopsided; call this once after
+    /// building a level and queries walk a balanced tree instead.
+    /// Deterministic and journaled: the rebuilt shape is a pure
+    /// function of the live shapes, so twins and replays agree.
+    M3_API void m3World_RebuildBroadphase(m3WorldId worldId);
+
     /// Current gravity.
     M3_API m3Vec3 m3World_GetGravity(m3WorldId worldId);
 

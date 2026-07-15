@@ -1004,6 +1004,81 @@ void m3World_SetPreSolveCallback(m3WorldId worldId, m3PreSolveFn* fn, void* cont
 
 // --- Journal ---------------------------------------------------------------
 
+void m3RebuildBroadphaseInternal(m3World* world)
+{
+    // Collect the live proxies in shape-slot order (the canonical
+    // list), carrying their CURRENT fat bounds: fatness is state,
+    // and preserving it keeps every downstream pair decision
+    // exactly where it was.
+    int32_t maxShape = world->shapePool.maxIndex;
+    int32_t count = 0;
+    for (int32_t s = 0; s < maxShape; ++s)
+    {
+        if (world->shapePool.alive[s] != 0 && world->proxyIds[s] >= 0)
+        {
+            count += 1;
+        }
+    }
+    if (count == 0)
+    {
+        return;
+    }
+    double (*los)[3] = (double (*)[3])m3AllocZeroed(count * 3 * (int32_t)sizeof(double));
+    double (*his)[3] = (double (*)[3])m3AllocZeroed(count * 3 * (int32_t)sizeof(double));
+    int32_t* uds = (int32_t*)m3AllocZeroed(count * (int32_t)sizeof(int32_t));
+    int32_t* outNodes = (int32_t*)m3AllocZeroed(count * (int32_t)sizeof(int32_t));
+    if (los == NULL || his == NULL || uds == NULL || outNodes == NULL)
+    {
+        m3Free(los);
+        m3Free(his);
+        m3Free(uds);
+        m3Free(outNodes);
+        return; // no memory: the old tree stays, correct either way
+    }
+    int32_t n = 0;
+    for (int32_t s = 0; s < maxShape; ++s)
+    {
+        if (world->shapePool.alive[s] == 0 || world->proxyIds[s] < 0)
+        {
+            continue;
+        }
+        const m3TreeNode* leaf = &world->tree.nodes[world->proxyIds[s]];
+        for (int32_t k = 0; k < 3; ++k)
+        {
+            los[n][k] = leaf->lo[k];
+            his[n][k] = leaf->hi[k];
+        }
+        uds[n] = s;
+        n += 1;
+    }
+    if (m3TreeRebuild(&world->tree, los, his, uds, n, outNodes))
+    {
+        for (int32_t i = 0; i < n; ++i)
+        {
+            world->proxyIds[uds[i]] = outNodes[i];
+        }
+    }
+    m3Free(los);
+    m3Free(his);
+    m3Free(uds);
+    m3Free(outNodes);
+}
+
+void m3World_RebuildBroadphase(m3WorldId worldId)
+{
+    m3World* world = m3WorldFromId(worldId);
+    if (world == NULL)
+    {
+        return;
+    }
+    if (world->journalActive != 0)
+    {
+        int32_t zero = 0;
+        m3JournalRecord(world, m3_opRebuildBroadphase, &zero, 4);
+    }
+    m3RebuildBroadphaseInternal(world);
+}
+
 void m3JournalRecord(m3World* world, int32_t op, const void* payload, int32_t bytes)
 {
     if (world->journalActive == 0)
@@ -2262,6 +2337,16 @@ static bool JournalReplayApply(m3World* world, const void* data, int32_t size)
             }
             record.name[M3_BODY_NAME_CAPACITY - 1] = 0;
             m3SetBodyNameInternal(world, index, record.name);
+            break;
+        }
+        case m3_opRebuildBroadphase:
+        {
+            int32_t zero;
+            if (bytes != (int32_t)sizeof(zero))
+            {
+                return false;
+            }
+            m3RebuildBroadphaseInternal(world);
             break;
         }
         case m3_opSetMeshMaterials:

@@ -402,3 +402,163 @@ void m3TreeQuery(const m3Tree* tree, const double lo[3], const double hi[3], m3T
         }
     }
 }
+
+// --- Whole-tree rebuild (17-4) ----------------------------------------------
+
+typedef struct RebuildScratch
+{
+    const double (*los)[3];
+    const double (*his)[3];
+    const int32_t* userDatas;
+    int32_t* slots; // permutation of input indices, sorted in place
+    int32_t* outNodes;
+} RebuildScratch;
+
+static double RebuildCentroid(const RebuildScratch* rs, int32_t input, int32_t axis)
+{
+    return 0.5 * (rs->los[input][axis] + rs->his[input][axis]);
+}
+
+// Insertion sort on the slot range by centroid axis, ties keeping
+// the lower input index first: deterministic and stable, and the
+// ranges shrink geometrically so the cost stays modest.
+static void RebuildSort(RebuildScratch* rs, int32_t s, int32_t e, int32_t axis)
+{
+    for (int32_t i = s + 1; i < e; ++i)
+    {
+        int32_t key = rs->slots[i];
+        double c = RebuildCentroid(rs, key, axis);
+        int32_t j = i - 1;
+        while (j >= s)
+        {
+            double cj = RebuildCentroid(rs, rs->slots[j], axis);
+            if (cj < c || (cj == c && rs->slots[j] < key))
+            {
+                break;
+            }
+            rs->slots[j + 1] = rs->slots[j];
+            j -= 1;
+        }
+        rs->slots[j + 1] = key;
+    }
+}
+
+static int32_t RebuildRange(m3Tree* tree, RebuildScratch* rs, int32_t s, int32_t e)
+{
+    int32_t id = AllocateNode(tree);
+    if (id == M3_TREE_NULL)
+    {
+        return M3_TREE_NULL; // cannot happen: capacity was checked
+    }
+    m3TreeNode* node = &tree->nodes[id];
+    if (e - s == 1)
+    {
+        int32_t input = rs->slots[s];
+        for (int32_t k = 0; k < 3; ++k)
+        {
+            node->lo[k] = rs->los[input][k];
+            node->hi[k] = rs->his[input][k];
+        }
+        node->userData = rs->userDatas[input];
+        node->height = 0;
+        rs->outNodes[input] = id;
+        return id;
+    }
+    double clo[3];
+    double chi[3];
+    for (int32_t k = 0; k < 3; ++k)
+    {
+        clo[k] = RebuildCentroid(rs, rs->slots[s], k);
+        chi[k] = clo[k];
+    }
+    for (int32_t i = s + 1; i < e; ++i)
+    {
+        for (int32_t k = 0; k < 3; ++k)
+        {
+            double c = RebuildCentroid(rs, rs->slots[i], k);
+            clo[k] = c < clo[k] ? c : clo[k];
+            chi[k] = c > chi[k] ? c : chi[k];
+        }
+    }
+    int32_t axis = 0;
+    if (chi[1] - clo[1] > chi[0] - clo[0])
+    {
+        axis = 1;
+    }
+    if (chi[2] - clo[2] > chi[axis] - clo[axis])
+    {
+        axis = 2;
+    }
+    RebuildSort(rs, s, e, axis);
+    int32_t mid = s + (e - s) / 2;
+    int32_t c1 = RebuildRange(tree, rs, s, mid);
+    int32_t c2 = RebuildRange(tree, rs, mid, e);
+    node = &tree->nodes[id]; // the array is fixed, the habit is cheap
+    node->child1 = c1;
+    node->child2 = c2;
+    tree->nodes[c1].parent = id;
+    tree->nodes[c2].parent = id;
+    for (int32_t k = 0; k < 3; ++k)
+    {
+        double l1 = tree->nodes[c1].lo[k];
+        double l2 = tree->nodes[c2].lo[k];
+        double h1 = tree->nodes[c1].hi[k];
+        double h2 = tree->nodes[c2].hi[k];
+        node->lo[k] = l1 < l2 ? l1 : l2;
+        node->hi[k] = h1 > h2 ? h1 : h2;
+    }
+    int32_t hA = tree->nodes[c1].height;
+    int32_t hB = tree->nodes[c2].height;
+    node->height = 1 + (hA > hB ? hA : hB);
+    return id;
+}
+
+bool m3TreeRebuild(m3Tree* tree, const double (*los)[3], const double (*his)[3],
+                   const int32_t* userDatas, int32_t count, int32_t* outNodes)
+{
+    if (count < 0 || 2 * count - 1 > tree->capacity)
+    {
+        return false; // a balanced tree needs 2n-1 nodes
+    }
+    // Reset every node onto the free chain in ascending order, so
+    // allocation order (and with it the whole rebuilt layout) is a
+    // pure function of the input list.
+    for (int32_t i = 0; i < tree->capacity; ++i)
+    {
+        tree->nodes[i].parent = i + 1 < tree->capacity ? i + 1 : M3_TREE_NULL;
+        tree->nodes[i].height = -1;
+        tree->nodes[i].child1 = M3_TREE_NULL;
+        tree->nodes[i].child2 = M3_TREE_NULL;
+        tree->nodes[i].userData = 0;
+        tree->nodes[i].pad = 0;
+        for (int32_t k = 0; k < 3; ++k)
+        {
+            tree->nodes[i].lo[k] = 0.0;
+            tree->nodes[i].hi[k] = 0.0;
+        }
+    }
+    tree->freeList = tree->capacity > 0 ? 0 : M3_TREE_NULL;
+    tree->root = M3_TREE_NULL;
+    if (count == 0)
+    {
+        return true;
+    }
+    int32_t* slots = (int32_t*)m3AllocZeroed(count * (int32_t)sizeof(int32_t));
+    if (slots == NULL)
+    {
+        return false;
+    }
+    for (int32_t i = 0; i < count; ++i)
+    {
+        slots[i] = i;
+    }
+    RebuildScratch rs;
+    rs.los = los;
+    rs.his = his;
+    rs.userDatas = userDatas;
+    rs.slots = slots;
+    rs.outNodes = outNodes;
+    tree->root = RebuildRange(tree, &rs, 0, count);
+    m3Free(slots);
+    return tree->root != M3_TREE_NULL;
+}

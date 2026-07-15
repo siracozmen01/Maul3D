@@ -375,6 +375,11 @@ target_link_libraries(test_meshmaterial PRIVATE maul3d)
 maul3d_apply_flags(test_meshmaterial)
 add_test(NAME meshmaterial COMMAND test_meshmaterial)
 
+add_executable(test_rebuild test/test_rebuild.c)
+target_link_libraries(test_rebuild PRIVATE maul3d)
+maul3d_apply_flags(test_rebuild)
+add_test(NAME rebuild COMMAND test_rebuild)
+
 add_executable(test_fuzz test/test_fuzz.c)
 target_link_libraries(test_fuzz PRIVATE maul3d)
 maul3d_apply_flags(test_fuzz)

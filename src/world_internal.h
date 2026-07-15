@@ -165,6 +165,7 @@ typedef enum m3Op
     m3_opJointSetSteer = 70,          // wheel strut drive (16-3)
     m3_opJointSetMotorPose = 71,      // motor joint servo aim (16-5)
     m3_opSetMeshMaterials = 72,       // per-triangle materials (17-2)
+    m3_opRebuildBroadphase = 73,      // balanced tree rebuild (17-4)
 } m3Op;
 
 // Debug names (14-3): journaled and snapshot like userData, NEVER
@@ -919,6 +920,7 @@ bool m3SetShapeGeomInternal(m3World* world, int32_t slot, uint8_t type, const m3
 bool m3SetMeshMaterialsInternal(m3World* world, int32_t meshIndex,
                                 const m3MeshSurfaceMaterial* materials, int32_t materialCount,
                                 const uint8_t* triangleMaterials);
+void m3RebuildBroadphaseInternal(m3World* world);
 void m3SetContactTuningInternal(m3World* world, float hertz, float dampingRatio, float pushSpeed);
 void m3SetRestitutionThresholdInternal(m3World* world, float value);
 void m3SetMaximumLinearSpeedInternal(m3World* world, float value);
