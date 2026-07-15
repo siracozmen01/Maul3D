@@ -1,4 +1,4 @@
-# The determinism gate: six cells across three OSes, two ISAs, four
+# The determinism gate: seven cells across three OSes, three ISAs,
 # compilers, plus a sanitize+scalar cell. Every cell extracts its
 # M3_*_HASH lines; the compare job fails unless every line appears
 # identically in every cell. Adapted from Maul2D's proven gate.
@@ -78,9 +78,50 @@ jobs:
           name: hash-${{ matrix.name }}
           path: hash-${{ matrix.name }}.txt
 
+  # The seventh ISA (22-3): the library compiled to wasm32 by
+  # emscripten and executed under node must produce the same four
+  # hash lines as every native cell. Only the hash gates build and
+  # run here (the full 52-suite sweep stays native); pthreads ride
+  # emscripten's worker pool.
+  wasm:
+    name: wasm-node
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.61
+      - name: Configure
+        shell: bash
+        run: |
+          emcmake cmake -S . -B build-wasm -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_FLAGS="-pthread" \
+            -DCMAKE_EXE_LINKER_FLAGS="-pthread -sPTHREAD_POOL_SIZE=8 -sINITIAL_MEMORY=536870912 -sENVIRONMENT=node -sEXIT_RUNTIME=1"
+      - name: Build the hash gates
+        shell: bash
+        run: |
+          cmake --build build-wasm -j --target test_determinism test_math test_world test_solver
+      - name: Run under node
+        shell: bash
+        run: |
+          cd build-wasm
+          for t in test_determinism test_math test_world test_solver; do
+            node $t.js | tee -a out.txt
+          done
+      - name: Extract hashes
+        shell: bash
+        run: |
+          grep -oE 'M3_(DET|MATH|WORLD|SOLVER|JOURNAL)_HASH=[0-9a-f]{16}' build-wasm/out.txt \
+            | sort -u > hash-wasm-node.txt
+          cat hash-wasm-node.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hash-wasm-node
+          path: hash-wasm-node.txt
+
   determinism:
     name: cross-platform hash equality
-    needs: build
+    needs: [build, wasm]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -90,7 +131,7 @@ jobs:
       - name: Compare
         shell: bash
         run: |
-          CELLS=6
+          CELLS=7
           EXPECTED_LINES=4
           cat hashes/*.txt
           # Every distinct hash line must appear exactly once per cell:
