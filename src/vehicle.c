@@ -38,6 +38,8 @@ static void ResetDrivetrain(m3World* world, int32_t slot)
     }
     world->vehDtReverse[slot] = 0.0f;
     world->vehDtFinal[slot] = 0.0f;
+    world->vehDtDiffMode[slot] = 0;
+    world->vehDtDiffCouple[slot] = 0.0f;
     world->vehDtShiftUp[slot] = 0.0f;
     world->vehDtShiftDown[slot] = 0.0f;
     world->vehDtClutchSteps[slot] = 0;
@@ -334,6 +336,28 @@ void m3VehicleApplySuspension(m3World* world, float dt)
             }
         }
 
+        // Differentials (16-4): the driven mean of the LAST step's
+        // contact speeds, one pass and one step of lag like the
+        // engine's own wheel reading.
+        m3real dtMeanLon = 0.0f;
+        if (world->vehDtActive[slot] != 0 && world->vehDtDiffMode[slot] != 0)
+        {
+            int32_t drivenSeen = 0;
+            for (int32_t w = 0; w < world->vehWheelCount[slot]; ++w)
+            {
+                int32_t k = slot * M3_VEHICLE_MAX_WHEELS + w;
+                if ((world->vehWheelFlags[k] & 2u) != 0)
+                {
+                    dtMeanLon += world->vehWheelLon[k];
+                    drivenSeen += 1;
+                }
+            }
+            if (drivenSeen > 0)
+            {
+                dtMeanLon /= (m3real)drivenSeen;
+            }
+        }
+
         for (int32_t w = 0; w < world->vehWheelCount[slot]; ++w)
         {
             int32_t k = slot * M3_VEHICLE_MAX_WHEELS + w;
@@ -433,6 +457,7 @@ void m3VehicleApplySuspension(m3World* world, float dt)
                 }
                 m3Vec3 vContact = m3Sub3(m3Add3(v0, m3Cross3(w0, hubArm)), vSurf);
                 m3real vLon = m3Dot3(vContact, forward);
+                world->vehWheelLon[k] = vLon; // the diff's next-step read (16-4)
                 m3real vLat = m3Dot3(vContact, side);
 
                 // Velocity kills use the solver's own effective
@@ -456,7 +481,21 @@ void m3VehicleApplySuspension(m3World* world, float dt)
                 {
                     if (world->vehDtActive[slot] != 0)
                     {
-                        lon += dtForce * dt;
+                        m3real driveForce = dtForce;
+                        if (world->vehDtDiffMode[slot] != 0)
+                        {
+                            m3real coupling =
+                                world->vehDtDiffCouple[slot] * (dtMeanLon - world->vehWheelLon[k]);
+                            if (world->vehDtDiffMode[slot] == 1)
+                            {
+                                // Limited slip: the coupling may not
+                                // exceed the engine's own share.
+                                m3real cap = m3AbsF(dtForce);
+                                coupling = m3MaxF(-cap, m3MinF(cap, coupling));
+                            }
+                            driveForce += coupling;
+                        }
+                        lon += driveForce * dt;
                     }
                     else
                     {
@@ -725,7 +764,8 @@ bool m3VehicleDrivetrainInternal(m3World* world, int32_t slot, const m3Drivetrai
     }
     if (!m3FiniteF(def->reverseRatio) || def->reverseRatio < 0.0f || !m3FiniteF(def->finalDrive) ||
         def->finalDrive <= 0.0f || !m3FiniteF(def->shiftUpRpm) || !m3FiniteF(def->shiftDownRpm) ||
-        def->shiftDownRpm < 0.0f || def->shiftUpRpm <= def->shiftDownRpm)
+        def->shiftDownRpm < 0.0f || def->shiftUpRpm <= def->shiftDownRpm || def->diffMode < 0 ||
+        def->diffMode > 2 || !m3FiniteF(def->diffCouple) || def->diffCouple < 0.0f)
     {
         return false;
     }
@@ -748,6 +788,8 @@ bool m3VehicleDrivetrainInternal(m3World* world, int32_t slot, const m3Drivetrai
     }
     world->vehDtReverse[slot] = def->reverseRatio;
     world->vehDtFinal[slot] = def->finalDrive;
+    world->vehDtDiffMode[slot] = def->diffMode;
+    world->vehDtDiffCouple[slot] = def->diffCouple;
     world->vehDtShiftUp[slot] = def->shiftUpRpm;
     world->vehDtShiftDown[slot] = def->shiftDownRpm;
     world->vehDtClutchSteps[slot] = def->clutchSteps;

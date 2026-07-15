@@ -532,6 +532,9 @@ typedef struct m3JointConstraint
     m3real upperLimit;
     m3Vec3 angularImpulse; // prismatic rotation lock (3 DOF)
     m3Softness springSoft; // distance spring (4-2); drive spring (8-6b)
+    m3Softness steerSoft;  // wheel strut drive (16-3)
+    m3real steerTarget;    // radians about the strut
+    m3real steerBudget;    // 0 = unbudgeted
     m3real restLength;     // distance rest (the upper limit)
     m3real targetScalar;   // drive target: angle or translation (8-6b)
     m3Quat targetQ;        // spherical drive target
@@ -617,6 +620,14 @@ static int32_t PrepareJoints(m3World* world, m3JointConstraint* joints, m3real h
     {
         if (world->jointPool.alive[j] == 0)
         {
+            continue;
+        }
+        if (world->jointType[j] == (uint8_t)m3_filterJoint)
+        {
+            // The filter joint is rowless BY LAW (16-1): it never
+            // enters the constraint array, because every type that
+            // does and fails to continue inherits the shared point
+            // weld below.
             continue;
         }
         int32_t bodyA = world->jointBodyA[j];
@@ -714,7 +725,8 @@ static int32_t PrepareJoints(m3World* world, m3JointConstraint* joints, m3real h
             c->upperImpulse = world->jointLimitImpulse[j].y;
             c->swingImpulse = world->jointLimitImpulse[j].z;
         }
-        else if (c->type == (uint8_t)m3_revoluteJoint || c->type == (uint8_t)m3_prismaticJoint)
+        else if (c->type == (uint8_t)m3_revoluteJoint || c->type == (uint8_t)m3_prismaticJoint ||
+                 c->type == (uint8_t)m3_parallelJoint)
         {
             c->frameQA = m3MulQuat(xfA->q, world->jointFrameQA[j]);
             c->frameQB = m3MulQuat(xfB->q, world->jointFrameQB[j]);
@@ -777,6 +789,18 @@ static int32_t PrepareJoints(m3World* world, m3JointConstraint* joints, m3real h
             c->maxMotorEffort = world->jointMotor[j].y;
             c->lowerLimit = world->jointLimits[j].x;
             c->upperLimit = world->jointLimits[j].y;
+            if ((c->flags & 4) != 0)
+            {
+                // Steering (16-3): the wheel slot map. The strut
+                // drive's softness rides the spherical target slots
+                // (wheels never use the quat target), the target
+                // angle rides jointMotor.z, and the warm impulse
+                // rides jointSpringImpulse.y beside the suspension
+                // spring's x.
+                c->steerSoft = MakeSoft(world->jointTargetQ[j].x, world->jointTargetQ[j].y, h);
+                c->steerTarget = world->jointMotor[j].z;
+                c->steerBudget = world->jointTargetQ[j].z;
+            }
         }
         else if (c->type == (uint8_t)m3_genericJoint)
         {
@@ -857,8 +881,10 @@ static void WarmStartJoints(m3World* world, m3JointConstraint* joints, int32_t c
                 angularImpulse = m3Add3(angularImpulse, c->springImpulseV);
             }
         }
-        else if (c->type == (uint8_t)m3_revoluteJoint)
+        else if (c->type == (uint8_t)m3_revoluteJoint || c->type == (uint8_t)m3_parallelJoint)
         {
+            // The parallel joint rides this branch with every axial
+            // term zero: only the perp locks carry warm impulse.
             m3real axial =
                 c->springImpulseV.x + c->motorImpulse + c->lowerImpulse - c->upperImpulse;
             angularImpulse = m3Add3(m3MulSV3(c->perpImpulseX, c->perpAxisX),
@@ -893,6 +919,13 @@ static void WarmStartJoints(m3World* world, m3JointConstraint* joints, int32_t c
             angularImpulse = m3Add3(m3MulSV3(c->perpImpulseX, c->perpAxisX),
                                     m3MulSV3(c->perpImpulseY, c->perpAxisY));
             angularImpulse = m3Add3(angularImpulse, m3MulSV3(c->motorImpulse, c->rotationAxis));
+            if ((c->flags & 4) != 0)
+            {
+                // The steer drive's warm impulse (16-3) rides the
+                // strut axis; without the flag the slot is zero.
+                angularImpulse =
+                    m3Add3(angularImpulse, m3MulSV3(c->springImpulseV.y, c->swingAxis));
+            }
             m3real axial = c->springImpulseV.x + c->lowerImpulse - c->upperImpulse;
             m3Vec3 P = m3MulSV3(axial, c->swingAxis);
             P = m3Add3(P, m3MulSV3(c->impulse.x, c->twistJacobian));
@@ -1112,7 +1145,23 @@ static void SolveJoints(m3World* world, m3JointConstraint* joints, int32_t count
                 m3real cdot = m3Dot3(m3Sub3(wB, wA), axis);
                 m3real delta = -c->springSoft.massScale * c->axialMass * (cdot + bias) -
                                c->springSoft.impulseScale * c->springImpulseV.x;
-                c->springImpulseV.x += delta;
+                if ((c->flags & 2) != 0)
+                {
+                    // The four-state drive (16-2): when the motor
+                    // rides beside the drive, both rows share ONE
+                    // effort budget. The spring spends what the
+                    // motor's accumulator has left.
+                    m3real budget = c->maxMotorEffort * hSub;
+                    m3real room = m3MaxF(budget - m3AbsF(c->motorImpulse), 0.0f);
+                    m3real next = c->springImpulseV.x + delta;
+                    next = m3MaxF(-room, m3MinF(room, next));
+                    delta = next - c->springImpulseV.x;
+                    c->springImpulseV.x = next;
+                }
+                else
+                {
+                    c->springImpulseV.x += delta;
+                }
                 wA = m3Sub3(wA, m3MulSV3(delta, m3MulMV3(c->invIA, axis)));
                 wB = m3Add3(wB, m3MulSV3(delta, m3MulMV3(c->invIB, axis)));
             }
@@ -1270,7 +1319,21 @@ static void SolveJoints(m3World* world, m3JointConstraint* joints, int32_t count
                 m3real cdot = m3Dot3(vRel, axis);
                 m3real delta = -c->springSoft.massScale * axialMass * (cdot + bias) -
                                c->springSoft.impulseScale * c->springImpulseV.x;
-                c->springImpulseV.x += delta;
+                if ((c->flags & 2) != 0)
+                {
+                    // The four-state drive (16-2), the slide twin of
+                    // the revolute rule: one shared effort budget.
+                    m3real budget = c->maxMotorEffort * hSub;
+                    m3real room = m3MaxF(budget - m3AbsF(c->motorImpulse), 0.0f);
+                    m3real next = c->springImpulseV.x + delta;
+                    next = m3MaxF(-room, m3MinF(room, next));
+                    delta = next - c->springImpulseV.x;
+                    c->springImpulseV.x = next;
+                }
+                else
+                {
+                    c->springImpulseV.x += delta;
+                }
                 vA = m3Sub3(vA, m3MulSV3(c->invMassA * delta, axis));
                 wA = m3Sub3(wA, m3MulMV3(c->invIA, m3MulSV3(delta, sAx)));
                 vB = m3Add3(vB, m3MulSV3(c->invMassB * delta, axis));
@@ -1566,7 +1629,9 @@ static void SolveJoints(m3World* world, m3JointConstraint* joints, int32_t count
 
             // Axle collinearity: the revolute's 2x2 verbatim, locking
             // the two off-axle rotations so the wheel plane rides the
-            // chassis.
+            // chassis. With steering engaged (16-3) the frame-x row
+            // becomes the strut drive and only frame y stays locked.
+            if ((c->flags & 4) == 0)
             {
                 m3Quat quatA = m3MulQuat(deltaRot[c->bodyA], c->frameQA);
                 m3Quat quatB = m3MulQuat(deltaRot[c->bodyB], c->frameQB);
@@ -1616,6 +1681,73 @@ static void SolveJoints(m3World* world, m3JointConstraint* joints, int32_t count
                 m3Vec3 angular = m3Add3(m3MulSV3(deltaX, perpX), m3MulSV3(deltaY, perpY));
                 wA = m3Sub3(wA, m3MulMV3(c->invIA, angular));
                 wB = m3Add3(wB, m3MulMV3(c->invIB, angular));
+            }
+            else
+            {
+                // Steering (16-3): frame y keeps its lock, frame x
+                // becomes a soft drive toward the steer target. The
+                // twist about the strut is the swing-twist about
+                // frame x: 2 atan2(relQ.x, relQ.w), exact regardless
+                // of the spin the axle carries.
+                m3Quat quatA = m3MulQuat(deltaRot[c->bodyA], c->frameQA);
+                m3Quat quatB = m3MulQuat(deltaRot[c->bodyB], c->frameQB);
+                if (quatA.x * quatB.x + quatA.y * quatB.y + quatA.z * quatB.z + quatA.w * quatB.w <
+                    0.0f)
+                {
+                    quatB = (m3Quat){-quatB.x, -quatB.y, -quatB.z, -quatB.w};
+                }
+                m3Quat conjA = {-quatA.x, -quatA.y, -quatA.z, quatA.w};
+                m3Quat relQ = m3MulQuat(conjA, quatB);
+                m3Vec3 perpY = PerpColumn(quatA, relQ, (m3Vec3){0.0f, 1.0f, 0.0f});
+                c->perpAxisY = perpY;
+                c->perpAxisX = PerpColumn(quatA, relQ, (m3Vec3){1.0f, 0.0f, 0.0f});
+                {
+                    m3real biasY = 0.0f;
+                    m3real massScale = 1.0f;
+                    m3real impulseScale = 0.0f;
+                    if (useBias)
+                    {
+                        biasY = c->softness.biasRate * relQ.y;
+                        massScale = c->softness.massScale;
+                        impulseScale = c->softness.impulseScale;
+                    }
+                    m3Vec3 sumY = m3Add3(m3MulMV3(c->invIA, perpY), m3MulMV3(c->invIB, perpY));
+                    m3real kyy = m3Dot3(perpY, sumY);
+                    m3real cdotY = m3Dot3(m3Sub3(wB, wA), perpY) + biasY;
+                    m3real deltaY =
+                        kyy > 0.0f ? (-massScale * cdotY / kyy - impulseScale * c->perpImpulseY)
+                                   : 0.0f;
+                    c->perpImpulseY += deltaY;
+                    m3Vec3 angular = m3MulSV3(deltaY, perpY);
+                    wA = m3Sub3(wA, m3MulMV3(c->invIA, angular));
+                    wB = m3Add3(wB, m3MulMV3(c->invIB, angular));
+                }
+                {
+                    m3Vec3 strut = m3RotateVec3(quatA, (m3Vec3){1.0f, 0.0f, 0.0f});
+                    m3real twist = 2.0f * m3Atan2(relQ.x, relQ.w);
+                    m3real cc = twist - c->steerTarget;
+                    m3real bias = c->steerSoft.biasRate * cc;
+                    m3Vec3 sum = m3Add3(m3MulMV3(c->invIA, strut), m3MulMV3(c->invIB, strut));
+                    m3real k = m3Dot3(strut, sum);
+                    m3real steerMass = k > 0.0f ? 1.0f / k : 0.0f;
+                    m3real cdot = m3Dot3(m3Sub3(wB, wA), strut);
+                    m3real delta = -c->steerSoft.massScale * steerMass * (cdot + bias) -
+                                   c->steerSoft.impulseScale * c->springImpulseV.y;
+                    if (c->steerBudget > 0.0f)
+                    {
+                        m3real budget = c->steerBudget * hSub;
+                        m3real next = c->springImpulseV.y + delta;
+                        next = m3MaxF(-budget, m3MinF(budget, next));
+                        delta = next - c->springImpulseV.y;
+                        c->springImpulseV.y = next;
+                    }
+                    else
+                    {
+                        c->springImpulseV.y += delta;
+                    }
+                    wA = m3Sub3(wA, m3MulSV3(delta, m3MulMV3(c->invIA, strut)));
+                    wB = m3Add3(wB, m3MulSV3(delta, m3MulMV3(c->invIB, strut)));
+                }
             }
 
             // Point-to-line: the prismatic's 2x2 verbatim along the
@@ -1676,6 +1808,64 @@ static void SolveJoints(m3World* world, m3JointConstraint* joints, int32_t count
             world->linearVelocities[c->bodyA] = vA;
             world->angularVelocities[c->bodyA] = wA;
             world->linearVelocities[c->bodyB] = vB;
+            world->angularVelocities[c->bodyB] = wB;
+            continue;
+        }
+        else if (c->type == (uint8_t)m3_parallelJoint)
+        {
+            // PARALLEL (16-1): the revolute's collinearity 2x2 and
+            // nothing else. The twist about the shared axis and
+            // every translation stay free, so the branch continues
+            // PAST the shared point weld below.
+            m3Quat quatA = m3MulQuat(deltaRot[c->bodyA], c->frameQA);
+            m3Quat quatB = m3MulQuat(deltaRot[c->bodyB], c->frameQB);
+            if (quatA.x * quatB.x + quatA.y * quatB.y + quatA.z * quatB.z + quatA.w * quatB.w <
+                0.0f)
+            {
+                quatB = (m3Quat){-quatB.x, -quatB.y, -quatB.z, -quatB.w};
+            }
+            m3Quat conjA = {-quatA.x, -quatA.y, -quatA.z, quatA.w};
+            m3Quat relQ = m3MulQuat(conjA, quatB);
+            m3Vec3 perpX = PerpColumn(quatA, relQ, (m3Vec3){1.0f, 0.0f, 0.0f});
+            m3Vec3 perpY = PerpColumn(quatA, relQ, (m3Vec3){0.0f, 1.0f, 0.0f});
+            c->perpAxisX = perpX;
+            c->perpAxisY = perpY;
+            m3real biasX = 0.0f;
+            m3real biasY = 0.0f;
+            m3real massScale = 1.0f;
+            m3real impulseScale = 0.0f;
+            if (useBias)
+            {
+                biasX = c->softness.biasRate * relQ.x;
+                biasY = c->softness.biasRate * relQ.y;
+                massScale = c->softness.massScale;
+                impulseScale = c->softness.impulseScale;
+            }
+            m3Vec3 sumX = m3Add3(m3MulMV3(c->invIA, perpX), m3MulMV3(c->invIB, perpX));
+            m3Vec3 sumY = m3Add3(m3MulMV3(c->invIA, perpY), m3MulMV3(c->invIB, perpY));
+            m3real kxx = m3Dot3(perpX, sumX);
+            m3real kyy = m3Dot3(perpY, sumY);
+            m3real kxy = m3Dot3(perpX, sumY);
+            m3Vec3 wRel = m3Sub3(wB, wA);
+            m3real cdotX = m3Dot3(wRel, perpX) + biasX;
+            m3real cdotY = m3Dot3(wRel, perpY) + biasY;
+            m3real det = kxx * kyy - kxy * kxy;
+            m3real solX = 0.0f;
+            m3real solY = 0.0f;
+            if (det != 0.0f)
+            {
+                m3real inv = 1.0f / det;
+                solX = inv * (kyy * cdotX - kxy * cdotY);
+                solY = inv * (kxx * cdotY - kxy * cdotX);
+            }
+            m3real deltaX = -massScale * solX - impulseScale * c->perpImpulseX;
+            m3real deltaY = -massScale * solY - impulseScale * c->perpImpulseY;
+            c->perpImpulseX += deltaX;
+            c->perpImpulseY += deltaY;
+            m3Vec3 angular = m3Add3(m3MulSV3(deltaX, perpX), m3MulSV3(deltaY, perpY));
+            wA = m3Sub3(wA, m3MulMV3(c->invIA, angular));
+            wB = m3Add3(wB, m3MulMV3(c->invIB, angular));
+            world->angularVelocities[c->bodyA] = wA;
             world->angularVelocities[c->bodyB] = wB;
             continue;
         }

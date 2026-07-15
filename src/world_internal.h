@@ -162,6 +162,7 @@ typedef enum m3Op
     m3_opWorldExplode = 67,           // explosion def (13-2)
     m3_opSetBodyName = 68,            // body + 32 name bytes (14-3)
     m3_opSetShapeGeom = 69,           // shape + type + geom swap (15-2)
+    m3_opJointSetSteer = 70,          // wheel strut drive (16-3)
 } m3Op;
 
 // Debug names (14-3): journaled and snapshot like userData, NEVER
@@ -645,6 +646,12 @@ typedef struct m3World
     m3real* vehDtGearRatio; // capacity * M3_DRIVETRAIN_MAX_GEARS
     m3real* vehDtReverse;
     m3real* vehDtFinal;
+    int32_t* vehDtDiffMode;  // 16-4: 0 open, 1 limited, 2 locked
+    m3real* vehDtDiffCouple; // newtons per m/s of wheel disparity
+    m3real* vehWheelLon;     // per wheel: last step's contact speed
+                             // (cap * M3_VEHICLE_MAX_WHEELS); feeds
+                             // the diff coupling, hashed only when a
+                             // nonzero diff mode is attached
     m3real* vehDtShiftUp;
     m3real* vehDtShiftDown;
     int32_t* vehDtClutchSteps;
@@ -822,6 +829,8 @@ void m3AppendJointBreakEvent(m3World* world, m3JointId joint);
 
 void m3JointSetLimitsInternal(m3World* world, int32_t j, int32_t enable, float lower, float upper);
 void m3JointSetMotorInternal(m3World* world, int32_t j, int32_t enable, float speed, float effort);
+void m3JointSetSteerInternal(m3World* world, int32_t j, int32_t enable, float target, float hertz,
+                             float zeta, float maxEffort);
 void m3JointSetCollideInternal(m3World* world, int32_t j, int32_t on);
 void m3JointSetBreakInternal(m3World* world, int32_t j, float maxForce, float maxTorque);
 // Reaction magnitudes from the stored warm rows, the break law's

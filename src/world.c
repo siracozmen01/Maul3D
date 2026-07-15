@@ -281,6 +281,9 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     M3_ALLOC(world->vehDtGearRatio, def->vehicleCapacity * M3_DRIVETRAIN_MAX_GEARS, m3real);
     M3_ALLOC(world->vehDtReverse, def->vehicleCapacity, m3real);
     M3_ALLOC(world->vehDtFinal, def->vehicleCapacity, m3real);
+    M3_ALLOC(world->vehDtDiffMode, def->vehicleCapacity, int32_t);
+    M3_ALLOC(world->vehDtDiffCouple, def->vehicleCapacity, m3real);
+    M3_ALLOC(world->vehWheelLon, def->vehicleCapacity * M3_VEHICLE_MAX_WHEELS, m3real);
     M3_ALLOC(world->vehDtShiftUp, def->vehicleCapacity, m3real);
     M3_ALLOC(world->vehDtShiftDown, def->vehicleCapacity, m3real);
     M3_ALLOC(world->vehDtClutchSteps, def->vehicleCapacity, int32_t);
@@ -533,6 +536,9 @@ void m3DestroyWorld(m3WorldId worldId)
     m3Free(world->vehDtGearRatio);
     m3Free(world->vehDtReverse);
     m3Free(world->vehDtFinal);
+    m3Free(world->vehDtDiffMode);
+    m3Free(world->vehDtDiffCouple);
+    m3Free(world->vehWheelLon);
     m3Free(world->vehDtShiftUp);
     m3Free(world->vehDtShiftDown);
     m3Free(world->vehDtClutchSteps);
@@ -2228,6 +2234,37 @@ static bool JournalReplayApply(m3World* world, const void* data, int32_t size)
             }
             record.name[M3_BODY_NAME_CAPACITY - 1] = 0;
             m3SetBodyNameInternal(world, index, record.name);
+            break;
+        }
+        case m3_opJointSetSteer:
+        {
+            struct
+            {
+                m3JointId id;
+                int32_t enable;
+                float target;
+                float hertz;
+                float zeta;
+                float effort;
+            } record;
+            if (bytes != (int32_t)sizeof(record))
+            {
+                return false;
+            }
+            memcpy(&record, payload, sizeof(record));
+            record.id.world0 = world->worldIndex0;
+            int32_t slot = m3JointSlot(world, record.id);
+            if (slot < 0 || world->jointType[slot] != (uint8_t)m3_wheelJoint ||
+                !m3FiniteF(record.target) || m3AbsF(record.target) > 1.0f ||
+                !m3FiniteF(record.hertz) || !m3FiniteF(record.zeta) || !m3FiniteF(record.effort) ||
+                record.zeta < 0.0f || record.effort < 0.0f ||
+                (record.enable != 0 && !(record.hertz > 0.0f)) ||
+                (record.enable != 0 && record.enable != 1))
+            {
+                return false; // hostile steer bytes fail loudly
+            }
+            m3JointSetSteerInternal(world, slot, record.enable, record.target, record.hertz,
+                                    record.zeta, record.effort);
             break;
         }
         case m3_opSetShapeGeom:

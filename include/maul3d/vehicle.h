@@ -130,6 +130,15 @@ extern "C"
         m3real shiftDownRpm;                         // auto shift drops below this
         int32_t clutchSteps;                         // steps of torque cut per shift
         bool autoShift;
+        /// Differential (16-4): 0 open (the equal split), 1 limited
+        /// slip, 2 locked. Nonzero modes couple each driven wheel
+        /// toward the driven mean of the LAST step's contact speeds
+        /// with diffCouple newtons per m/s of disparity; limited
+        /// slip additionally clamps the coupling to the engine's
+        /// own per-wheel force. One step of lag is the drivetrain's
+        /// own convention (engine speed reads wheels the same way).
+        int32_t diffMode;
+        m3real diffCouple;
         int32_t internalValue;
     } m3DrivetrainDef;
 

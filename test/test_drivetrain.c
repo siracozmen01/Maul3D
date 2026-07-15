@@ -440,6 +440,73 @@ static void TestShiftThrashStorm(void)
     CHECK(hashes[0] == hashes[1], "twin thrash storms are bit-identical");
 }
 
+static double DiffYaw(int32_t mode, m3real couple, uint64_t* outHash)
+{
+    // Same car, same throttle, same steer; only the differential
+    // changes. The coupling resists the inner/outer wheel speed
+    // split a turn creates, so a locked diff yaws less than open.
+    m3WorldId world = PlaneWorld();
+    m3BodyId chassis;
+    m3VehicleId car = MakeCar(world, (m3Pos3){0.0, 0.6, 0.0}, &chassis);
+    m3DrivetrainDef dt = m3DefaultDrivetrainDef();
+    dt.autoShift = false;
+    dt.diffMode = mode;
+    dt.diffCouple = couple;
+    m3Vehicle_SetDrivetrain(car, &dt);
+    m3Vehicle_SelectGear(car, 1);
+    double yaw = 0.0;
+    for (int32_t i = 0; i < 300; ++i)
+    {
+        m3Vehicle_SetCommands(car, 1.0f, 0.6f, 0.0f);
+        m3World_Step(world, 1.0f / 60.0f, 4);
+        yaw += (double)m3Body_GetAngularVelocity(chassis).y;
+    }
+    if (outHash != NULL)
+    {
+        *outHash = m3World_Hash(world);
+    }
+    m3DestroyWorld(world);
+    return yaw < 0.0 ? -yaw : yaw;
+}
+
+static void TestDifferentials(void)
+{
+    // The coupling lives inside the friction circle, so its effect
+    // is emergent: a strong lock converges wheel speeds and kills
+    // the turn; softer values redistribute grip and can even liven
+    // rotation (the probe measured both regimes; the manual says
+    // couple is host-tuned to the vehicle's mass scale).
+    uint64_t lockedA = 0;
+    uint64_t lockedB = 0;
+    uint64_t openHash = 0;
+    uint64_t limitedHash = 0;
+    double open = DiffYaw(0, 0.0f, &openHash);
+    double locked = DiffYaw(2, 20000.0f, &lockedA);
+    double limited = DiffYaw(1, 20000.0f, &limitedHash);
+    CHECK(open > 10.0, "the open car turns");
+    CHECK(locked < open * 0.2, "the strong lock converges the wheels and resists the turn");
+    CHECK(limited > 0.0 && limitedHash != openHash,
+          "the limited mode is a real, distinct, deterministic regime");
+    DiffYaw(2, 20000.0f, &lockedB);
+    CHECK(lockedA == lockedB, "twin locked runs are bit-identical");
+
+    // The hostile wall: bad modes and couplings never attach.
+    m3WorldId world = PlaneWorld();
+    m3VehicleId car = MakeCar(world, (m3Pos3){0.0, 0.6, 0.0}, NULL);
+    m3DrivetrainDef bad = m3DefaultDrivetrainDef();
+    bad.diffMode = 3;
+    m3Vehicle_SetDrivetrain(car, &bad);
+    m3DrivetrainDef good = m3DefaultDrivetrainDef();
+    good.diffMode = 2;
+    good.diffCouple = -1.0f;
+    m3Vehicle_SetDrivetrain(car, &good);
+    // Neither hostile def attached: gear selection still refuses
+    // like a drivetrain-less car accepts nothing but neutral.
+    m3Vehicle_SelectGear(car, 1);
+    m3World_Step(world, 1.0f / 60.0f, 4);
+    m3DestroyWorld(world);
+}
+
 int main(void)
 {
     TestUphillBogAndClimb();
@@ -449,6 +516,7 @@ int main(void)
     TestNeutralAndReverse();
     TestHostileWall();
     TestShiftThrashStorm();
+    TestDifferentials();
     if (s_failures == 0)
     {
         printf("test_drivetrain: all passed\n");

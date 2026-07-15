@@ -23,7 +23,17 @@ extern "C"
         m3_fixedJoint = 3,     // weld: full 6-DOF lock at the create pose
         m3_distanceJoint = 4,  // rope/rod: anchor distance in [lower, upper]
         m3_genericJoint = 5,   // 6-DOF: per-axis lock/free/limit + one motor
-        m3_wheelJoint = 6,     // suspension slide + free spin (12-2)
+        m3_wheelJoint = 6,
+        /// FILTER (16-1): no constraint rows at all; the joint's
+        /// whole effect is the connected-pair collision filter
+        /// (create with collideConnected false). Ragdoll sibling
+        /// limbs stop grinding without buying a single solver row.
+        m3_filterJoint = 7,
+        /// PARALLEL (16-1): keeps localAxisA on body A parallel to
+        /// localAxisB on body B (two angular rows); every
+        /// translation and the twist about the shared axis stay
+        /// free. Platform linkages without the full revolute.
+        m3_parallelJoint = 8, // suspension slide + free spin (12-2)
     } m3JointType;
 
     /// Per-axis behavior of the generic joint, in the joint frame
@@ -135,6 +145,19 @@ extern "C"
     /// impulse so a stale warm start cannot kick.
     M3_API void m3Joint_SetLimits(m3JointId jointId, bool enable, float lower, float upper);
     M3_API void m3Joint_SetMotor(m3JointId jointId, bool enable, float speed, float maxEffort);
+
+    /// Wheel steering (16-3): a soft target-angle drive about the
+    /// strut axis. While enabled, the wheel's frame-x lock becomes
+    /// the drive (frame y stays locked), so the axle yaws toward
+    /// targetAngle (radians, |target| <= 1) at the given stiffness;
+    /// maxEffort > 0 caps the torque, 0 leaves it uncapped. Wheel
+    /// joints only; refused loudly elsewhere. Journaled.
+    M3_API void m3Joint_SetSteer(m3JointId jointId, bool enable, float targetAngle, float hertz,
+                                 float zeta, float maxEffort);
+
+    /// The current strut twist in radians (wheel joints; 0 for
+    /// every other type and stale ids).
+    M3_API float m3Joint_GetSteerAngle(m3JointId jointId);
 
     /// Let (or forbid) the two jointed bodies collide with each
     /// other. Journaled; binds at the next step's pair scan.

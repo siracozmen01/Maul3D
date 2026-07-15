@@ -22,7 +22,10 @@
 #endif
 
 #define M3_SNAPSHOT_MAGIC   0x4D33534Eu // 'M3SN'
-#define M3_SNAPSHOT_VERSION 43u
+#define M3_SNAPSHOT_VERSION 44u
+// v44: drivetrain differentials and wheel contact speeds (16-4);
+//      body debug names and soft explosion kicks rode v43's bump
+//      window in the same release train.
 // v43: angular speed cap (13-1).
 // v42: vehicle drivetrain, the engine curve and gearbox (12-1).
 // v41: wind field and conveyor surface velocities (11-3).
@@ -318,6 +321,10 @@ static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3Wal
              world->vehicleCapacity * M3_DRIVETRAIN_MAX_GEARS * (int32_t)sizeof(m3real));
     M3_BLOCK(world->vehDtReverse, world->vehicleCapacity * (int32_t)sizeof(m3real));
     M3_BLOCK(world->vehDtFinal, world->vehicleCapacity * (int32_t)sizeof(m3real));
+    M3_BLOCK(world->vehDtDiffMode, world->vehicleCapacity * (int32_t)sizeof(int32_t));  // v44
+    M3_BLOCK(world->vehDtDiffCouple, world->vehicleCapacity * (int32_t)sizeof(m3real)); // v44
+    M3_BLOCK(world->vehWheelLon,
+             world->vehicleCapacity * M3_VEHICLE_MAX_WHEELS * (int32_t)sizeof(m3real)); // v44
     M3_BLOCK(world->vehDtShiftUp, world->vehicleCapacity * (int32_t)sizeof(m3real));
     M3_BLOCK(world->vehDtShiftDown, world->vehicleCapacity * (int32_t)sizeof(m3real));
     M3_BLOCK(world->vehDtClutchSteps, world->vehicleCapacity * (int32_t)sizeof(int32_t));
@@ -946,6 +953,17 @@ uint64_t m3World_Hash(m3WorldId worldId)
             }
             h = m3Hash64(h, &world->vehDtReverse[i], 4);
             h = m3Hash64(h, &world->vehDtFinal[i], 4);
+            if (world->vehDtDiffMode[i] != 0)
+            {
+                // The diff folds only when engaged (16-4), wheel
+                // speeds included: they steer forces only then.
+                h = m3Hash64(h, &world->vehDtDiffMode[i], 4);
+                h = m3Hash64(h, &world->vehDtDiffCouple[i], 4);
+                for (int32_t wq = 0; wq < world->vehWheelCount[i]; ++wq)
+                {
+                    h = m3Hash64(h, &world->vehWheelLon[i * M3_VEHICLE_MAX_WHEELS + wq], 4);
+                }
+            }
             h = m3Hash64(h, &world->vehDtShiftUp[i], 4);
             h = m3Hash64(h, &world->vehDtShiftDown[i], 4);
             h = m3Hash64(h, &world->vehDtClutchSteps[i], 4);
