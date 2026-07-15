@@ -22,7 +22,8 @@
 #endif
 
 #define M3_SNAPSHOT_MAGIC   0x4D33534Eu // 'M3SN'
-#define M3_SNAPSHOT_VERSION 51u
+#define M3_SNAPSHOT_VERSION 52u
+// v52: tet soft bodies (20-3).
 // v51: soft pressure (20-2).
 // v50: soft bend tethers (20-1).
 // v49: native heightfields (19-1).
@@ -360,6 +361,17 @@ static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3Wal
     M3_BLOCK(world->softDimZ, world->softBodyCapacity * (int32_t)sizeof(uint16_t));
     M3_BLOCK(world->softRestVolume, world->softBodyCapacity * (int32_t)sizeof(m3real));
     M3_BLOCK(world->softPressure, world->softBodyCapacity * (int32_t)sizeof(m3real));
+    M3_BLOCK(world->softTetCount, world->softBodyCapacity * (int32_t)sizeof(int32_t));
+    M3_BLOCK(world->softTetA,
+             world->softBodyCapacity * M3_SOFTBODY_MAX_TETS * (int32_t)sizeof(uint16_t));
+    M3_BLOCK(world->softTetB,
+             world->softBodyCapacity * M3_SOFTBODY_MAX_TETS * (int32_t)sizeof(uint16_t));
+    M3_BLOCK(world->softTetC,
+             world->softBodyCapacity * M3_SOFTBODY_MAX_TETS * (int32_t)sizeof(uint16_t));
+    M3_BLOCK(world->softTetD,
+             world->softBodyCapacity * M3_SOFTBODY_MAX_TETS * (int32_t)sizeof(uint16_t));
+    M3_BLOCK(world->softTetRestV6,
+             world->softBodyCapacity * M3_SOFTBODY_MAX_TETS * (int32_t)sizeof(m3real));
     M3_BLOCK(world->softRadius, world->softBodyCapacity * (int32_t)sizeof(m3real));
     M3_BLOCK(world->softGravityScale, world->softBodyCapacity * (int32_t)sizeof(m3real));
     M3_BLOCK(world->softUserData, world->softBodyCapacity * (int32_t)sizeof(uint64_t));
@@ -1091,6 +1103,17 @@ uint64_t m3World_Hash(m3WorldId worldId)
             h = m3Hash64(h, &world->softDimZ[i], 2);
             h = m3Hash64(h, &world->softRestVolume[i], 4);
             h = m3Hash64(h, &world->softPressure[i], 4);
+        }
+        if (world->softTetCount[i] > 0)
+        {
+            // Tets fold off-default (20-3), their own block.
+            h = m3Hash64(h, &world->softTetCount[i], 4);
+            int32_t tbase = i * M3_SOFTBODY_MAX_TETS;
+            h = m3Hash64(h, &world->softTetA[tbase], 2 * world->softTetCount[i]);
+            h = m3Hash64(h, &world->softTetB[tbase], 2 * world->softTetCount[i]);
+            h = m3Hash64(h, &world->softTetC[tbase], 2 * world->softTetCount[i]);
+            h = m3Hash64(h, &world->softTetD[tbase], 2 * world->softTetCount[i]);
+            h = m3Hash64(h, &world->softTetRestV6[tbase], 4 * world->softTetCount[i]);
         }
         h = m3Hash64(h, &world->softRadius[i], 4);
         h = m3Hash64(h, &world->softGravityScale[i], 4);

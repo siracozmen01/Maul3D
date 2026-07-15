@@ -169,6 +169,7 @@ typedef enum m3Op
     m3_opCreateWaterVolume = 74,      // water box (18-1)
     m3_opDestroyWaterVolume = 75,     // the tide goes out (18-1)
     m3_opCreateHeightFieldGrid = 76,  // native terrain chunk (19-1)
+    m3_opCreateSoftBodyTet = 77,      // the incompressible jelly (20-3)
 } m3Op;
 
 // Debug names (14-3): journaled and snapshot like userData, NEVER
@@ -496,6 +497,16 @@ typedef struct m3SetMeshMaterialsOp
     m3MeshSurfaceMaterial materials[M3_MESH_MAX_MATERIALS];
 } m3SetMeshMaterialsOp;
 
+// Journal payload for tet soft bodies (20-3): the fixed head,
+// then pointCount m3Vec3 points, then 4 * tetCount uint16 ids.
+typedef struct m3CreateSoftBodyTetOp
+{
+    m3SoftBodyDef def;
+    int32_t pointCount;
+    int32_t tetCount;
+    m3SoftBodyId expected;
+} m3CreateSoftBodyTetOp;
+
 // Journal payload for the native heightfield (19-1): the fixed
 // head below, followed by nx * nz float samples.
 typedef struct m3CreateHeightFieldGridOp
@@ -802,6 +813,14 @@ typedef struct m3World
     uint16_t* softDimZ;
     m3real* softRestVolume;
     m3real* softPressure;
+    // Tet volumes (20-3): four particle ids and a rest 6-volume per
+    // tet, slot-strided like edges; count 0 = a lattice body.
+    int32_t* softTetCount;
+    uint16_t* softTetA;
+    uint16_t* softTetB;
+    uint16_t* softTetC;
+    uint16_t* softTetD;
+    m3real* softTetRestV6;
     m3Vec3* softKick;    // pending explosion velocity kicks (13-3):
                          // integrated once next step, then zeroed,
                          // hashed only when nonzero (additive rule)
@@ -1349,6 +1368,8 @@ bool m3VehicleDrivetrainInternal(m3World* world, int32_t slot, const m3Drivetrai
 bool m3VehicleGearInternal(m3World* world, int32_t slot, int32_t gear);
 int32_t m3SoftBodySlot(const m3World* world, m3SoftBodyId softId);
 int32_t m3CreateSoftBodyInternal(m3World* world, const m3SoftBodyDef* def);
+int32_t m3CreateSoftBodyTetInternal(m3World* world, const m3SoftBodyDef* def, const m3Vec3* points,
+                                    int32_t pointCount, const uint16_t* tets, int32_t tetCount);
 void m3DestroySoftBodyInternal(m3World* world, int32_t slot);
 void m3SoftBodyPinInternal(m3World* world, int32_t slot, int32_t particle);
 void m3SoftBodyPass(m3World* world, float dt, int32_t substeps);

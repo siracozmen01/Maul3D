@@ -23,6 +23,7 @@ extern "C"
 #define M3_SOFTBODY_MAX_PARTICLES 512
 #define M3_SOFTBODY_MAX_EDGES     5120
 #define M3_SOFTBODY_MAX_ANCHORS   32
+#define M3_SOFTBODY_MAX_TETS      1024
 
     typedef struct m3SoftBodyId
     {
@@ -67,6 +68,20 @@ extern "C"
     /// non-finite or non-positive geometry, or a full pool.
     /// Journaled with id verification.
     M3_API m3SoftBodyId m3CreateSoftBody(m3WorldId worldId, const m3SoftBodyDef* def);
+
+    /// A tetrahedral soft body (20-3): explicit points (world
+    /// positions after adding def->position) and tets (four point
+    /// indices each, positive volume required). Edges come from
+    /// the tet edges, deduplicated in first-touch order, at
+    /// def->compliance; every tet holds its create volume rigidly
+    /// (the incompressible jelly). def->countX/Y/Z, spacing,
+    /// bendCompliance, and pressure must be left at defaults (the
+    /// lattice knobs; hostile mixes refuse loudly). Pins, anchors,
+    /// wind, water, explosions, and collision all treat the
+    /// particles exactly like lattice particles.
+    M3_API m3SoftBodyId m3CreateSoftBodyTet(m3WorldId worldId, const m3SoftBodyDef* def,
+                                            const m3Vec3* points, int32_t pointCount,
+                                            const uint16_t* tets, int32_t tetCount);
     M3_API void m3DestroySoftBody(m3SoftBodyId softId);
     M3_API bool m3SoftBody_IsValid(m3SoftBodyId softId);
 

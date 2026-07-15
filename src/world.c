@@ -313,6 +313,12 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     M3_ALLOC(world->softDimZ, def->softBodyCapacity, uint16_t);
     M3_ALLOC(world->softRestVolume, def->softBodyCapacity, m3real);
     M3_ALLOC(world->softPressure, def->softBodyCapacity, m3real);
+    M3_ALLOC(world->softTetCount, def->softBodyCapacity, int32_t);
+    M3_ALLOC(world->softTetA, def->softBodyCapacity * M3_SOFTBODY_MAX_TETS, uint16_t);
+    M3_ALLOC(world->softTetB, def->softBodyCapacity * M3_SOFTBODY_MAX_TETS, uint16_t);
+    M3_ALLOC(world->softTetC, def->softBodyCapacity * M3_SOFTBODY_MAX_TETS, uint16_t);
+    M3_ALLOC(world->softTetD, def->softBodyCapacity * M3_SOFTBODY_MAX_TETS, uint16_t);
+    M3_ALLOC(world->softTetRestV6, def->softBodyCapacity * M3_SOFTBODY_MAX_TETS, m3real);
     M3_ALLOC(world->softRadius, def->softBodyCapacity, m3real);
     M3_ALLOC(world->softGravityScale, def->softBodyCapacity, m3real);
     M3_ALLOC(world->softUserData, def->softBodyCapacity, uint64_t);
@@ -586,6 +592,12 @@ void m3DestroyWorld(m3WorldId worldId)
     m3Free(world->softDimZ);
     m3Free(world->softRestVolume);
     m3Free(world->softPressure);
+    m3Free(world->softTetCount);
+    m3Free(world->softTetA);
+    m3Free(world->softTetB);
+    m3Free(world->softTetC);
+    m3Free(world->softTetD);
+    m3Free(world->softTetRestV6);
     m3Free(world->softRadius);
     m3Free(world->softGravityScale);
     m3Free(world->softUserData);
@@ -2502,6 +2514,33 @@ static bool JournalReplayApply(m3World* world, const void* data, int32_t size)
             }
             record.name[M3_BODY_NAME_CAPACITY - 1] = 0;
             m3SetBodyNameInternal(world, index, record.name);
+            break;
+        }
+        case m3_opCreateSoftBodyTet:
+        {
+            m3CreateSoftBodyTetOp head;
+            if (bytes < (int32_t)sizeof(head))
+            {
+                return false;
+            }
+            memcpy(&head, payload, sizeof(head));
+            if (head.pointCount < 4 || head.pointCount > M3_SOFTBODY_MAX_PARTICLES ||
+                head.tetCount < 1 || head.tetCount > M3_SOFTBODY_MAX_TETS ||
+                bytes != (int32_t)sizeof(head) + head.pointCount * (int32_t)sizeof(m3Vec3) +
+                             4 * head.tetCount * (int32_t)sizeof(uint16_t))
+            {
+                return false;
+            }
+            const m3Vec3* pts = (const m3Vec3*)((const uint8_t*)payload + sizeof(head));
+            const uint16_t* tets = (const uint16_t*)((const uint8_t*)payload + sizeof(head) +
+                                                     (size_t)head.pointCount * sizeof(m3Vec3));
+            int32_t slot = m3CreateSoftBodyTetInternal(world, &head.def, pts, head.pointCount, tets,
+                                                       head.tetCount);
+            if (slot < 0 || slot + 1 != head.expected.index1 ||
+                world->softPool.generations[slot] != head.expected.generation)
+            {
+                return false; // id determinism holds for jelly too
+            }
             break;
         }
         case m3_opCreateHeightFieldGrid:

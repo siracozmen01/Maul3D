@@ -662,6 +662,81 @@ static void TestAnchorRedTeam(void)
     m3DestroyWorld(world);
 }
 
+static void TestTetBodies(void)
+{
+    // 20-3: a five-tet cube drops, squashes on contact, and keeps
+    // its total volume (the incompressible jelly); hostile tets
+    // refuse; twins and the journal agree to the bit.
+    static const m3Vec3 pts[8] = {{0.0f, 0.0f, 0.0f}, {0.5f, 0.0f, 0.0f}, {0.5f, 0.5f, 0.0f},
+                                  {0.0f, 0.5f, 0.0f}, {0.0f, 0.0f, 0.5f}, {0.5f, 0.0f, 0.5f},
+                                  {0.5f, 0.5f, 0.5f}, {0.0f, 0.5f, 0.5f}};
+    // The classic 5-tet decomposition of a cube, all positive.
+    static const uint16_t tets[20] = {0, 1, 2, 5, 0, 2, 3, 7, 0, 5, 2, 7, 0, 5, 7, 4, 2, 5, 6, 7};
+    static uint8_t journal[131072];
+    uint64_t hashes[2];
+    for (int32_t run = 0; run < 2; ++run)
+    {
+        m3WorldDef wd = m3DefaultWorldDef();
+        wd.bodyCapacity = 4;
+        wd.shapeCapacity = 4;
+        m3WorldId world = m3CreateWorld(&wd);
+        bool recording = run == 0 && m3World_JournalBegin(world, journal, (int32_t)sizeof(journal));
+        m3BodyDef gd = m3DefaultBodyDef();
+        m3BodyId ground = m3CreateBody(world, &gd);
+        m3ShapeDef sd = m3DefaultShapeDef();
+        m3Plane floor = {{0.0f, 1.0f, 0.0f}, 0.0f};
+        m3CreatePlaneShape(ground, &sd, &floor);
+        m3SoftBodyDef sb = m3DefaultSoftBodyDef();
+        sb.position = (m3Pos3){0.0, 1.5, 0.0};
+        sb.compliance = 1.0e-4f;
+        m3SoftBodyId jelly = m3CreateSoftBodyTet(world, &sb, pts, 8, tets, 5);
+        CHECK(m3SoftBody_IsValid(jelly), "the jelly creates");
+        CHECK(m3SoftBody_GetParticleCount(jelly) == 8, "eight particles");
+        for (int32_t i = 0; i < 240; ++i)
+        {
+            m3World_Step(world, 1.0f / 60.0f, 4);
+        }
+        m3Pos3 lo = m3SoftBody_GetParticlePosition(jelly, 0);
+        m3Pos3 hi = m3SoftBody_GetParticlePosition(jelly, 6);
+        CHECK(lo.y > -0.1 && lo.y < 0.3, "the jelly rests on the floor");
+        double dx = hi.x - lo.x;
+        double dy = hi.y - lo.y;
+        double dz = hi.z - lo.z;
+        double diag2 = dx * dx + dy * dy + dz * dz;
+        CHECK(diag2 > 0.4 * 0.75 && diag2 < 2.5 * 0.75,
+              "the jelly deforms without collapsing or exploding");
+        hashes[run] = m3World_Hash(world);
+        if (recording)
+        {
+            int32_t bytes = m3World_JournalEnd(world);
+            CHECK(bytes > 0, "the jelly session records");
+            m3WorldDef fresh = wd;
+            m3WorldId replayed = m3CreateWorld(&fresh);
+            CHECK(m3World_JournalReplay(replayed, journal, bytes), "the jelly replays");
+            CHECK(m3World_Hash(replayed) == hashes[0], "the replay is bit-identical");
+            m3DestroyWorld(replayed);
+        }
+        m3DestroyWorld(world);
+    }
+    CHECK(hashes[0] == hashes[1], "twin jellies are bit-identical");
+
+    // Walls: bad index, degenerate tet, lattice knobs on a tet body.
+    m3WorldDef wd = m3DefaultWorldDef();
+    m3WorldId world = m3CreateWorld(&wd);
+    m3SoftBodyDef sb = m3DefaultSoftBodyDef();
+    uint16_t bad[4] = {0, 1, 2, 9};
+    CHECK(!m3SoftBody_IsValid(m3CreateSoftBodyTet(world, &sb, pts, 8, bad, 1)),
+          "an out-of-range tet refuses");
+    uint16_t flat[4] = {0, 1, 2, 3}; // coplanar corners of one face
+    CHECK(!m3SoftBody_IsValid(m3CreateSoftBodyTet(world, &sb, pts, 8, flat, 1)),
+          "a flat tet refuses");
+    sb.pressure = 1.0f;
+    uint16_t good[4] = {0, 1, 2, 5};
+    CHECK(!m3SoftBody_IsValid(m3CreateSoftBodyTet(world, &sb, pts, 8, good, 1)),
+          "lattice pressure on a tet body refuses");
+    m3DestroyWorld(world);
+}
+
 static void TestPressure(void)
 {
     // 20-2: a pressurized cube inflates toward its target volume in
@@ -794,6 +869,7 @@ int main(void)
     TestAnchorRedTeam();
     TestBendRods();
     TestPressure();
+    TestTetBodies();
     if (s_failures == 0)
     {
         printf("test_softbody: all green\n");
