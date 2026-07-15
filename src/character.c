@@ -46,6 +46,19 @@ int32_t m3CharacterSlot(const m3World* world, m3CharacterId characterId)
 
 int32_t m3CreateCharacterInternal(m3World* world, const m3CharacterDef* def)
 {
+    // The def wall lives HERE since 16-7, because replay hands this
+    // function raw journal bytes (the soft-body lesson, fifth
+    // verse): a flipped radius or slope byte must refuse loudly
+    // instead of minting a NaN capsule.
+    if (!m3FinitePos3(def->position) || !m3FiniteF(def->radius) || !(def->radius > 0.0f) ||
+        !m3FiniteF(def->halfHeight) || def->halfHeight < 0.0f || !m3FiniteF(def->maxSlopeAngle) ||
+        def->maxSlopeAngle <= 0.0f || def->maxSlopeAngle > 1.5f || !m3FiniteF(def->snapDistance) ||
+        def->snapDistance < 0.0f || !m3FiniteF(def->skin) || !(def->skin > 0.0f) ||
+        !m3FiniteF(def->stepHeight) || def->stepHeight < 0.0f || !m3FiniteF(def->mass) ||
+        !(def->mass > 0.0f) || !m3FiniteF(def->pushMaxMassRatio) || def->pushMaxMassRatio < 0.0f)
+    {
+        return -1;
+    }
     int32_t slot = m3IdPoolAlloc(&world->charPool);
     if (slot < 0)
     {

@@ -4,7 +4,50 @@ All notable changes to Maul3D. Versions are tags on green CI SHAs;
 every entry's determinism gates were verified across all CI cells at
 tag time.
 
-## Unreleased (v1.12 in tree)
+## Unreleased (v1.13 in tree)
+
+Machines: drives that budget honestly, wheels that steer, diffs
+that lock, and five new joint types.
+
+- Filter joint (type 7): the connected-pair collision filter with
+  zero solver rows, BY LAW. Parallel joint (type 8): two angular
+  rows keep two body axes parallel; translations and the shared
+  twist stay free.
+- The four-state drive law: a joint's velocity motor and position
+  spring now share ONE budget (the motor's maxMotorEffort), so a
+  starved drive sags honestly instead of borrowing force.
+- Wheel steering (op 70): m3Joint_SetSteer yaws a wheel joint
+  about its strut toward a target angle, soft and budgeted;
+  m3Joint_GetSteerAngle reads it back. Steerable carts on real
+  contacts.
+- Drivetrain differentials: diffMode open/limited/locked plus
+  diffCouple (host-tuned to mass scale) squeeze the torque split
+  toward the driven mean through one step of wheel-speed lag,
+  inside the friction circle. Snapshot v44.
+- Motor joint (type 9, op 71): the servo weld. Soft 3-DOF
+  rotation + translation drives toward a commanded pose
+  (m3Joint_SetMotorPose), stiffness from SetSpring, independent
+  force/torque budgets from SetLimits, idles free without a
+  spring, aims at its create pose by default.
+- Gear joint (type 10): spinA + ratio * spinB holds its create
+  value across two hinged bodies (positive ratio = external
+  mesh), drift-corrected softly, under a documented common-frame
+  mounting contract. Pulley joint (type 11): length1 + ratio *
+  length2 holds across two world anchors, rigid both ways. Def
+  tail grew ratio + groundAnchorA/B; snapshot v45.
+- The 16-7 wall sweep: every def-carrying create internal (body,
+  shape, character, joint, and the earlier soft body and vehicle)
+  now validates raw replay bytes itself, a flipped joint-type
+  byte refuses instead of minting an unowned joint, and every
+  scalar/vector setter decode refuses non-finite payloads. Plus
+  the phase 16 mutation storm (300 journal-aimed bit flips over
+  a steering, servo, gear, and pulley dense session).
+- Suites 47 (newjoints grew the servo), gearpulley, and the
+  storm; testbed: A/D steering on the joint cart, a 2:1 gear
+  mesh, a pulley trade, and a servo-held plate in the machine
+  room.
+
+## v1.12 (2026-07-15)
 
 The modeling gaps: cylinders, live reshaping, and richer queries.
 

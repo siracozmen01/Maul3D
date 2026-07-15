@@ -45,6 +45,23 @@ m3BodyDef m3DefaultBodyDef(void)
 
 int32_t m3CreateBodyInternal(m3World* world, const m3BodyDef* def)
 {
+    // The hostile-input wall (2d-1) lives HERE since 16-7, because
+    // replay hands this function raw journal bytes (the soft-body
+    // lesson, fourth verse): nothing non-finite reaches state, a
+    // rotation far from unit is a corrupted def, and a type byte
+    // outside the enum must never mint a body.
+    m3real qq = def->rotation.x * def->rotation.x + def->rotation.y * def->rotation.y +
+                def->rotation.z * def->rotation.z + def->rotation.w * def->rotation.w;
+    if ((def->type != m3_staticBody && def->type != m3_kinematicBody &&
+         def->type != m3_dynamicBody) ||
+        !m3FinitePos3(def->position) || !m3FiniteQuat(def->rotation) ||
+        !m3FiniteV3(def->linearVelocity) || !m3FiniteV3(def->angularVelocity) ||
+        !m3FiniteF(def->gravityScale) || !m3FiniteF(def->linearDamping) ||
+        !m3FiniteF(def->angularDamping) || def->linearDamping < 0.0f ||
+        def->angularDamping < 0.0f || !(qq > 0.98f) || !(qq < 1.02f))
+    {
+        return -1;
+    }
     int32_t index = m3IdPoolAlloc(&world->bodyPool);
     if (index < 0)
     {

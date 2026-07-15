@@ -597,6 +597,159 @@ static void TestFuzzPhase15Ops(void)
     free(snap);
 }
 
+static void TestFuzzPhase16Ops(void)
+{
+    // The 16-7 red team: a session dense in the whole phase-16
+    // surface (op 70 steering, op 71 servo aims, motor budgets,
+    // gear and pulley creates on top of hinges) plus the setters
+    // the 16-7 wall sweep hardened (velocities, impulses), then
+    // 300 journal-aimed mutations under the 9-5 law.
+    m3WorldDef def = Def();
+    def.bodyCapacity = 16;
+    def.shapeCapacity = 16;
+    def.jointCapacity = 8;
+    m3WorldId world = m3CreateWorld(&def);
+    int32_t snapBytes = m3World_SnapshotSize(world);
+    uint8_t* snap = (uint8_t*)malloc((size_t)snapBytes);
+    m3World_Snapshot(world, snap, snapBytes);
+    static uint8_t journal[131072];
+    m3World_JournalBegin(world, journal, (int32_t)sizeof(journal));
+
+    m3BodyDef gd = m3DefaultBodyDef();
+    m3BodyId ground = m3CreateBody(world, &gd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    m3Plane fl = {{0.0f, 1.0f, 0.0f}, 0.0f};
+    m3CreatePlaneShape(ground, &sd, &fl);
+
+    // The steerable wheel (op 70 sprayer).
+    m3BodyDef bd = m3DefaultBodyDef();
+    bd.position = (m3Pos3){0.0, 2.0, 0.0};
+    m3BodyId hub = m3CreateBody(world, &bd);
+    bd.type = m3_dynamicBody;
+    bd.position = (m3Pos3){0.0, 1.4, 0.0};
+    m3BodyId rim = m3CreateBody(world, &bd);
+    m3Sphere ball = {{0.0f, 0.0f, 0.0f}, 0.3f};
+    m3CreateSphereShape(rim, &sd, &ball);
+    m3JointDef wj = m3DefaultJointDef();
+    wj.type = m3_wheelJoint;
+    wj.bodyA = hub;
+    wj.bodyB = rim;
+    wj.localAxisA = (m3Vec3){0.0f, -1.0f, 0.0f};
+    wj.localAxisB = (m3Vec3){0.0f, 0.0f, 1.0f};
+    m3JointId wheel = m3CreateJoint(&wj);
+
+    // The servo weld (op 71 sprayer) with budgets (motor SetLimits).
+    bd.position = (m3Pos3){2.0, 1.5, 0.0};
+    m3BodyId cube = m3CreateBody(world, &bd);
+    m3CreateBoxShape(cube, &sd, (m3Vec3){0.3f, 0.3f, 0.3f});
+    m3JointDef mj = m3DefaultJointDef();
+    mj.type = m3_motorJoint;
+    mj.bodyA = hub;
+    mj.bodyB = cube;
+    m3JointId servo = m3CreateJoint(&mj);
+    m3Joint_SetSpring(servo, true, 6.0f, 1.0f);
+    m3Joint_SetLimits(servo, true, 40.0f, 5.0f);
+
+    // The gear pair on hinges and the pulley (the new creates).
+    bd.position = (m3Pos3){-2.5, 2.0, 0.0};
+    m3BodyId ga = m3CreateBody(world, &bd);
+    m3CreateBoxShape(ga, &sd, (m3Vec3){0.3f, 0.3f, 0.1f});
+    bd.position = (m3Pos3){-1.5, 2.0, 0.0};
+    m3BodyId gb = m3CreateBody(world, &bd);
+    m3CreateBoxShape(gb, &sd, (m3Vec3){0.3f, 0.3f, 0.1f});
+    m3JointDef hj = m3DefaultJointDef();
+    hj.type = m3_revoluteJoint;
+    hj.bodyA = ground;
+    hj.bodyB = ga;
+    hj.localAnchorA = (m3Vec3){-2.5f, 2.0f, 0.0f};
+    hj.localAxisA = (m3Vec3){0.0f, 0.0f, 1.0f};
+    hj.localAxisB = (m3Vec3){0.0f, 0.0f, 1.0f};
+    m3CreateJoint(&hj);
+    hj.bodyB = gb;
+    hj.localAnchorA = (m3Vec3){-1.5f, 2.0f, 0.0f};
+    m3CreateJoint(&hj);
+    m3JointDef gj = m3DefaultJointDef();
+    gj.type = m3_gearJoint;
+    gj.bodyA = ga;
+    gj.bodyB = gb;
+    gj.localAxisA = (m3Vec3){0.0f, 0.0f, 1.0f};
+    gj.localAxisB = (m3Vec3){0.0f, 0.0f, 1.0f};
+    gj.ratio = 2.0f;
+    m3CreateJoint(&gj);
+    m3Body_ApplyAngularImpulse(ga, (m3Vec3){0.0f, 0.0f, 0.05f});
+    bd.position = (m3Pos3){4.0, 2.0, 0.0};
+    m3BodyId crateA = m3CreateBody(world, &bd);
+    m3CreateBoxShape(crateA, &sd, (m3Vec3){0.4f, 0.4f, 0.4f});
+    bd.position = (m3Pos3){6.0, 2.0, 0.0};
+    m3BodyId crateB = m3CreateBody(world, &bd);
+    m3CreateBoxShape(crateB, &sd, (m3Vec3){0.2f, 0.2f, 0.2f});
+    m3JointDef pj = m3DefaultJointDef();
+    pj.type = m3_pulleyJoint;
+    pj.bodyA = crateA;
+    pj.bodyB = crateB;
+    pj.groundAnchorA = (m3Pos3){4.0, 4.5, 0.0};
+    pj.groundAnchorB = (m3Pos3){6.0, 4.5, 0.0};
+    pj.ratio = 1.5f;
+    m3CreateJoint(&pj);
+
+    for (int32_t i = 0; i < 120; ++i)
+    {
+        if (i % 24 == 6)
+        {
+            float phase = (float)((i / 24) % 3) - 1.0f;
+            m3Joint_SetSteer(wheel, true, 0.4f * phase, 8.0f, 1.0f, 0.0f); // op 70
+            m3Quat aim = {0.0f, 0.19f * phase, 0.0f, 0.981f};
+            m3Joint_SetMotorPose(servo, (m3Vec3){0.3f * phase, -0.5f, 2.0f}, aim); // op 71
+            m3Body_SetLinearVelocity(crateB, (m3Vec3){0.0f, 0.5f * phase, 0.0f});
+        }
+        m3World_Step(world, 1.0f / 60.0f, 4);
+    }
+    int32_t journalBytes = m3World_JournalEnd(world);
+    uint64_t final = m3World_Hash(world);
+    int32_t need = m3ReplayEncodeSize(snapBytes, journalBytes);
+    uint8_t* blob = (uint8_t*)malloc((size_t)need);
+    CHECK(m3ReplayEncode(snap, snapBytes, journal, journalBytes, final, blob, need) == need,
+          "the phase 16 session encodes");
+    m3DestroyWorld(world);
+
+    m3ReplayView valid;
+    CHECK(m3ReplayDecode(blob, need, &valid), "the phase 16 session decodes");
+    int32_t journalStart = (int32_t)((const uint8_t*)valid.journal - blob);
+    uint8_t* mutant = (uint8_t*)malloc((size_t)need);
+    uint32_t rng = 579246813u;
+    int32_t refused = 0;
+    int32_t survived = 0;
+    for (int32_t t = 0; t < 300; ++t)
+    {
+        memcpy(mutant, blob, (size_t)need);
+        rng = rng * 1664525u + 1013904223u;
+        int32_t where = journalStart + (int32_t)(rng % (uint32_t)(need - journalStart));
+        rng = rng * 1664525u + 1013904223u;
+        mutant[where] ^= (uint8_t)(1u << (rng % 8));
+        m3ReplayView view;
+        if (!m3ReplayDecode(mutant, need, &view))
+        {
+            refused += 1;
+            continue;
+        }
+        m3WorldDef fresh = Def();
+        fresh.bodyCapacity = 16;
+        fresh.shapeCapacity = 16;
+        fresh.jointCapacity = 8;
+        m3WorldId probe = m3CreateWorld(&fresh);
+        if (m3World_Restore(probe, view.snapshot, view.snapshotBytes))
+        {
+            m3World_JournalReplay(probe, view.journal, view.journalBytes);
+        }
+        m3DestroyWorld(probe);
+        survived += 1;
+    }
+    CHECK(refused + survived == 300, "every phase 16 mutant either refused or survived");
+    free(mutant);
+    free(blob);
+    free(snap);
+}
+
 int main(void)
 {
     TestRoundTrip();
@@ -606,6 +759,7 @@ int main(void)
     TestFuzzPhase12Ops();
     TestFuzzPhase13Ops();
     TestFuzzPhase15Ops();
+    TestFuzzPhase16Ops();
     if (s_failures == 0)
     {
         printf("test_replayfile: all green\n");

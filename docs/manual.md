@@ -311,8 +311,9 @@ dropped count says so loudly.
 
 ## Joints
 
-Six types, every one built from the same proven row blocks (point,
-axial, rotation-vector) so a new joint is a recipe, not new math:
+Twelve types, every one built from the same proven row blocks
+(point, axial, rotation-vector) so a new joint is a recipe, not
+new math:
 
 - `m3_sphericalJoint`: a shared point, plus an optional cone limit
   (`coneAngle`) and twist limit pair.
@@ -329,6 +330,17 @@ axial, rotation-vector) so a new joint is a recipe, not new math:
   over three linear and three angular axes, plus one motor on any
   movable axis. The v1 angular contract: at most one limited
   angular axis, and its neighbors both locked or both free.
+- `m3_wheelJoint`: suspension slide plus free axle spin, its own
+  chapter below.
+- `m3_filterJoint`: no rows at all, BY LAW. Its whole effect is
+  the connected-pair collision filter: ragdoll limbs stop
+  grinding without buying a single constraint.
+- `m3_parallelJoint`: keeps `localAxisA` on body A parallel to
+  `localAxisB` on body B (two angular rows); every translation
+  and the twist about the shared axis stay free.
+- `m3_motorJoint`: the servo weld, its own chapter below.
+- `m3_gearJoint` and `m3_pulleyJoint`: transmissions, their own
+  chapter below.
 
 Anchors are body-local; the joint frame's axis is local z. Joint
 impulses persist in the snapshot (warm starts are simulation
@@ -564,6 +576,14 @@ destroys the joint at the end of the step and emits the break
 event. Breakage is an in-step deterministic transition on
 purpose: a host poll would race the journal under rollback.
 
+The four-state drive law: a velocity motor alone brakes, a
+position spring alone holds, and TOGETHER they share ONE budget,
+the motor's `maxMotorEffort`. A starved budget makes the drive
+sag honestly instead of borrowing force from nowhere; a zero
+budget with the motor off leaves the spring unbudgeted. This is
+the difference between a servo that stalls under load and one
+that lies.
+
 ## Soft interactions and fields
 
 Lattices collide with EACH OTHER (canonical particle pairs behind
@@ -612,6 +632,20 @@ state: snapshotted, hashed when attached, rolled back mid-shift
 to the bit. Vehicles without a drivetrain keep the flat model
 untouched.
 
+Differentials: the def's `diffMode` picks open (0, the classic
+equal split), limited (1), or locked (2), and `diffCouple` sets
+the coupling force per m/s of wheel-speed disparity. The
+coupling reads each driven wheel's contact speed with one step
+of lag (the drivetrain's own wheel-reading convention) and
+squeezes the split toward the driven mean; limited clamps the
+transfer to the wheel's own drive force. The couple is
+HOST-TUNED TO MASS SCALE: a 300 kg buggy locks solid near 20000
+and oscillates at absurd values, so tune against your own car,
+not a constant from this manual. All of it lives inside the
+friction circle, so the effect is emergent grip management: a
+locked diff resists yaw, a soft limited one LIVENS rotation by
+feeding the unloaded wheel less.
+
 ## The wheel joint
 
 m3_wheelJoint is the OPTIONAL rigid-wheel path: the wheel is a
@@ -633,6 +667,52 @@ in-step, evented, and deterministic through rollback. The def
 grew nothing and there is no new state: a wheel joint is
 ordinary joint state and rides every snapshot and hash law that
 already existed.
+
+Steering: `m3Joint_SetSteer(enable, targetAngle, hertz, zeta,
+maxTorque)` yaws the wheel about its strut toward the target
+(radians, at most 1.0 either way), a soft drive with its own
+budget (0 = uncapped); `m3Joint_GetSteerAngle` reads the live
+angle back. Steer the front pair of a wheel-joint cart and you
+have rack-and-pinion steering on real contacts, no vehicle
+required. Journaled, snapshotted, bit-exact through rollback.
+
+## The servo weld
+
+`m3_motorJoint` drives body B toward a target pose relative to
+body A with NO hard rows: a soft 3-DOF rotation drive plus a
+soft 3-DOF translation drive, each clamped to its own budget.
+Tune stiffness with `m3Joint_SetSpring` (shared by both drives),
+aim with `m3Joint_SetMotorPose(offset, rotation)` (the offset in
+A's create-time frame, the rotation relative to the create
+pose), and budget with `m3Joint_SetLimits` where lower = max
+force and upper = max torque, 0 = uncapped (for this type they
+are independent allowances, not a range). A fresh servo aims at
+its own create pose; without a spring it holds NOTHING and the
+bodies drift free. Use it for animated platforms, grabbers, and
+kinematic-feeling props that still lose honestly to a bigger
+force: a starved servo sags, it does not teleport.
+
+## Gears and pulleys
+
+`m3_gearJoint` couples spin so `spinA + ratio * spinB` keeps its
+create value, where each spin is that body's rotation about its
+own `localAxis`. Positive ratio is the external mesh (counter-
+rotation); negative couples same-direction like a belt. The
+mounting contract, documented and unchecked: both bodies should
+be hinged on a common rigid frame (revolute or wheel joints to
+the same chassis); the gear holds no other degree of freedom and
+puts no reaction on that frame. Angle drift is corrected softly,
+so a mesh cannot creep under load.
+
+`m3_pulleyJoint` runs a rope from `localAnchorA` over the WORLD
+point `groundAnchorA`, across to `groundAnchorB`, down to
+`localAnchorB`: `length1 + ratio * length2` keeps its create
+value, `ratio > 0`. The rope is RIGID both ways by contract (it
+can push); pair it with a distance-joint rope when slack
+matters. Ratio 2 is a block and tackle: B moves half as fast and
+carries twice the force. Both types create through the same def
+(`ratio`, `groundAnchorA/B` at the tail), journal, snapshot, and
+hash like every other joint.
 
 ## Stance
 

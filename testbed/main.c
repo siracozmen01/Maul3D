@@ -516,6 +516,82 @@ static tbScene SceneMachines(void)
     sj.motorSpeed = 1.5f;
     sj.maxMotorEffort = 40.0f;
     m3CreateJoint(&sj);
+
+    // The gear pair (16-6): the motor door's hinge work echoed
+    // through a 2:1 mesh; the small wheel spins twice as fast,
+    // backwards.
+    m3BodyDef gearFrame = m3DefaultBodyDef();
+    gearFrame.position = (m3Pos3){-5.0, 5.5, -4.0};
+    m3BodyId gearPost = m3CreateBody(scene.world, &gearFrame);
+    m3BodyDef gd = m3DefaultBodyDef();
+    gd.type = m3_dynamicBody;
+    gd.position = (m3Pos3){-5.6, 5.5, -4.0};
+    m3BodyId big = m3CreateBody(scene.world, &gd);
+    m3CreateBoxShape(big, &sd, (m3Vec3){0.5f, 0.5f, 0.08f});
+    gd.position = (m3Pos3){-4.4, 5.5, -4.0};
+    m3BodyId small = m3CreateBody(scene.world, &gd);
+    m3CreateBoxShape(small, &sd, (m3Vec3){0.25f, 0.25f, 0.08f});
+    m3JointDef gh = m3DefaultJointDef();
+    gh.type = m3_revoluteJoint;
+    gh.bodyA = gearPost;
+    gh.bodyB = big;
+    gh.localAnchorA = (m3Vec3){-0.6f, 0.0f, 0.0f};
+    gh.localAxisA = (m3Vec3){0.0f, 0.0f, 1.0f};
+    gh.localAxisB = (m3Vec3){0.0f, 0.0f, 1.0f};
+    gh.enableMotor = true;
+    gh.motorSpeed = 1.0f;
+    gh.maxMotorEffort = 30.0f;
+    m3CreateJoint(&gh);
+    gh.bodyB = small;
+    gh.localAnchorA = (m3Vec3){0.6f, 0.0f, 0.0f};
+    gh.enableMotor = false;
+    m3CreateJoint(&gh);
+    m3JointDef mesh = m3DefaultJointDef();
+    mesh.type = m3_gearJoint;
+    mesh.bodyA = big;
+    mesh.bodyB = small;
+    mesh.localAxisA = (m3Vec3){0.0f, 0.0f, 1.0f};
+    mesh.localAxisB = (m3Vec3){0.0f, 0.0f, 1.0f};
+    mesh.ratio = 0.5f; // big drives: small turns twice as fast
+    m3CreateJoint(&mesh);
+
+    // The pulley (16-6): a heavy crate and a light one trade rope
+    // over two fixed points.
+    m3BodyDef crateDef = m3DefaultBodyDef();
+    crateDef.type = m3_dynamicBody;
+    crateDef.position = (m3Pos3){8.0, 3.0, -4.0};
+    m3BodyId heavy = m3CreateBody(scene.world, &crateDef);
+    m3CreateBoxShape(heavy, &sd, (m3Vec3){0.45f, 0.45f, 0.45f});
+    crateDef.position = (m3Pos3){10.0, 3.0, -4.0};
+    m3BodyId light = m3CreateBody(scene.world, &crateDef);
+    m3CreateBoxShape(light, &sd, (m3Vec3){0.25f, 0.25f, 0.25f});
+    m3JointDef rope = m3DefaultJointDef();
+    rope.type = m3_pulleyJoint;
+    rope.bodyA = heavy;
+    rope.bodyB = light;
+    rope.groundAnchorA = (m3Pos3){8.0, 6.5, -4.0};
+    rope.groundAnchorB = (m3Pos3){10.0, 6.5, -4.0};
+    rope.ratio = 1.0f;
+    m3CreateJoint(&rope);
+
+    // The servo weld (16-5): a plate held in the air by pure
+    // budgeted drive, no rows of steel.
+    m3BodyDef servoAnchor = m3DefaultBodyDef();
+    servoAnchor.position = (m3Pos3){0.0, 4.0, -6.0};
+    m3BodyId servoPost = m3CreateBody(scene.world, &servoAnchor);
+    m3BodyDef plateDef = m3DefaultBodyDef();
+    plateDef.type = m3_dynamicBody;
+    plateDef.position = (m3Pos3){0.0, 3.0, -6.0};
+    m3BodyId plate = m3CreateBody(scene.world, &plateDef);
+    m3CreateBoxShape(plate, &sd, (m3Vec3){0.6f, 0.08f, 0.6f});
+    m3JointDef servo = m3DefaultJointDef();
+    servo.type = m3_motorJoint;
+    servo.bodyA = servoPost;
+    servo.bodyB = plate;
+    m3JointId hold = m3CreateJoint(&servo);
+    m3Joint_SetSpring(hold, true, 5.0f, 1.0f);
+    m3Joint_SetMotorPose(hold, (m3Vec3){0.0f, -1.0f, 0.0f},
+                         (m3Quat){0.0f, 0.38268343f, 0.0f, 0.92387953f});
     return scene;
 }
 
@@ -892,7 +968,7 @@ static tbScene SceneJointCart(void)
     tbScene scene;
     memset(&scene, 0, sizeof(scene));
     scene.name = "jointcart";
-    scene.blurb = "wheel-joint cart: W/S drive; axles snap if you overdo the rubble";
+    scene.blurb = "wheel-joint cart: W/S drive, A/D steer; axles snap in the rubble";
     m3WorldDef def = SceneDef();
     scene.def = def;
     scene.world = m3CreateWorld(&def);
@@ -1087,12 +1163,11 @@ typedef struct tbSceneEntry
 } tbSceneEntry;
 
 static const tbSceneEntry s_scenes[] = {
-    {ScenePyramid, "Benchmark"},  {SceneTower, "Contacts"},    {SceneRain, "Contacts"},
-    {SceneKeep, "Destruction"},   {SceneBlastyard, "Destruction"},
-    {SceneJelly, "Destruction"},  {SceneMachines, "Joints"},
-    {SceneJointCart, "Vehicles"}, {SceneCircuit, "Vehicles"},  {SceneHill, "Vehicles"},
-    {SceneWalker, "Characters"},  {SceneTunnel, "Characters"}, {SceneClothWind, "Soft"},
-    {SceneMeadow, "Geometry"},
+    {ScenePyramid, "Benchmark"}, {SceneTower, "Contacts"},        {SceneRain, "Contacts"},
+    {SceneKeep, "Destruction"},  {SceneBlastyard, "Destruction"}, {SceneJelly, "Destruction"},
+    {SceneMachines, "Joints"},   {SceneJointCart, "Vehicles"},    {SceneCircuit, "Vehicles"},
+    {SceneHill, "Vehicles"},     {SceneWalker, "Characters"},     {SceneTunnel, "Characters"},
+    {SceneClothWind, "Soft"},    {SceneMeadow, "Geometry"},
 };
 #define SCENE_COUNT ((int32_t)(sizeof(s_scenes) / sizeof(s_scenes[0])))
 
@@ -1733,15 +1808,22 @@ int main(void)
             m3Vehicle_SetCommands(scene.car, throttle, steer, brake);
         }
 
-        // The joint cart: spin the surviving axles.
+        // The joint cart: spin the surviving axles, steer the
+        // front pair about their struts (16-3).
         if (cartScene && !paused)
         {
             float spin = (IsKeyDown(KEY_W) ? -25.0f : 0.0f) + (IsKeyDown(KEY_S) ? 14.0f : 0.0f);
+            float steer = (IsKeyDown(KEY_A) ? 0.45f : 0.0f) - (IsKeyDown(KEY_D) ? 0.45f : 0.0f);
             for (int32_t w = 0; w < 4; ++w)
             {
                 if (m3Joint_IsValid(scene.axles[w]))
                 {
                     m3Joint_SetMotor(scene.axles[w], spin != 0.0f, spin, 70.0f);
+                    if ((w & 1) != 0)
+                    {
+                        // The +x pair leads under W's forward spin.
+                        m3Joint_SetSteer(scene.axles[w], true, steer, 8.0f, 1.0f, 0.0f);
+                    }
                 }
             }
         }
@@ -2015,10 +2097,10 @@ int main(void)
         // ---- the browser overlay
         if (browser)
         {
-            static const char* names[] = {
-                "pyramid", "tower",     "rain",      "voxfort",   "blastyard",
-                "jelly",   "machines",  "jointcart", "circuit",   "hillclimb",
-                "walker",  "tunnel",    "clothwind", "meadow"};
+            static const char* names[] = {"pyramid",   "tower",     "rain",     "voxfort",
+                                          "blastyard", "jelly",     "machines", "jointcart",
+                                          "circuit",   "hillclimb", "walker",   "tunnel",
+                                          "clothwind", "meadow"};
             int bx = screenW / 2 - 220;
             int by = 80;
             DrawRectangle(bx - 14, by - 12, 470, 40 + SCENE_COUNT * 24, (Color){22, 24, 30, 242});

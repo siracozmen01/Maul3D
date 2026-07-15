@@ -350,6 +350,64 @@ int32_t m3CreateShapeInternal(m3World* world, int32_t bodyIndex, uint8_t type,
                               const m3HullData* prebuilt, const m3MeshData* meshPrebuilt,
                               const m3VoxelChunkData* voxelPrebuilt)
 {
+    // The def wall lives HERE since 16-7 (the soft-body lesson,
+    // sixth verse): replay hands this function raw journal bytes.
+    // Materials and the compound pose wall every door; the plain
+    // m3ShapeGeom door (op 4) also walls its geometry per type.
+    // Interned slabs (hull, mesh, voxel) validate their payloads
+    // in their own decode paths.
+    float rotLen2 =
+        def->localRotation.x * def->localRotation.x + def->localRotation.y * def->localRotation.y +
+        def->localRotation.z * def->localRotation.z + def->localRotation.w * def->localRotation.w;
+    if (!m3FiniteV3(def->localPosition) || !m3FiniteQuat(def->localRotation) || rotLen2 < 0.99f ||
+        rotLen2 > 1.01f || !m3FiniteF(def->density) || !(def->density > 0.0f) ||
+        !m3FiniteF(def->friction) || def->friction < 0.0f || !m3FiniteF(def->restitution) ||
+        def->restitution < 0.0f || !m3FiniteF(def->rollingResistance) ||
+        def->rollingResistance < 0.0f)
+    {
+        return -1;
+    }
+    if (prebuilt == NULL && meshPrebuilt == NULL && voxelPrebuilt == NULL)
+    {
+        if (type == (uint8_t)m3_sphereShape)
+        {
+            if (!m3FiniteV3(geom->v) || !m3FiniteF(geom->s) || !(geom->s > 0.0f))
+            {
+                return -1;
+            }
+        }
+        else if (type == (uint8_t)m3_planeShape)
+        {
+            if (!m3FiniteV3(geom->v) || !m3FiniteF(geom->s) ||
+                !(m3Dot3(geom->v, geom->v) > 1.0e-12f))
+            {
+                return -1;
+            }
+        }
+        else if (type == (uint8_t)m3_capsuleShape)
+        {
+            // v == v2 stays legal: a zero-height character capsule
+            // is a documented stance.
+            if (!m3FiniteV3(geom->v) || !m3FiniteV3(geom->v2) || !m3FiniteF(geom->s) ||
+                !(geom->s > 0.0f))
+            {
+                return -1;
+            }
+        }
+        else if (type == (uint8_t)m3_hullShape)
+        {
+            // The box-hull door: geom.v carries the half extents.
+            if (!m3FiniteV3(geom->v) || !(geom->v.x > 0.0f) || !(geom->v.y > 0.0f) ||
+                !(geom->v.z > 0.0f))
+            {
+                return -1;
+            }
+        }
+        else
+        {
+            return -1; // no other type rides the plain-geom door
+        }
+    }
     int32_t index = m3IdPoolAlloc(&world->shapePool);
     if (index < 0)
     {
