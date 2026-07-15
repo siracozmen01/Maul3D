@@ -33,7 +33,17 @@ extern "C"
         /// localAxisB on body B (two angular rows); every
         /// translation and the twist about the shared axis stay
         /// free. Platform linkages without the full revolute.
-        m3_parallelJoint = 8, // suspension slide + free spin (12-2)
+        m3_parallelJoint = 8,
+        /// MOTOR (16-5): a servo weld. Drives body B toward a target
+        /// pose relative to body A's create-time joint frame: a soft
+        /// 3-DOF rotation drive plus a soft 3-DOF translation drive,
+        /// each budget-capped. Tune with m3Joint_SetSpring (the
+        /// shared stiffness), aim with m3Joint_SetMotorPose, budget
+        /// with m3Joint_SetLimits (lower = max force, upper = max
+        /// torque, 0 = uncapped; the documented motor slot map).
+        /// Without a spring the servo idles completely free. A
+        /// fresh servo aims at its own create pose.
+        m3_motorJoint = 9,
     } m3JointType;
 
     /// Per-axis behavior of the generic joint, in the joint frame
@@ -145,6 +155,11 @@ extern "C"
     /// impulse so a stale warm start cannot kick.
     M3_API void m3Joint_SetLimits(m3JointId jointId, bool enable, float lower, float upper);
     M3_API void m3Joint_SetMotor(m3JointId jointId, bool enable, float speed, float maxEffort);
+
+    /// Aim the MOTOR joint (16-5): offset in body A's joint frame,
+    /// rotation as the target relative orientation. Journaled;
+    /// refused loudly on other types and hostile values.
+    M3_API void m3Joint_SetMotorPose(m3JointId jointId, m3Vec3 offset, m3Quat rotation);
 
     /// Wheel steering (16-3): a soft target-angle drive about the
     /// strut axis. While enabled, the wheel's frame-x lock becomes

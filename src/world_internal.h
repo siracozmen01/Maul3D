@@ -163,6 +163,7 @@ typedef enum m3Op
     m3_opSetBodyName = 68,            // body + 32 name bytes (14-3)
     m3_opSetShapeGeom = 69,           // shape + type + geom swap (15-2)
     m3_opJointSetSteer = 70,          // wheel strut drive (16-3)
+    m3_opJointSetMotorPose = 71,      // motor joint servo aim (16-5)
 } m3Op;
 
 // Debug names (14-3): journaled and snapshot like userData, NEVER
@@ -831,6 +832,7 @@ void m3JointSetLimitsInternal(m3World* world, int32_t j, int32_t enable, float l
 void m3JointSetMotorInternal(m3World* world, int32_t j, int32_t enable, float speed, float effort);
 void m3JointSetSteerInternal(m3World* world, int32_t j, int32_t enable, float target, float hertz,
                              float zeta, float maxEffort);
+void m3JointSetMotorPoseInternal(m3World* world, int32_t j, m3Vec3 offset, m3Quat rotation);
 void m3JointSetCollideInternal(m3World* world, int32_t j, int32_t on);
 void m3JointSetBreakInternal(m3World* world, int32_t j, float maxForce, float maxTorque);
 // Reaction magnitudes from the stored warm rows, the break law's

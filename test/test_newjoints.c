@@ -375,6 +375,207 @@ static void TestWheelSteering(void)
     m3DestroyWorld(world);
 }
 
+static double ServoDroop(float maxForce)
+{
+    // A cube hung on a servo weld under gravity, told to hold the
+    // create pose: the droop below it measures what the force
+    // budget could not afford (0 = uncapped).
+    m3WorldDef wd = m3DefaultWorldDef();
+    wd.bodyCapacity = 8;
+    wd.shapeCapacity = 8;
+    wd.jointCapacity = 4;
+    m3WorldId world = m3CreateWorld(&wd);
+    m3BodyDef ad = m3DefaultBodyDef();
+    ad.position = (m3Pos3){0.0, 3.0, 0.0};
+    m3BodyId anchor = m3CreateBody(world, &ad);
+    m3BodyDef bd = m3DefaultBodyDef();
+    bd.type = m3_dynamicBody;
+    bd.position = (m3Pos3){0.0, 2.0, 0.0};
+    m3BodyId cube = m3CreateBody(world, &bd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    m3CreateBoxShape(cube, &sd, (m3Vec3){0.4f, 0.4f, 0.4f});
+    m3JointDef jd = m3DefaultJointDef();
+    jd.type = m3_motorJoint;
+    jd.bodyA = anchor;
+    jd.bodyB = cube;
+    m3JointId servo = m3CreateJoint(&jd);
+    m3Joint_SetSpring(servo, true, 8.0f, 1.0f);
+    if (maxForce > 0.0f)
+    {
+        m3Joint_SetLimits(servo, true, maxForce, 0.0f);
+    }
+    for (int32_t i = 0; i < 240; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+    }
+    double droop = 2.0 - m3Body_GetPosition(cube).y;
+    m3DestroyWorld(world);
+    return droop;
+}
+
+static void TestMotorJointServo(void)
+{
+    // The servo weld (16-5): springless it idles FREE (the joint
+    // holds nothing), with a spring it flies to the commanded
+    // offset AND rotation, budgets starve it honestly, and the aim
+    // rides twins, the journal, and the hostile wall.
+
+    // Springless idle: the cube falls as if unjoined.
+    {
+        m3WorldDef wd = m3DefaultWorldDef();
+        wd.bodyCapacity = 8;
+        wd.shapeCapacity = 8;
+        wd.jointCapacity = 4;
+        m3WorldId world = m3CreateWorld(&wd);
+        m3BodyDef ad = m3DefaultBodyDef();
+        ad.position = (m3Pos3){0.0, 3.0, 0.0};
+        m3BodyId anchor = m3CreateBody(world, &ad);
+        m3BodyDef bd = m3DefaultBodyDef();
+        bd.type = m3_dynamicBody;
+        bd.position = (m3Pos3){0.0, 2.0, 0.0};
+        m3BodyId cube = m3CreateBody(world, &bd);
+        m3ShapeDef sd = m3DefaultShapeDef();
+        m3CreateBoxShape(cube, &sd, (m3Vec3){0.4f, 0.4f, 0.4f});
+        m3JointDef jd = m3DefaultJointDef();
+        jd.type = m3_motorJoint;
+        jd.bodyA = anchor;
+        jd.bodyB = cube;
+        CHECK(m3Joint_IsValid(m3CreateJoint(&jd)), "the servo creates");
+        for (int32_t i = 0; i < 60; ++i)
+        {
+            m3World_Step(world, 1.0f / 60.0f, 4);
+        }
+        CHECK(m3Body_GetPosition(cube).y < 0.0, "a springless servo idles free");
+        m3DestroyWorld(world);
+    }
+
+    // Zero gravity: the sprung servo reaches a commanded pose.
+    {
+        m3WorldDef wd = m3DefaultWorldDef();
+        wd.gravity = (m3Vec3){0.0f, 0.0f, 0.0f};
+        wd.bodyCapacity = 8;
+        wd.shapeCapacity = 8;
+        wd.jointCapacity = 4;
+        m3WorldId world = m3CreateWorld(&wd);
+        m3BodyDef ad = m3DefaultBodyDef();
+        ad.position = (m3Pos3){0.0, 2.0, 0.0};
+        m3BodyId anchor = m3CreateBody(world, &ad);
+        m3BodyDef bd = m3DefaultBodyDef();
+        bd.type = m3_dynamicBody;
+        bd.position = (m3Pos3){0.0, 1.0, 0.0};
+        m3BodyId cube = m3CreateBody(world, &bd);
+        m3ShapeDef sd = m3DefaultShapeDef();
+        m3CreateBoxShape(cube, &sd, (m3Vec3){0.3f, 0.3f, 0.3f});
+        m3JointDef jd = m3DefaultJointDef();
+        jd.type = m3_motorJoint;
+        jd.bodyA = anchor;
+        jd.bodyB = cube;
+        m3JointId servo = m3CreateJoint(&jd);
+        m3Joint_SetSpring(servo, true, 6.0f, 1.0f);
+        m3Quat aim = {0.0f, 0.0f, 0.70710678f, 0.70710678f}; // 90 deg about z
+        m3Joint_SetMotorPose(servo, (m3Vec3){0.6f, -1.0f, 0.0f}, aim);
+        for (int32_t i = 0; i < 240; ++i)
+        {
+            m3World_Step(world, 1.0f / 60.0f, 4);
+        }
+        m3Pos3 p = m3Body_GetPosition(cube);
+        CHECK(fabs(p.x - 0.6) < 0.05 && fabs(p.y - 1.0) < 0.05 && fabs(p.z) < 0.05,
+              "the servo reaches the commanded offset");
+        m3Quat q = m3Body_GetRotation(cube);
+        float dot = q.x * aim.x + q.y * aim.y + q.z * aim.z + q.w * aim.w;
+        CHECK(fabsf(dot) > 0.995f, "the servo reaches the commanded rotation");
+        m3DestroyWorld(world);
+    }
+
+    // The force budget starves honestly under gravity.
+    double rich = ServoDroop(0.0f);
+    CHECK(rich < 0.15, "an uncapped servo holds the hang");
+    double starved = ServoDroop(0.3f);
+    CHECK(starved > rich + 0.3, "a starved force budget sags honestly");
+
+    // Twins, journal, and the hostile wall in BOTH runs.
+    static uint8_t journal[65536];
+    uint64_t hashes[2];
+    for (int32_t run = 0; run < 2; ++run)
+    {
+        m3WorldDef wd = m3DefaultWorldDef();
+        wd.gravity = (m3Vec3){0.0f, 0.0f, 0.0f};
+        wd.bodyCapacity = 8;
+        wd.shapeCapacity = 8;
+        wd.jointCapacity = 4;
+        m3WorldId world = m3CreateWorld(&wd);
+        bool recording = run == 0 && m3World_JournalBegin(world, journal, (int32_t)sizeof(journal));
+        m3BodyDef ad = m3DefaultBodyDef();
+        ad.position = (m3Pos3){0.0, 2.0, 0.0};
+        m3BodyId anchor = m3CreateBody(world, &ad);
+        m3BodyDef bd = m3DefaultBodyDef();
+        bd.type = m3_dynamicBody;
+        bd.position = (m3Pos3){0.0, 1.0, 0.0};
+        m3BodyId cube = m3CreateBody(world, &bd);
+        m3ShapeDef sd = m3DefaultShapeDef();
+        m3CreateBoxShape(cube, &sd, (m3Vec3){0.3f, 0.3f, 0.3f});
+        m3JointDef jd = m3DefaultJointDef();
+        jd.type = m3_motorJoint;
+        jd.bodyA = anchor;
+        jd.bodyB = cube;
+        m3JointId servo = m3CreateJoint(&jd);
+        m3Joint_SetSpring(servo, true, 6.0f, 1.0f);
+        m3Joint_SetMotorPose(servo, (m3Vec3){0.3f, -1.0f, 0.0f},
+                             (m3Quat){0.0f, 0.38268343f, 0.0f, 0.92387953f});
+        for (int32_t i = 0; i < 60; ++i)
+        {
+            m3World_Step(world, 1.0f / 60.0f, 4);
+        }
+        m3Joint_SetMotorPose(servo, (m3Vec3){-0.3f, -1.0f, 0.0f}, (m3Quat){0.0f, 0.0f, 0.0f, 1.0f});
+        for (int32_t i = 0; i < 60; ++i)
+        {
+            m3World_Step(world, 1.0f / 60.0f, 4);
+        }
+        // Hostile aims run in BOTH runs so the twins stay symmetric:
+        // a refused pose never touches state or the journal.
+        m3Joint_SetMotorPose(servo, (m3Vec3){0.0f, 0.0f, 0.0f},
+                             (m3Quat){0.0f, 0.0f, 0.0f, 2.0f}); // far from unit
+        m3Joint_SetMotorPose(servo, (m3Vec3){NAN, 0.0f, 0.0f}, (m3Quat){0.0f, 0.0f, 0.0f, 1.0f});
+        hashes[run] = m3World_Hash(world);
+        if (recording)
+        {
+            int32_t bytes = m3World_JournalEnd(world);
+            CHECK(bytes > 0, "the servo session records");
+            m3WorldDef fresh = wd;
+            m3WorldId replayed = m3CreateWorld(&fresh);
+            CHECK(m3World_JournalReplay(replayed, journal, bytes), "the servo session replays");
+            CHECK(m3World_Hash(replayed) == hashes[0], "the replay is bit-identical");
+            m3DestroyWorld(replayed);
+        }
+        m3DestroyWorld(world);
+    }
+    CHECK(hashes[0] == hashes[1], "twin servo sessions are bit-identical");
+
+    // The type wall lives outside the twins: a spherical takes no
+    // servo aim, and asking moves no bits.
+    {
+        m3WorldDef wd = m3DefaultWorldDef();
+        wd.bodyCapacity = 8;
+        wd.shapeCapacity = 8;
+        wd.jointCapacity = 4;
+        m3WorldId world = m3CreateWorld(&wd);
+        m3BodyDef bd = m3DefaultBodyDef();
+        bd.position = (m3Pos3){0.0, 2.0, 0.0};
+        m3BodyId a = m3CreateBody(world, &bd);
+        bd.type = m3_dynamicBody;
+        bd.position = (m3Pos3){0.0, 1.0, 0.0};
+        m3BodyId b = m3CreateBody(world, &bd);
+        m3JointDef jd = m3DefaultJointDef();
+        jd.bodyA = a;
+        jd.bodyB = b;
+        m3JointId ball = m3CreateJoint(&jd);
+        uint64_t before = m3World_Hash(world);
+        m3Joint_SetMotorPose(ball, (m3Vec3){0.1f, 0.0f, 0.0f}, (m3Quat){0.0f, 0.0f, 0.0f, 1.0f});
+        CHECK(m3World_Hash(world) == before, "the refused aim moved no bits");
+        m3DestroyWorld(world);
+    }
+}
+
 int main(void)
 {
     TestFilterIsRowlessAndFilters();
@@ -382,6 +583,7 @@ int main(void)
     TestWallsTwinsAndReplay();
     TestFourStateDrive();
     TestWheelSteering();
+    TestMotorJointServo();
     if (s_failures == 0)
     {
         printf("test_newjoints: all passed\n");

@@ -2236,6 +2236,33 @@ static bool JournalReplayApply(m3World* world, const void* data, int32_t size)
             m3SetBodyNameInternal(world, index, record.name);
             break;
         }
+        case m3_opJointSetMotorPose:
+        {
+            struct
+            {
+                m3JointId id;
+                m3Vec3 offset;
+                m3Quat rotation;
+            } record;
+            if (bytes != (int32_t)sizeof(record))
+            {
+                return false;
+            }
+            memcpy(&record, payload, sizeof(record));
+            record.id.world0 = world->worldIndex0;
+            int32_t slot = m3JointSlot(world, record.id);
+            float q2 =
+                record.rotation.x * record.rotation.x + record.rotation.y * record.rotation.y +
+                record.rotation.z * record.rotation.z + record.rotation.w * record.rotation.w;
+            if (slot < 0 || world->jointType[slot] != (uint8_t)m3_motorJoint ||
+                !m3FiniteV3(record.offset) || !m3FiniteQuat(record.rotation) || q2 < 0.81f ||
+                q2 > 1.21f)
+            {
+                return false; // hostile servo bytes fail loudly
+            }
+            m3JointSetMotorPoseInternal(world, slot, record.offset, record.rotation);
+            break;
+        }
         case m3_opJointSetSteer:
         {
             struct

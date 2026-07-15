@@ -133,7 +133,7 @@ int32_t m3CreateJointInternal(m3World* world, const m3JointDef* def, int32_t bod
     world->jointPerpImpulse[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
     world->jointLimitImpulse[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
     world->jointAngularImpulse[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
-    if (def->type == (int32_t)m3_fixedJoint)
+    if (def->type == (int32_t)m3_fixedJoint || def->type == (int32_t)m3_motorJoint)
     {
         // The weld pose (4-2): store frames so that at the create
         // pose the two world frames coincide; the solver's rotation
@@ -174,6 +174,22 @@ int32_t m3CreateJointInternal(m3World* world, const m3JointDef* def, int32_t bod
     world->jointFlags[index] = (uint8_t)((def->enableLimit ? 1 : 0) | (def->enableMotor ? 2 : 0) |
                                          (def->enableCone ? 4 : 0));
     world->jointMotor[index] = (m3Vec3){def->motorSpeed, def->maxMotorEffort, 0.0f};
+    if (def->type == (int32_t)m3_motorJoint)
+    {
+        // The servo's default aim is the CREATE pose (16-5): bake
+        // the anchor gap (in A's frame) into the offset slot so a
+        // fresh servo holds where it was built instead of snapping
+        // the anchors together the moment its spring wakes.
+        const m3Transform* xfA = &world->transforms[bodyA];
+        const m3Transform* xfB = &world->transforms[bodyB];
+        m3Vec3 aA = m3RotateVec3(xfA->q, def->localAnchorA);
+        m3Vec3 aB = m3RotateVec3(xfB->q, def->localAnchorB);
+        m3Vec3 gap = {(m3real)(xfB->p.x + (double)aB.x - xfA->p.x - (double)aA.x),
+                      (m3real)(xfB->p.y + (double)aB.y - xfA->p.y - (double)aA.y),
+                      (m3real)(xfB->p.z + (double)aB.z - xfA->p.z - (double)aA.z)};
+        m3Quat conjA = {-xfA->q.x, -xfA->q.y, -xfA->q.z, xfA->q.w};
+        world->jointMotor[index] = m3RotateVec3(conjA, gap);
+    }
     world->jointBreak[index] = (m3Vec3){0.0f, 0.0f, 0.0f}; // unbreakable default
     world->jointSpring[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
     world->jointTargetScalar[index] = 0.0f;
@@ -298,7 +314,7 @@ m3JointId m3CreateJoint(const m3JointDef* def)
          def->type != (int32_t)m3_prismaticJoint && def->type != (int32_t)m3_fixedJoint &&
          def->type != (int32_t)m3_distanceJoint && def->type != (int32_t)m3_genericJoint &&
          def->type != (int32_t)m3_wheelJoint && def->type != (int32_t)m3_filterJoint &&
-         def->type != (int32_t)m3_parallelJoint))
+         def->type != (int32_t)m3_parallelJoint && def->type != (int32_t)m3_motorJoint))
     {
         return m3_nullJointId;
     }
@@ -513,6 +529,16 @@ void m3JointSetSteerInternal(m3World* world, int32_t j, int32_t enable, float ta
     JointWakeBodies(world, j);
 }
 
+void m3JointSetMotorPoseInternal(m3World* world, int32_t j, m3Vec3 offset, m3Quat rotation)
+{
+    // The motor slot map (16-5): the target offset rides jointMotor
+    // (the servo has no velocity motor), the rotation rides the
+    // spherical target slot.
+    world->jointMotor[j] = offset;
+    world->jointTargetQ[j] = m3NormalizeQuat(rotation);
+    JointWakeBodies(world, j);
+}
+
 void m3JointSetCollideInternal(m3World* world, int32_t j, int32_t on)
 {
     world->jointCollide[j] = on != 0 ? 1 : 0;
@@ -617,7 +643,21 @@ void m3Joint_SetLimits(m3JointId jointId, bool enable, float lower, float upper)
 {
     int32_t slot;
     m3World* world = ResolveJoint(jointId, &slot);
-    if (world == NULL || !m3FiniteF(lower) || !m3FiniteF(upper) || lower > upper)
+    if (world == NULL || !m3FiniteF(lower) || !m3FiniteF(upper))
+    {
+        return;
+    }
+    if (world->jointType[slot] == (uint8_t)m3_motorJoint)
+    {
+        // The servo budgets (16-5): lower = maxForce, upper =
+        // maxTorque, independent allowances rather than a range, so
+        // the range order rule does not apply but negatives do.
+        if (lower < 0.0f || upper < 0.0f)
+        {
+            return;
+        }
+    }
+    else if (lower > upper)
     {
         return;
     }
@@ -694,6 +734,34 @@ float m3Joint_GetSteerAngle(m3JointId jointId)
     m3Quat conjA = {-quatA.x, -quatA.y, -quatA.z, quatA.w};
     m3Quat relQ = m3MulQuat(conjA, quatB);
     return 2.0f * m3Atan2(relQ.x, relQ.w);
+}
+
+void m3Joint_SetMotorPose(m3JointId jointId, m3Vec3 offset, m3Quat rotation)
+{
+    int32_t slot;
+    m3World* world = ResolveJoint(jointId, &slot);
+    m3real q2 = rotation.x * rotation.x + rotation.y * rotation.y + rotation.z * rotation.z +
+                rotation.w * rotation.w;
+    if (world == NULL || world->jointType[slot] != (uint8_t)m3_motorJoint || !m3FiniteV3(offset) ||
+        !m3FiniteQuat(rotation) || q2 < 0.81f || q2 > 1.21f)
+    {
+        return; // the servo aim is a motor-joint contract
+    }
+    if (world->journalActive != 0)
+    {
+        struct
+        {
+            m3JointId id;
+            m3Vec3 offset;
+            m3Quat rotation;
+        } record;
+        memset(&record, 0, sizeof(record));
+        record.id = jointId;
+        record.offset = offset;
+        record.rotation = rotation;
+        m3JournalRecord(world, m3_opJointSetMotorPose, &record, (int32_t)sizeof(record));
+    }
+    m3JointSetMotorPoseInternal(world, slot, offset, rotation);
 }
 
 void m3Joint_SetMotor(m3JointId jointId, bool enable, float speed, float maxEffort)
@@ -873,7 +941,8 @@ void m3JointSetTargetInternal(m3World* world, int32_t j, float scalar, m3Quat q)
 static int JointTypeDrives(uint8_t type)
 {
     return type == (uint8_t)m3_revoluteJoint || type == (uint8_t)m3_prismaticJoint ||
-           type == (uint8_t)m3_sphericalJoint || type == (uint8_t)m3_wheelJoint;
+           type == (uint8_t)m3_sphericalJoint || type == (uint8_t)m3_wheelJoint ||
+           type == (uint8_t)m3_motorJoint;
 }
 
 void m3Joint_SetSpring(m3JointId jointId, bool enable, float hertz, float dampingRatio)
