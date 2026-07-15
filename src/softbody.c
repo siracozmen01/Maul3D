@@ -62,6 +62,21 @@ static void AddEdge(m3World* world, int32_t slot, int32_t a, int32_t b, m3real r
 
 int32_t m3CreateSoftBodyInternal(m3World* world, const m3SoftBodyDef* def)
 {
+    // The validation wall (14-4 cure): replay hands this function
+    // raw mutated bytes, and the 13-4 storm proved a flipped bit in
+    // a soft def could mint NaN positions or an overflowing
+    // particle count. Every field check the public door ran now
+    // lives here, where BOTH doors pass through; the cookie stays
+    // a public-door concern like every def.
+    if (def->countX < 1 || def->countY < 1 || def->countZ < 1 ||
+        (int64_t)def->countX * def->countY * def->countZ > M3_SOFTBODY_MAX_PARTICLES ||
+        !m3FinitePos3(def->position) || !m3FiniteF(def->spacing) || !(def->spacing > 0.0f) ||
+        !m3FiniteF(def->particleMass) || !(def->particleMass > 0.0f) ||
+        !m3FiniteF(def->compliance) || def->compliance < 0.0f || !m3FiniteF(def->radius) ||
+        !(def->radius > 0.0f) || !m3FiniteF(def->gravityScale))
+    {
+        return -1;
+    }
     int32_t slot = m3IdPoolAlloc(&world->softPool);
     if (slot < 0)
     {
@@ -545,6 +560,17 @@ void m3SoftBodyPass(m3World* world, float dt, int32_t substeps)
                     v = m3Add3(v, kick);
                     world->softKick[k] = (m3Vec3){0.0f, 0.0f, 0.0f};
                 }
+                // The 8-4 hard speed cap covers particles too (14-4
+                // cure): the 13-4 storm rode a mutated blast into
+                // float overflow, positions went NaN, and a NaN cell
+                // index was undefined behavior. A capped velocity
+                // can never outrun the double range.
+                m3real pv2 = m3Dot3(v, v);
+                m3real pcap = world->maximumLinearSpeed;
+                if (pv2 > pcap * pcap)
+                {
+                    v = m3MulSV3(pcap / sqrtf(pv2), v);
+                }
                 if (windDrag > 0.0f)
                 {
                     v = m3Add3(v, m3MulSV3(h * windDrag, m3Sub3(windVel, v)));
@@ -834,15 +860,9 @@ void m3SoftBodyPass(m3World* world, float dt, int32_t substeps)
 m3SoftBodyId m3CreateSoftBody(m3WorldId worldId, const m3SoftBodyDef* def)
 {
     m3World* world = m3WorldFromId(worldId);
-    if (world == NULL || def == NULL || def->internalValue != M3_SOFTBODY_COOKIE ||
-        def->countX < 1 || def->countY < 1 || def->countZ < 1 ||
-        (int64_t)def->countX * def->countY * def->countZ > M3_SOFTBODY_MAX_PARTICLES ||
-        !m3FinitePos3(def->position) || !m3FiniteF(def->spacing) || !(def->spacing > 0.0f) ||
-        !m3FiniteF(def->particleMass) || !(def->particleMass > 0.0f) ||
-        !m3FiniteF(def->compliance) || def->compliance < 0.0f || !m3FiniteF(def->radius) ||
-        !(def->radius > 0.0f) || !m3FiniteF(def->gravityScale))
+    if (world == NULL || def == NULL || def->internalValue != M3_SOFTBODY_COOKIE)
     {
-        return m3_nullSoftBodyId;
+        return m3_nullSoftBodyId; // field checks live in the internal
     }
     int32_t slot = m3CreateSoftBodyInternal(world, def);
     if (slot < 0)
