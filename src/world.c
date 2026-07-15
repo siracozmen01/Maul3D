@@ -239,6 +239,14 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     M3_ALLOC(world->jointGenAngUpper, def->jointCapacity, m3Vec3);
     M3_ALLOC(world->jointGroundA, def->jointCapacity, m3Pos3);
     M3_ALLOC(world->jointGroundB, def->jointCapacity, m3Pos3);
+    world->hfPool = m3IdPoolCreate(def->shapeCapacity);
+    M3_ALLOC(world->hfData, def->shapeCapacity, m3HeightFieldData);
+    M3_ALLOC(world->hfRefCounts, def->shapeCapacity, int32_t);
+    M3_ALLOC(world->shapeHfIndex, def->shapeCapacity, int32_t);
+    for (int32_t hf = 0; hf < def->shapeCapacity; ++hf)
+    {
+        world->shapeHfIndex[hf] = -1;
+    }
     world->waterPool = m3IdPoolCreate(M3_MAX_WATER_VOLUMES);
     world->charPool = m3IdPoolCreate(def->characterCapacity);
     M3_ALLOC(world->charBody, def->characterCapacity, int32_t);
@@ -497,6 +505,14 @@ void m3DestroyWorld(m3WorldId worldId)
     m3Free(world->jointGenAngUpper);
     m3Free(world->jointGroundA);
     m3Free(world->jointGroundB);
+    for (int32_t hf = 0; hf < world->shapeCapacity; ++hf)
+    {
+        m3HeightFieldDataFree(&world->hfData[hf]);
+    }
+    m3IdPoolDestroy(&world->hfPool);
+    m3Free(world->hfData);
+    m3Free(world->hfRefCounts);
+    m3Free(world->shapeHfIndex);
     m3IdPoolDestroy(&world->waterPool);
     m3IdPoolDestroy(&world->charPool);
     m3Free(world->charBody);
@@ -1518,7 +1534,7 @@ static bool JournalReplayApply(m3World* world, const void* data, int32_t size)
             }
             NormalizeShapeDefBools(&record.def);
             int32_t index = m3CreateShapeInternal(world, bodyIndex, record.type, &record.geom,
-                                                  &record.def, NULL, NULL, NULL);
+                                                  &record.def, NULL, NULL, NULL, NULL);
             if (index < 0 || index + 1 != record.expected.index1 ||
                 world->shapePool.generations[index] != record.expected.generation)
             {
@@ -1569,7 +1585,7 @@ static bool JournalReplayApply(m3World* world, const void* data, int32_t size)
             // leaves them with the slot too, and the atomic-replay
             // restore reclaims them through the alloc gate.
             int32_t index = m3CreateShapeInternal(world, bodyIndex, (uint8_t)m3_meshShape, &geom,
-                                                  &record.def, NULL, &mesh, NULL);
+                                                  &record.def, NULL, &mesh, NULL, NULL);
             if (index < 0)
             {
                 m3MeshDataFree(&mesh);
@@ -1650,7 +1666,7 @@ static bool JournalReplayApply(m3World* world, const void* data, int32_t size)
             memset(&geom, 0, sizeof(geom));
             NormalizeShapeDefBools(&record.def);
             int32_t index = m3CreateShapeInternal(world, bodyIndex, (uint8_t)m3_hullShape, &geom,
-                                                  &record.def, &rebuilt, NULL, NULL);
+                                                  &record.def, &rebuilt, NULL, NULL, NULL);
             if (index < 0 || index + 1 != record.expected.index1 ||
                 world->shapePool.generations[index] != record.expected.generation)
             {
@@ -1704,7 +1720,7 @@ static bool JournalReplayApply(m3World* world, const void* data, int32_t size)
             geom.s = record.cellSize;
             NormalizeShapeDefBools(&record.def);
             int32_t index = m3CreateShapeInternal(world, bodyIndex, (uint8_t)m3_voxelShape, &geom,
-                                                  &record.def, NULL, NULL, chunk);
+                                                  &record.def, NULL, NULL, chunk, NULL);
             m3Free(chunk);
             if (index < 0 || index + 1 != record.expected.index1 ||
                 world->shapePool.generations[index] != record.expected.generation)
@@ -2472,6 +2488,65 @@ static bool JournalReplayApply(m3World* world, const void* data, int32_t size)
             }
             record.name[M3_BODY_NAME_CAPACITY - 1] = 0;
             m3SetBodyNameInternal(world, index, record.name);
+            break;
+        }
+        case m3_opCreateHeightFieldGrid:
+        {
+            m3CreateHeightFieldGridOp head;
+            if (bytes < (int32_t)sizeof(head))
+            {
+                return false;
+            }
+            memcpy(&head, payload, sizeof(head));
+            NormalizeShapeDefBools(&head.def);
+            head.body.world0 = world->worldIndex0;
+            int32_t bodyIndex = m3BodySlot(world, head.body);
+            if (bodyIndex < 0 || world->types[bodyIndex] != (uint8_t)m3_staticBody || head.nx < 2 ||
+                head.nx > M3_HEIGHTFIELD_MAX_DIM || head.nz < 2 ||
+                head.nz > M3_HEIGHTFIELD_MAX_DIM || !m3FiniteF(head.cellSize) ||
+                !(head.cellSize > 0.0f) ||
+                bytes != (int32_t)sizeof(head) + head.nx * head.nz * (int32_t)sizeof(float))
+            {
+                return false; // hostile grid bytes fail loudly
+            }
+            const float* samples = (const float*)((const uint8_t*)payload + sizeof(head));
+            float mn = samples[0];
+            float mx = samples[0];
+            for (int32_t i = 0; i < head.nx * head.nz; ++i)
+            {
+                if (!m3FiniteF(samples[i]))
+                {
+                    return false;
+                }
+                mn = samples[i] < mn ? samples[i] : mn;
+                mx = samples[i] > mx ? samples[i] : mx;
+            }
+            m3HeightFieldData hf;
+            memset(&hf, 0, sizeof(hf));
+            hf.nx = head.nx;
+            hf.nz = head.nz;
+            hf.cellSize = head.cellSize;
+            hf.minHeight = mn;
+            hf.maxHeight = mx;
+            if (!m3HeightFieldDataAlloc(&hf))
+            {
+                return false;
+            }
+            memcpy(hf.heights, samples, (size_t)(head.nx * head.nz) * sizeof(float));
+            m3ShapeGeom geom;
+            memset(&geom, 0, sizeof(geom));
+            int32_t index = m3CreateShapeInternal(world, bodyIndex, (uint8_t)m3_heightFieldShape,
+                                                  &geom, &head.def, NULL, NULL, NULL, &hf);
+            if (index < 0)
+            {
+                m3HeightFieldDataFree(&hf);
+                return false;
+            }
+            if (index + 1 != head.expected.index1 ||
+                world->shapePool.generations[index] != head.expected.generation)
+            {
+                return false; // id determinism holds for terrain too
+            }
             break;
         }
         case m3_opCreateWaterVolume:

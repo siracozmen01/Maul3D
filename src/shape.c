@@ -345,10 +345,34 @@ void m3BakeMeshEdgeFlags(m3MeshData* mesh)
     }
 }
 
+bool m3HeightFieldDataAlloc(m3HeightFieldData* hf)
+{
+    m3Free(hf->heights);
+    hf->heights = NULL;
+    if (hf->nx <= 0 || hf->nz <= 0)
+    {
+        return hf->nx == 0 && hf->nz == 0; // an empty slot is legal
+    }
+    hf->heights = (float*)m3AllocZeroed(hf->nx * hf->nz * (int32_t)sizeof(float));
+    if (hf->heights == NULL)
+    {
+        m3HeightFieldDataFree(hf);
+        return false;
+    }
+    return true;
+}
+
+void m3HeightFieldDataFree(m3HeightFieldData* hf)
+{
+    m3Free(hf->heights);
+    memset(hf, 0, sizeof(*hf));
+}
+
 int32_t m3CreateShapeInternal(m3World* world, int32_t bodyIndex, uint8_t type,
                               const m3ShapeGeom* geom, const m3ShapeDef* def,
                               const m3HullData* prebuilt, const m3MeshData* meshPrebuilt,
-                              const m3VoxelChunkData* voxelPrebuilt)
+                              const m3VoxelChunkData* voxelPrebuilt,
+                              const m3HeightFieldData* hfPrebuilt)
 {
     // The def wall lives HERE since 16-7 (the soft-body lesson,
     // sixth verse): replay hands this function raw journal bytes.
@@ -367,7 +391,7 @@ int32_t m3CreateShapeInternal(m3World* world, int32_t bodyIndex, uint8_t type,
     {
         return -1;
     }
-    if (prebuilt == NULL && meshPrebuilt == NULL && voxelPrebuilt == NULL)
+    if (prebuilt == NULL && meshPrebuilt == NULL && voxelPrebuilt == NULL && hfPrebuilt == NULL)
     {
         if (type == (uint8_t)m3_sphereShape)
         {
@@ -481,6 +505,25 @@ int32_t m3CreateShapeInternal(m3World* world, int32_t bodyIndex, uint8_t type,
         world->meshRefCounts[meshIndex] = 1;
         world->shapeMeshIndex[index] = meshIndex;
     }
+    world->shapeHfIndex[index] = -1;
+    if (type == (uint8_t)m3_heightFieldShape)
+    {
+        // The mesh-slot pattern (19-1): fresh slot, the count-derived
+        // content TAKEN OVER from the caller's staging struct (the
+        // pointer moves, no copy of the sample block).
+        int32_t hfIndex = m3IdPoolAlloc(&world->hfPool);
+        if (hfIndex < 0)
+        {
+            world->bodyShapeHead[bodyIndex] = world->shapeNext[index];
+            world->shapeNext[index] = -1;
+            world->shapeBody[index] = -1;
+            m3IdPoolFree(&world->shapePool, index);
+            return -1; // heightfield slots exhausted: loud
+        }
+        world->hfData[hfIndex] = *hfPrebuilt;
+        world->hfRefCounts[hfIndex] = 1;
+        world->shapeHfIndex[index] = hfIndex;
+    }
     world->shapeVoxelIndex[index] = -1;
     if (type == (uint8_t)m3_voxelShape)
     {
@@ -519,6 +562,12 @@ int32_t m3CreateShapeInternal(m3World* world, int32_t bodyIndex, uint8_t type,
             // shape.
             m3ReleaseHull(world, world->shapeHullIndex[index]);
             world->shapeHullIndex[index] = -1;
+            if (world->shapeHfIndex[index] >= 0)
+            {
+                m3HeightFieldDataFree(&world->hfData[world->shapeHfIndex[index]]);
+                m3IdPoolFree(&world->hfPool, world->shapeHfIndex[index]);
+                world->shapeHfIndex[index] = -1;
+            }
             world->bodyShapeHead[bodyIndex] = world->shapeNext[index];
             world->shapeNext[index] = -1;
             world->shapeBody[index] = -1;
@@ -586,6 +635,17 @@ void m3DestroyShapeInternal(m3World* world, int32_t index)
         }
         world->shapeMeshIndex[index] = -1;
     }
+    if (world->shapeHfIndex[index] >= 0)
+    {
+        int32_t hfIndex = world->shapeHfIndex[index];
+        world->hfRefCounts[hfIndex] -= 1;
+        if (world->hfRefCounts[hfIndex] == 0)
+        {
+            m3HeightFieldDataFree(&world->hfData[hfIndex]);
+            m3IdPoolFree(&world->hfPool, hfIndex);
+        }
+        world->shapeHfIndex[index] = -1;
+    }
     if (world->shapeVoxelIndex[index] >= 0)
     {
         int32_t voxelIndex = world->shapeVoxelIndex[index];
@@ -639,7 +699,8 @@ static m3ShapeId CreateShapeCommon(m3BodyId bodyId, const m3ShapeDef* def, uint8
     {
         return m3_nullShapeId; // hostile material: refused loudly
     }
-    int32_t index = m3CreateShapeInternal(world, bodyIndex, type, geom, def, NULL, NULL, NULL);
+    int32_t index =
+        m3CreateShapeInternal(world, bodyIndex, type, geom, def, NULL, NULL, NULL, NULL);
     if (index < 0)
     {
         return m3_nullShapeId;
@@ -914,7 +975,7 @@ m3ShapeId m3CreateHullShape(m3BodyId bodyId, const m3ShapeDef* def, const m3Vec3
     m3ShapeGeom geom;
     memset(&geom, 0, sizeof(geom));
     int32_t index = m3CreateShapeInternal(world, bodyIndex, (uint8_t)m3_hullShape, &geom, def,
-                                          &data, NULL, NULL);
+                                          &data, NULL, NULL, NULL);
     if (index < 0)
     {
         return m3_nullShapeId;
@@ -980,7 +1041,7 @@ m3ShapeId m3CreateMeshShape(m3BodyId bodyId, const m3ShapeDef* def, const m3Vec3
     // The slot takes OWNERSHIP of the arrays on success (the struct
     // copy carries the pointers); failure frees them here.
     int32_t index = m3CreateShapeInternal(world, bodyIndex, (uint8_t)m3_meshShape, &geom, def, NULL,
-                                          &mesh, NULL);
+                                          &mesh, NULL, NULL);
     if (index < 0)
     {
         m3MeshDataFree(&mesh);
@@ -1071,6 +1132,95 @@ m3ShapeId m3CreateHeightFieldShape(m3BodyId bodyId, const m3ShapeDef* def, const
     return id;
 }
 
+m3ShapeId m3CreateHeightFieldGridShape(m3BodyId bodyId, const m3ShapeDef* def, const float* heights,
+                                       int32_t nx, int32_t nz, m3real cellSize)
+{
+    m3World* world = m3WorldFromIndex0(bodyId.world0);
+    int32_t bodyIndex = world != NULL ? m3BodySlot(world, bodyId) : -1;
+    if (bodyIndex < 0 || def == NULL || def->internalValue != M3_SHAPE_COOKIE || heights == NULL ||
+        world->types[bodyIndex] != (uint8_t)m3_staticBody)
+    {
+        return m3_nullShapeId; // static bodies only, like meshes
+    }
+    // The full content wall (19-1), mirrored into the decode: grid
+    // limits, finite samples, a positive cell.
+    if (nx < 2 || nx > M3_HEIGHTFIELD_MAX_DIM || nz < 2 || nz > M3_HEIGHTFIELD_MAX_DIM ||
+        !m3FiniteF(cellSize) || !(cellSize > 0.0f))
+    {
+        return m3_nullShapeId;
+    }
+    for (int32_t i = 0; i < nx * nz; ++i)
+    {
+        if (!m3FiniteF(heights[i]))
+        {
+            return m3_nullShapeId;
+        }
+    }
+    float rotLen2 =
+        def->localRotation.x * def->localRotation.x + def->localRotation.y * def->localRotation.y +
+        def->localRotation.z * def->localRotation.z + def->localRotation.w * def->localRotation.w;
+    if (!m3FiniteV3(def->localPosition) || !m3FiniteQuat(def->localRotation) || rotLen2 < 0.99f ||
+        rotLen2 > 1.01f || !m3FiniteF(def->density) || !(def->density > 0.0f) ||
+        !m3FiniteF(def->friction) || def->friction < 0.0f || !m3FiniteF(def->restitution) ||
+        def->restitution < 0.0f || !m3FiniteF(def->rollingResistance) ||
+        def->rollingResistance < 0.0f)
+    {
+        return m3_nullShapeId;
+    }
+    m3HeightFieldData hf;
+    memset(&hf, 0, sizeof(hf));
+    hf.nx = nx;
+    hf.nz = nz;
+    hf.cellSize = cellSize;
+    if (!m3HeightFieldDataAlloc(&hf))
+    {
+        return m3_nullShapeId;
+    }
+    memcpy(hf.heights, heights, (size_t)(nx * nz) * sizeof(float));
+    float lo = heights[0];
+    float hi = heights[0];
+    for (int32_t i = 1; i < nx * nz; ++i)
+    {
+        lo = heights[i] < lo ? heights[i] : lo;
+        hi = heights[i] > hi ? heights[i] : hi;
+    }
+    hf.minHeight = lo;
+    hf.maxHeight = hi;
+    m3ShapeGeom geom;
+    memset(&geom, 0, sizeof(geom));
+    int32_t index = m3CreateShapeInternal(world, bodyIndex, (uint8_t)m3_heightFieldShape, &geom,
+                                          def, NULL, NULL, NULL, &hf);
+    if (index < 0)
+    {
+        m3HeightFieldDataFree(&hf);
+        return m3_nullShapeId;
+    }
+    m3ShapeId id = {index + 1, world->worldIndex0, world->shapePool.generations[index]};
+    if (world->journalActive != 0)
+    {
+        // Variable payload: the fixed head, then the raw samples.
+        int32_t sampleBytes = nx * nz * (int32_t)sizeof(float);
+        int32_t bytes = (int32_t)sizeof(m3CreateHeightFieldGridOp) + sampleBytes;
+        uint8_t* payload = (uint8_t*)m3AllocZeroed(bytes);
+        if (payload != NULL)
+        {
+            m3CreateHeightFieldGridOp head;
+            memset(&head, 0, sizeof(head));
+            head.body = bodyId;
+            head.def = *def;
+            head.nx = nx;
+            head.nz = nz;
+            head.cellSize = cellSize;
+            head.expected = id;
+            memcpy(payload, &head, sizeof(head));
+            memcpy(payload + sizeof(head), heights, (size_t)sampleBytes);
+            m3JournalRecord(world, m3_opCreateHeightFieldGrid, payload, bytes);
+            m3Free(payload);
+        }
+    }
+    return id;
+}
+
 m3ShapeId m3CreateVoxelChunkShape(m3BodyId bodyId, const m3ShapeDef* def, const uint8_t* voxels,
                                   const uint16_t* payload, m3real cellSize)
 {
@@ -1103,7 +1253,7 @@ m3ShapeId m3CreateVoxelChunkShape(m3BodyId bodyId, const m3ShapeDef* def, const 
     memset(&geom, 0, sizeof(geom));
     geom.s = cellSize;
     int32_t index = m3CreateShapeInternal(world, bodyIndex, (uint8_t)m3_voxelShape, &geom, def,
-                                          NULL, NULL, chunk);
+                                          NULL, NULL, chunk, NULL);
     m3Free(chunk);
     if (index < 0)
     {

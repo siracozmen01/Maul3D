@@ -127,6 +127,21 @@ static m3Aabb3d SphereAabb(const m3World* world, int32_t shape)
 
 void m3ShapeFatAabb(const m3World* world, int32_t shape, double lo[3], double hi[3])
 {
+    if (world->shapeType[shape] == (uint8_t)m3_heightFieldShape)
+    {
+        // The native grid (19-1): min corner at the body origin,
+        // the sample extremes baked at create; the mesh margin.
+        const m3HeightFieldData* hf = &world->hfData[world->shapeHfIndex[shape]];
+        const m3Transform* xf = &world->transforms[world->shapeBody[shape]];
+        double margin = 0.1;
+        lo[0] = xf->p.x - margin;
+        lo[1] = xf->p.y + (double)hf->minHeight - margin;
+        lo[2] = xf->p.z - margin;
+        hi[0] = xf->p.x + (double)((float)(hf->nx - 1) * hf->cellSize) + margin;
+        hi[1] = xf->p.y + (double)hf->maxHeight + margin;
+        hi[2] = xf->p.z + (double)((float)(hf->nz - 1) * hf->cellSize) + margin;
+        return;
+    }
     m3Aabb3d box = SphereAabb(world, shape);
     lo[0] = box.lo[0];
     lo[1] = box.lo[1];
@@ -157,6 +172,13 @@ static int PairAllowed(const m3World* world, int32_t i, int32_t j)
     }
     if (world->types[bodyI] == (uint8_t)m3_staticBody &&
         world->types[bodyJ] == (uint8_t)m3_staticBody)
+    {
+        return 0;
+    }
+    // 19-1 interim: the native heightfield has no narrowphase yet;
+    // its pairs stay out until 19-2 opens the triangle kernels.
+    if (world->shapeType[i] == (uint8_t)m3_heightFieldShape ||
+        world->shapeType[j] == (uint8_t)m3_heightFieldShape)
     {
         return 0;
     }

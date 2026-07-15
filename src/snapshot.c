@@ -22,7 +22,8 @@
 #endif
 
 #define M3_SNAPSHOT_MAGIC   0x4D33534Eu // 'M3SN'
-#define M3_SNAPSHOT_VERSION 48u
+#define M3_SNAPSHOT_VERSION 49u
+// v49: native heightfields (19-1).
 // v48: water volumes (18-1).
 // v47: per-triangle mesh materials (17-2).
 // v46: count-derived hull content (17-1): the 5808-byte fixed
@@ -266,6 +267,11 @@ static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3Wal
     M3_BLOCK(world->voxelPool.alive, world->voxelCapacity * (int32_t)sizeof(uint8_t));
     M3_BLOCK(world->voxelPool.freeQueue, world->voxelCapacity * (int32_t)sizeof(int32_t));
     M3_BLOCK(world->shapeVoxelIndex, world->shapeCapacity * (int32_t)sizeof(int32_t));
+    M3_BLOCK(world->shapeHfIndex, world->shapeCapacity * (int32_t)sizeof(int32_t));
+    M3_BLOCK(world->hfRefCounts, world->shapeCapacity * (int32_t)sizeof(int32_t));
+    M3_BLOCK(world->hfPool.generations, world->shapeCapacity * (int32_t)sizeof(uint16_t));
+    M3_BLOCK(world->hfPool.alive, world->shapeCapacity * (int32_t)sizeof(uint8_t));
+    M3_BLOCK(world->hfPool.freeQueue, world->shapeCapacity * (int32_t)sizeof(int32_t));
     M3_BLOCK(world->charBody, world->characterCapacity * (int32_t)sizeof(int32_t));
     M3_BLOCK(world->charRadius, world->characterCapacity * (int32_t)sizeof(m3real));
     M3_BLOCK(world->charHalfHeight, world->characterCapacity * (int32_t)sizeof(m3real));
@@ -519,6 +525,35 @@ static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3Wal
                 M3_BLOCK(hull->edges, hull->edgeCount * (int32_t)sizeof(m3HullHalfEdge));
             }
         }
+        // Native heightfield content (19-1): counts first, then the
+        // baked extremes and the raw samples; the read pass sizes
+        // through the alloc gate and refuses hostile counts.
+        for (int32_t hfIdx = 0; hfIdx < world->shapeCapacity; ++hfIdx)
+        {
+            m3HeightFieldData* hf = &world->hfData[hfIdx];
+            M3_BLOCK(&hf->nx, 4);
+            M3_BLOCK(&hf->nz, 4);
+            M3_BLOCK(&hf->cellSize, 4);
+            if (mode == m3_walkRead)
+            {
+                if (hf->nx < 0 || hf->nx > M3_HEIGHTFIELD_MAX_DIM || hf->nz < 0 ||
+                    hf->nz > M3_HEIGHTFIELD_MAX_DIM || (hf->nx == 0) != (hf->nz == 0) ||
+                    (hf->nx > 0 && (hf->nx < 2 || hf->nz < 2)))
+                {
+                    return -1;
+                }
+                if (!m3HeightFieldDataAlloc(hf))
+                {
+                    return -1;
+                }
+            }
+            if (hf->nx > 0)
+            {
+                M3_BLOCK(&hf->minHeight, 4);
+                M3_BLOCK(&hf->maxHeight, 4);
+                M3_BLOCK(hf->heights, hf->nx * hf->nz * (int32_t)sizeof(float));
+            }
+        }
     }
 
 #undef M3_BLOCK
@@ -691,6 +726,37 @@ bool m3World_Restore(m3WorldId worldId, const void* data, int32_t size)
                               (int64_t)vc * (int64_t)sizeof(m3Vec3) +
                               (int64_t)fc * ((int64_t)sizeof(m3Vec3) + 4 + 1 + 2) + (int64_t)ic +
                               (int64_t)ec * (int64_t)sizeof(m3HullHalfEdge);
+            if ((int64_t)size - cursor < content)
+            {
+                return false;
+            }
+            cursor += (int32_t)content;
+        }
+    }
+    // The heightfield tail (19-1): three count words per slot,
+    // samples only where a grid lives.
+    for (int32_t hfIdx = 0; hfIdx < world->shapeCapacity; ++hfIdx)
+    {
+        if (size - cursor < 12)
+        {
+            return false;
+        }
+        int32_t hnx;
+        int32_t hnz;
+        float hcell;
+        memcpy(&hnx, raw + cursor, 4);
+        memcpy(&hnz, raw + cursor + 4, 4);
+        memcpy(&hcell, raw + cursor + 8, 4);
+        cursor += 12;
+        if (hnx < 0 || hnx > M3_HEIGHTFIELD_MAX_DIM || hnz < 0 || hnz > M3_HEIGHTFIELD_MAX_DIM ||
+            (hnx == 0) != (hnz == 0) || (hnx > 0 && (hnx < 2 || hnz < 2)))
+        {
+            return false;
+        }
+        (void)hcell;
+        if (hnx > 0)
+        {
+            int64_t content = 8 + (int64_t)hnx * hnz * 4; // min/max + samples
             if ((int64_t)size - cursor < content)
             {
                 return false;

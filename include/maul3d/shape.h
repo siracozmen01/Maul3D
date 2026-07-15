@@ -14,11 +14,12 @@ extern "C"
     typedef enum m3ShapeType
     {
         m3_sphereShape = 0,
-        m3_planeShape = 1,   // static bodies only: an infinite half-space
-        m3_hullShape = 2,    // convex hull (boxes in 2b-3; point clouds later)
-        m3_capsuleShape = 3, // a segment with a radius
-        m3_meshShape = 4,    // static triangle soup (2b-9)
-        m3_voxelShape = 5,   // dense 16^3 voxel chunk (3-1)
+        m3_planeShape = 1,       // static bodies only: an infinite half-space
+        m3_hullShape = 2,        // convex hull (boxes in 2b-3; point clouds later)
+        m3_capsuleShape = 3,     // a segment with a radius
+        m3_meshShape = 4,        // static triangle soup (2b-9)
+        m3_voxelShape = 5,       // dense 16^3 voxel chunk (3-1)
+        m3_heightFieldShape = 6, // native grid terrain (19-1)
     } m3ShapeType;
 
     typedef struct m3Sphere
@@ -188,6 +189,16 @@ extern "C"
     M3_API m3ShapeId m3CreateHeightFieldShape(m3BodyId bodyId, const m3ShapeDef* def,
                                               const float* heights, int32_t nx, int32_t nz,
                                               m3real cellSize);
+
+    /// The NATIVE grid heightfield (19-1): the same nx-by-nz grid
+    /// contract as above, but stored as raw heights (four bytes per
+    /// sample) instead of triangulated into a mesh: the low-memory
+    /// terrain path. Grid limits per chunk: 2..255 in each
+    /// direction; larger terrain tiles as chunks. Static bodies
+    /// only; the minimum corner sits at the body origin.
+    M3_API m3ShapeId m3CreateHeightFieldGridShape(m3BodyId bodyId, const m3ShapeDef* def,
+                                                  const float* heights, int32_t nx, int32_t nz,
+                                                  m3real cellSize);
 
     /// True while the id names a live shape in a live world; false
     /// for the null id, stale generations, and destroyed worlds.

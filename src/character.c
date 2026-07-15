@@ -79,8 +79,8 @@ int32_t m3CreateCharacterInternal(m3World* world, const m3CharacterDef* def)
     geom.v = (m3Vec3){0.0f, def->halfHeight, 0.0f};
     geom.v2 = (m3Vec3){0.0f, -def->halfHeight, 0.0f};
     geom.s = def->radius;
-    int32_t shape =
-        m3CreateShapeInternal(world, body, (uint8_t)m3_capsuleShape, &geom, &sd, NULL, NULL, NULL);
+    int32_t shape = m3CreateShapeInternal(world, body, (uint8_t)m3_capsuleShape, &geom, &sd, NULL,
+                                          NULL, NULL, NULL);
     if (shape < 0)
     {
         m3DestroyBodyInternal(world, body);

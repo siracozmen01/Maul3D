@@ -168,6 +168,7 @@ typedef enum m3Op
     m3_opRebuildBroadphase = 73,      // balanced tree rebuild (17-4)
     m3_opCreateWaterVolume = 74,      // water box (18-1)
     m3_opDestroyWaterVolume = 75,     // the tide goes out (18-1)
+    m3_opCreateHeightFieldGrid = 76,  // native terrain chunk (19-1)
 } m3Op;
 
 // Debug names (14-3): journaled and snapshot like userData, NEVER
@@ -274,6 +275,28 @@ void m3MeshDataFree(m3MeshData* mesh);
 // Bake the edge-convexity flags (a bounded pair scan; the BVH slice
 // will speed it up if profiles ever ask).
 void m3BakeMeshEdgeFlags(m3MeshData* mesh);
+
+// Native heightfield content (19-1, lifetime 3): count-derived raw
+// samples, the low-memory terrain path beside meshes. The cell at
+// (ix, iz) spans x in [ix, ix+1] * cellSize, z likewise, and
+// splits into two CCW-from-above triangles along the ix+iz
+// diagonal parity (a fixed, deterministic split).
+#define M3_HEIGHTFIELD_MAX_DIM 255
+
+typedef struct m3HeightFieldData
+{
+    int32_t nx;
+    int32_t nz;
+    float cellSize;
+    float minHeight; // baked at create: the AABB floor
+    float maxHeight; // baked at create: the AABB ceiling
+    float* heights;  // nx * nz samples, row-major, x fastest
+} m3HeightFieldData;
+
+// Count-derived ownership, the 10-3 gates: Alloc sizes from the
+// counts already in the struct, Free releases and zeroes.
+bool m3HeightFieldDataAlloc(m3HeightFieldData* hf);
+void m3HeightFieldDataFree(m3HeightFieldData* hf);
 
 // Static per-mesh BVH (2c-10): median split on the longest centroid
 // axis, ties broken by triangle index, leaves of up to four
@@ -434,6 +457,18 @@ typedef struct m3SetMeshMaterialsOp
     int32_t triangleCount;
     m3MeshSurfaceMaterial materials[M3_MESH_MAX_MATERIALS];
 } m3SetMeshMaterialsOp;
+
+// Journal payload for the native heightfield (19-1): the fixed
+// head below, followed by nx * nz float samples.
+typedef struct m3CreateHeightFieldGridOp
+{
+    m3BodyId body;
+    m3ShapeDef def;
+    int32_t nx;
+    int32_t nz;
+    float cellSize;
+    m3ShapeId expected;
+} m3CreateHeightFieldGridOp;
 
 // Journal payload for shape creation (replay re-derives mass).
 typedef struct m3CreateShapeOp
@@ -746,6 +781,12 @@ typedef struct m3World
     m3Vec3* jointGenLinUpper;
     m3Vec3* jointGenAngLower;
     m3Vec3* jointGenAngUpper;
+    // Native heightfields (19-1): interned like meshes, one slot
+    // per shape capacity, count-derived content.
+    m3IdPool hfPool;
+    m3HeightFieldData* hfData;
+    int32_t* hfRefCounts;
+    int32_t* shapeHfIndex;
     // Pulley world anchors (16-6): fixed points the two rope
     // segments hang from, double like every world position. Folded
     // into the hash only for pulley-typed joints (the golden rule
@@ -992,7 +1033,8 @@ void m3ReleaseHull(m3World* world, int32_t hullIndex);
 int32_t m3CreateShapeInternal(m3World* world, int32_t bodyIndex, uint8_t type,
                               const m3ShapeGeom* geom, const m3ShapeDef* def,
                               const m3HullData* prebuilt, const m3MeshData* meshPrebuilt,
-                              const m3VoxelChunkData* voxelPrebuilt);
+                              const m3VoxelChunkData* voxelPrebuilt,
+                              const m3HeightFieldData* hfPrebuilt);
 void m3DestroyShapeInternal(m3World* world, int32_t index);
 void m3RecomputeMass(m3World* world, int32_t bodyIndex);
 
