@@ -790,6 +790,11 @@ typedef struct m3World
     m3Pos3* softPos;     // cap * M3_SOFTBODY_MAX_PARTICLES
     m3Pos3* softPrev;    // cap * M3_SOFTBODY_MAX_PARTICLES
     m3real* softInvMass; // cap * M3_SOFTBODY_MAX_PARTICLES
+    // Bend tethers (20-1): edges from softBendStart[slot] onward
+    // solve with softBendCompliance[slot] instead of the stretch
+    // compliance.
+    int32_t* softBendStart;
+    m3real* softBendCompliance;
     m3Vec3* softKick;    // pending explosion velocity kicks (13-3):
                          // integrated once next step, then zeroed,
                          // hashed only when nonzero (additive rule)

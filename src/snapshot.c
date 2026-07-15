@@ -22,7 +22,8 @@
 #endif
 
 #define M3_SNAPSHOT_MAGIC   0x4D33534Eu // 'M3SN'
-#define M3_SNAPSHOT_VERSION 49u
+#define M3_SNAPSHOT_VERSION 50u
+// v50: soft bend tethers (20-1).
 // v49: native heightfields (19-1).
 // v48: water volumes (18-1).
 // v47: per-triangle mesh materials (17-2).
@@ -351,6 +352,8 @@ static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3Wal
     M3_BLOCK(world->softParticleCount, world->softBodyCapacity * (int32_t)sizeof(int32_t));
     M3_BLOCK(world->softEdgeCount, world->softBodyCapacity * (int32_t)sizeof(int32_t));
     M3_BLOCK(world->softCompliance, world->softBodyCapacity * (int32_t)sizeof(m3real));
+    M3_BLOCK(world->softBendStart, world->softBodyCapacity * (int32_t)sizeof(int32_t));
+    M3_BLOCK(world->softBendCompliance, world->softBodyCapacity * (int32_t)sizeof(m3real));
     M3_BLOCK(world->softRadius, world->softBodyCapacity * (int32_t)sizeof(m3real));
     M3_BLOCK(world->softGravityScale, world->softBodyCapacity * (int32_t)sizeof(m3real));
     M3_BLOCK(world->softUserData, world->softBodyCapacity * (int32_t)sizeof(uint64_t));
@@ -1043,6 +1046,12 @@ uint64_t m3World_Hash(m3WorldId worldId)
         }
         h = m3Hash64(h, &world->softParticleCount[i], 4);
         h = m3Hash64(h, &world->softCompliance[i], 4);
+        if (world->softBendCompliance[i] != 0.0f)
+        {
+            // Bend tethers fold off-default (20-1), their own block.
+            h = m3Hash64(h, &world->softBendStart[i], 4);
+            h = m3Hash64(h, &world->softBendCompliance[i], 4);
+        }
         h = m3Hash64(h, &world->softRadius[i], 4);
         h = m3Hash64(h, &world->softGravityScale[i], 4);
         int32_t pc = world->softParticleCount[i];

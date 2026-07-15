@@ -43,6 +43,14 @@ extern "C"
         m3real radius;       // particle collision radius
         m3real gravityScale;
         uint64_t userData;
+        /// Bend resistance (20-1): XPBD compliance of the SECOND
+        /// NEIGHBOR tethers laid along each lattice axis (three
+        /// straight points hold their spacing; a fold shortens it,
+        /// and the tether pulls it straight). Zero (the default)
+        /// adds no tethers and keeps the pre-20 lattice bit-exact;
+        /// smaller positive values bend stiffer. Full Cosserat
+        /// twist stays out by design: positions carry no frames.
+        m3real bendCompliance;
         int32_t internalValue;
     } m3SoftBodyDef;
 

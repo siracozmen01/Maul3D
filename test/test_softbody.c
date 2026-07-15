@@ -662,6 +662,64 @@ static void TestAnchorRedTeam(void)
     m3DestroyWorld(world);
 }
 
+static void TestBendRods(void)
+{
+    // 20-1: a horizontal rope pinned at one end droops deep when
+    // floppy and holds a shallow curve when its bend tethers are
+    // stiff. Twins stay bit-identical.
+    double tipY[2];
+    for (int32_t pass = 0; pass < 2; ++pass)
+    {
+        uint64_t hashes[2];
+        for (int32_t run = 0; run < 2; ++run)
+        {
+            m3WorldDef wd = m3DefaultWorldDef();
+            wd.bodyCapacity = 4;
+            wd.shapeCapacity = 4;
+            m3WorldId world = m3CreateWorld(&wd);
+            m3SoftBodyDef sb = m3DefaultSoftBodyDef();
+            sb.position = (m3Pos3){0.0, 4.0, 0.0};
+            sb.countX = 16;
+            sb.countY = 1;
+            sb.countZ = 1;
+            sb.spacing = 0.2f;
+            sb.compliance = 0.0f;
+            sb.bendCompliance = pass == 0 ? 0.0f : 1.0e-6f;
+            m3SoftBodyId rope = m3CreateSoftBody(world, &sb);
+            CHECK(m3SoftBody_IsValid(rope), "the rope creates");
+            // TWO pins make the clamp: a single point pin holds
+            // no moment (even a rigid rod would swing free).
+            m3SoftBody_PinParticle(rope, 0);
+            m3SoftBody_PinParticle(rope, 1);
+            for (int32_t i = 0; i < 300; ++i)
+            {
+                m3World_Step(world, 1.0f / 60.0f, 4);
+            }
+            if (run == 0)
+            {
+                tipY[pass] = m3SoftBody_GetParticlePosition(rope, 15).x;
+            }
+            hashes[run] = m3World_Hash(world);
+            m3DestroyWorld(world);
+        }
+        CHECK(hashes[0] == hashes[1], "twin ropes are bit-identical");
+    }
+    // The floppy rope folds back on itself (tip x well behind the
+    // clamp); the stiff one reaches forward. Reach, not height, is
+    // the honest metric: even a rigid rod droops at the tip, but
+    // only a floppy one CRUMPLES.
+    CHECK(tipY[1] > 0.3 && tipY[1] > tipY[0] + 1.5,
+          "the stiff rope reaches forward where the floppy one crumples");
+
+    // The wall: a hostile bend compliance refuses.
+    m3WorldDef wd = m3DefaultWorldDef();
+    m3WorldId world = m3CreateWorld(&wd);
+    m3SoftBodyDef sb = m3DefaultSoftBodyDef();
+    sb.bendCompliance = -1.0f;
+    CHECK(!m3SoftBody_IsValid(m3CreateSoftBody(world, &sb)), "negative bend refuses");
+    m3DestroyWorld(world);
+}
+
 int main(void)
 {
     TestHangingRope();
@@ -676,6 +734,7 @@ int main(void)
     TestClothFollowsBeam();
     TestSoftFractureStorm();
     TestAnchorRedTeam();
+    TestBendRods();
     if (s_failures == 0)
     {
         printf("test_softbody: all green\n");

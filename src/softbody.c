@@ -31,6 +31,7 @@ m3SoftBodyDef m3DefaultSoftBodyDef(void)
     def.compliance = 0.0f;
     def.radius = 0.05f;
     def.gravityScale = 1.0f;
+    def.bendCompliance = 0.0f;
     def.internalValue = M3_SOFTBODY_COOKIE;
     return def;
 }
@@ -73,7 +74,8 @@ int32_t m3CreateSoftBodyInternal(m3World* world, const m3SoftBodyDef* def)
         !m3FinitePos3(def->position) || !m3FiniteF(def->spacing) || !(def->spacing > 0.0f) ||
         !m3FiniteF(def->particleMass) || !(def->particleMass > 0.0f) ||
         !m3FiniteF(def->compliance) || def->compliance < 0.0f || !m3FiniteF(def->radius) ||
-        !(def->radius > 0.0f) || !m3FiniteF(def->gravityScale))
+        !(def->radius > 0.0f) || !m3FiniteF(def->gravityScale) || !m3FiniteF(def->bendCompliance) ||
+        def->bendCompliance < 0.0f)
     {
         return -1;
     }
@@ -94,6 +96,7 @@ int32_t m3CreateSoftBodyInternal(m3World* world, const m3SoftBodyDef* def)
     world->softRadius[slot] = def->radius;
     world->softGravityScale[slot] = def->gravityScale;
     world->softUserData[slot] = def->userData;
+    world->softBendCompliance[slot] = def->bendCompliance;
 
     m3real invMass = 1.0f / def->particleMass;
     for (int32_t z = 0; z < nz; ++z)
@@ -156,6 +159,45 @@ int32_t m3CreateSoftBodyInternal(m3World* world, const m3SoftBodyDef* def)
             }
         }
     }
+    // Bend tethers (20-1): second-neighbor edges along each axis,
+    // AFTER every structural edge so one boundary index splits the
+    // two compliances. Capacity is checked up front: a lattice
+    // whose tethers cannot fit refuses loudly instead of shipping
+    // half a spine.
+    world->softBendStart[slot] = world->softEdgeCount[slot];
+    if (def->bendCompliance > 0.0f)
+    {
+        int32_t need = (nx > 2 ? (nx - 2) * ny * nz : 0) + (ny > 2 ? nx * (ny - 2) * nz : 0) +
+                       (nz > 2 ? nx * ny * (nz - 2) : 0);
+        if (world->softEdgeCount[slot] + need > M3_SOFTBODY_MAX_EDGES)
+        {
+            m3DestroySoftBodyInternal(world, slot);
+            return -1;
+        }
+        m3real s2 = 2.0f * s;
+        for (int32_t z = 0; z < nz; ++z)
+        {
+            for (int32_t y = 0; y < ny; ++y)
+            {
+                for (int32_t x = 0; x < nx; ++x)
+                {
+                    int32_t i = x + nx * (y + ny * z);
+                    if (x + 2 < nx)
+                    {
+                        AddEdge(world, slot, i, i + 2, s2);
+                    }
+                    if (y + 2 < ny)
+                    {
+                        AddEdge(world, slot, i, i + 2 * nx, s2);
+                    }
+                    if (z + 2 < nz)
+                    {
+                        AddEdge(world, slot, i, i + 2 * nx * ny, s2);
+                    }
+                }
+            }
+        }
+    }
     return slot;
 }
 
@@ -194,6 +236,8 @@ void m3DestroySoftBodyInternal(m3World* world, int32_t slot)
     world->softRadius[slot] = 0.0f;
     world->softGravityScale[slot] = 0.0f;
     world->softUserData[slot] = 0;
+    world->softBendStart[slot] = 0;
+    world->softBendCompliance[slot] = 0.0f;
     m3IdPoolFree(&world->softPool, slot);
 }
 
@@ -634,10 +678,13 @@ void m3SoftBodyPass(m3World* world, float dt, int32_t substeps)
 
             // One Gauss-Seidel sweep over the edges, fixed order.
             m3real alpha = world->softCompliance[slot] * invH * invH;
+            m3real bendAlpha = world->softBendCompliance[slot] * invH * invH;
+            int32_t bendStart = world->softBendStart[slot];
             int32_t edges = world->softEdgeCount[slot];
             int32_t ebase = slot * M3_SOFTBODY_MAX_EDGES;
             for (int32_t e = 0; e < edges; ++e)
             {
+                m3real alphaE = e >= bendStart ? bendAlpha : alpha;
                 int32_t ka = base + (int32_t)world->softEdgeA[ebase + e];
                 int32_t kb = base + (int32_t)world->softEdgeB[ebase + e];
                 m3real wa = world->softInvMass[ka];
@@ -656,7 +703,7 @@ void m3SoftBodyPass(m3World* world, float dt, int32_t substeps)
                     continue; // coincident: no gradient, no correction
                 }
                 m3real c = len - world->softEdgeRest[ebase + e];
-                m3real scale = -c / ((wSum + alpha) * len);
+                m3real scale = -c / ((wSum + alphaE) * len);
                 world->softPos[ka].x += (double)(wa * scale * diff.x);
                 world->softPos[ka].y += (double)(wa * scale * diff.y);
                 world->softPos[ka].z += (double)(wa * scale * diff.z);
