@@ -166,11 +166,16 @@ typedef enum m3Op
     m3_opJointSetMotorPose = 71,      // motor joint servo aim (16-5)
     m3_opSetMeshMaterials = 72,       // per-triangle materials (17-2)
     m3_opRebuildBroadphase = 73,      // balanced tree rebuild (17-4)
+    m3_opCreateWaterVolume = 74,      // water box (18-1)
+    m3_opDestroyWaterVolume = 75,     // the tide goes out (18-1)
 } m3Op;
 
 // Debug names (14-3): journaled and snapshot like userData, NEVER
 // hashed (a name moves no matter).
 #define M3_BODY_NAME_CAPACITY 32
+
+// Water volume slots per world (18-1): fixed, small, honest.
+#define M3_MAX_WATER_VOLUMES 8
 
 // Immutable interned hull data (lifetime 3): vertices, face planes,
 // and face vertex loops for the SAT (2b-5), plus unit-density mass
@@ -747,6 +752,16 @@ typedef struct m3World
     // for additive state).
     m3Pos3* jointGroundA;
     m3Pos3* jointGroundB;
+    // Water volumes (18-1): fixed 8 slots, world-anchored boxes.
+    // Hashed off-default (only while any volume is alive), fixed
+    // snapshot blocks (v48).
+    m3IdPool waterPool;
+    m3Pos3 waterLo[M3_MAX_WATER_VOLUMES];
+    m3Pos3 waterHi[M3_MAX_WATER_VOLUMES];
+    float waterDensity[M3_MAX_WATER_VOLUMES];
+    float waterLinDrag[M3_MAX_WATER_VOLUMES];
+    float waterAngDrag[M3_MAX_WATER_VOLUMES];
+    m3Vec3 waterFlow[M3_MAX_WATER_VOLUMES];
     m3IdPool jointPool;
     uint8_t* jointType;
     int32_t* jointBodyA;
@@ -921,6 +936,8 @@ bool m3SetMeshMaterialsInternal(m3World* world, int32_t meshIndex,
                                 const m3MeshSurfaceMaterial* materials, int32_t materialCount,
                                 const uint8_t* triangleMaterials);
 void m3RebuildBroadphaseInternal(m3World* world);
+int32_t m3CreateWaterVolumeInternal(m3World* world, const m3WaterVolumeDef* def);
+void m3DestroyWaterVolumeInternal(m3World* world, int32_t slot);
 void m3SetContactTuningInternal(m3World* world, float hertz, float dampingRatio, float pushSpeed);
 void m3SetRestitutionThresholdInternal(m3World* world, float value);
 void m3SetMaximumLinearSpeedInternal(m3World* world, float value);

@@ -94,6 +94,38 @@ extern "C"
     /// function of the live shapes, so twins and replays agree.
     M3_API void m3World_RebuildBroadphase(m3WorldId worldId);
 
+    /// A water volume (18-1): a world-anchored axis-aligned box of
+    /// still or flowing water. The surface is the box top; there is
+    /// no fluid simulation BY LAW. Rigid bodies inside get buoyancy
+    /// proportional to their submerged bounds, drag toward the flow
+    /// velocity, and torque about their submerged centroid; the
+    /// model is deliberately approximate and deterministically so.
+    typedef struct m3WaterVolumeDef
+    {
+        m3Pos3 lo;
+        m3Pos3 hi;             // must exceed lo on every axis
+        m3real density;        // kg/m3; 1000 is water, > 0
+        m3real linearDrag;     // per-second rate toward the flow, >= 0
+        m3real angularDrag;    // per-second spin damping, >= 0
+        m3Vec3 flow;           // current velocity, world frame
+        int32_t internalValue; // from m3DefaultWaterVolumeDef
+    } m3WaterVolumeDef;
+
+    typedef struct m3WaterVolumeId
+    {
+        int32_t index1;
+        uint16_t world0;
+        uint16_t generation;
+    } m3WaterVolumeId;
+
+    M3_API m3WaterVolumeDef m3DefaultWaterVolumeDef(void);
+    /// Up to 8 volumes per world; journaled, snapshotted, hashed
+    /// off-default. Creating or destroying a volume wakes every
+    /// body whose bounds touch it (the tide moves things).
+    M3_API m3WaterVolumeId m3CreateWaterVolume(m3WorldId worldId, const m3WaterVolumeDef* def);
+    M3_API void m3DestroyWaterVolume(m3WaterVolumeId id);
+    M3_API bool m3WaterVolume_IsValid(m3WaterVolumeId id);
+
     /// Current gravity.
     M3_API m3Vec3 m3World_GetGravity(m3WorldId worldId);
 

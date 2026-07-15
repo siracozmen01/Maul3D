@@ -3915,6 +3915,106 @@ void m3StepInternal(m3World* world, float dt, int32_t substeps)
         }
     }
 
+    // Water volumes (18-1): per-mover buoyancy force, torque, drag
+    // rates, and the blended flow, computed ONCE per step from the
+    // step-start pose (the classic field-force approximation). No
+    // volumes = no allocation, no arithmetic, the pre-18 bits.
+    int32_t waterAlive = 0;
+    for (int32_t k = 0; k < world->waterPool.maxIndex; ++k)
+    {
+        waterAlive += world->waterPool.alive[k];
+    }
+    m3Vec3* buoyForce = NULL;
+    m3Vec3* buoyTorque = NULL;
+    m3Vec3* buoyFlow = NULL;
+    float* buoyLin = NULL;
+    float* buoyAng = NULL;
+    if (waterAlive > 0 && moverCount > 0)
+    {
+        buoyForce = (m3Vec3*)m3StackAlloc(&world->scratch, moverCount * (int32_t)sizeof(m3Vec3));
+        buoyTorque = (m3Vec3*)m3StackAlloc(&world->scratch, moverCount * (int32_t)sizeof(m3Vec3));
+        buoyFlow = (m3Vec3*)m3StackAlloc(&world->scratch, moverCount * (int32_t)sizeof(m3Vec3));
+        buoyLin = (float*)m3StackAlloc(&world->scratch, moverCount * (int32_t)sizeof(float));
+        buoyAng = (float*)m3StackAlloc(&world->scratch, moverCount * (int32_t)sizeof(float));
+        if (buoyForce == NULL || buoyTorque == NULL || buoyFlow == NULL || buoyLin == NULL ||
+            buoyAng == NULL)
+        {
+            waterAlive = 0; // transient scratch stall: dry step
+        }
+    }
+    if (waterAlive > 0 && moverCount > 0)
+    {
+        for (int32_t m = 0; m < moverCount; ++m)
+        {
+            int32_t i = movers[m];
+            buoyForce[m] = (m3Vec3){0.0f, 0.0f, 0.0f};
+            buoyTorque[m] = (m3Vec3){0.0f, 0.0f, 0.0f};
+            buoyFlow[m] = (m3Vec3){0.0f, 0.0f, 0.0f};
+            buoyLin[m] = 0.0f;
+            buoyAng[m] = 0.0f;
+            if (world->types[i] != (uint8_t)m3_dynamicBody)
+            {
+                continue;
+            }
+            m3Vec3 rlc = m3RotateVec3(world->transforms[i].q, world->localCenters[i]);
+            double comX = world->transforms[i].p.x + (double)rlc.x;
+            double comY = world->transforms[i].p.y + (double)rlc.y;
+            double comZ = world->transforms[i].p.z + (double)rlc.z;
+            float fracSum = 0.0f;
+            for (int32_t shape = world->bodyShapeHead[i]; shape >= 0;
+                 shape = world->shapeNext[shape])
+            {
+                double slo[3];
+                double shi[3];
+                m3ShapeFatAabb(world, shape, slo, shi);
+                double shapeVol = (shi[0] - slo[0]) * (shi[1] - slo[1]) * (shi[2] - slo[2]);
+                if (!(shapeVol > 0.0))
+                {
+                    continue; // a plane's infinite box never swims
+                }
+                for (int32_t k = 0; k < world->waterPool.maxIndex; ++k)
+                {
+                    if (world->waterPool.alive[k] == 0)
+                    {
+                        continue;
+                    }
+                    double clo[3];
+                    double chi[3];
+                    clo[0] = slo[0] > world->waterLo[k].x ? slo[0] : world->waterLo[k].x;
+                    clo[1] = slo[1] > world->waterLo[k].y ? slo[1] : world->waterLo[k].y;
+                    clo[2] = slo[2] > world->waterLo[k].z ? slo[2] : world->waterLo[k].z;
+                    chi[0] = shi[0] < world->waterHi[k].x ? shi[0] : world->waterHi[k].x;
+                    chi[1] = shi[1] < world->waterHi[k].y ? shi[1] : world->waterHi[k].y;
+                    chi[2] = shi[2] < world->waterHi[k].z ? shi[2] : world->waterHi[k].z;
+                    if (chi[0] <= clo[0] || chi[1] <= clo[1] || chi[2] <= clo[2])
+                    {
+                        continue;
+                    }
+                    double subVol = (chi[0] - clo[0]) * (chi[1] - clo[1]) * (chi[2] - clo[2]);
+                    float frac = (float)(subVol / shapeVol);
+                    frac = frac > 1.0f ? 1.0f : frac;
+                    // Buoyant force opposes gravity, applied at the
+                    // clipped box centroid: a half-submerged crate
+                    // rights itself, an off-center bite spins it.
+                    m3Vec3 f = m3MulSV3(-(float)subVol * world->waterDensity[k], world->gravity);
+                    m3Vec3 r = {(float)(0.5 * (clo[0] + chi[0]) - comX),
+                                (float)(0.5 * (clo[1] + chi[1]) - comY),
+                                (float)(0.5 * (clo[2] + chi[2]) - comZ)};
+                    buoyForce[m] = m3Add3(buoyForce[m], f);
+                    buoyTorque[m] = m3Add3(buoyTorque[m], m3Cross3(r, f));
+                    buoyFlow[m] = m3Add3(buoyFlow[m], m3MulSV3(frac, world->waterFlow[k]));
+                    buoyLin[m] += world->waterLinDrag[k] * frac;
+                    buoyAng[m] += world->waterAngDrag[k] * frac;
+                    fracSum += frac;
+                }
+            }
+            if (fracSum > 0.0f)
+            {
+                buoyFlow[m] = m3MulSV3(1.0f / fracSum, buoyFlow[m]);
+            }
+        }
+    }
+
     for (int32_t sub = 0; sub < substeps; ++sub)
     {
         // Integrate velocities (fixed body order): gravity, damping.
@@ -3937,6 +4037,19 @@ void m3StepInternal(m3World* world, float dt, int32_t substeps)
             {
                 w = m3Add3(
                     w, m3MulSV3(h, m3MulMV3(m3WorldInvInertia(world, i), world->bodyTorque[i])));
+            }
+            if (waterAlive > 0 && (buoyLin[m] > 0.0f || buoyForce[m].y != 0.0f ||
+                                   buoyForce[m].x != 0.0f || buoyForce[m].z != 0.0f))
+            {
+                // The water field (18-1): buoyant impulse, torque
+                // about the submerged centroid, then drag pulls the
+                // RELATIVE velocity toward the flow (the damping
+                // recipe, recentered on the current).
+                v = m3Add3(v, m3MulSV3(h * world->invMass[i], buoyForce[m]));
+                w = m3Add3(w, m3MulSV3(h, m3MulMV3(m3WorldInvInertia(world, i), buoyTorque[m])));
+                m3Vec3 rel = m3Sub3(v, buoyFlow[m]);
+                v = m3Add3(buoyFlow[m], m3MulSV3(1.0f / (1.0f + h * buoyLin[m]), rel));
+                w = m3MulSV3(1.0f / (1.0f + h * buoyAng[m]), w);
             }
             v = m3MulSV3(1.0f / (1.0f + h * world->linearDamping[i]), v);
             w = m3MulSV3(1.0f / (1.0f + h * world->angularDamping[i]), w);

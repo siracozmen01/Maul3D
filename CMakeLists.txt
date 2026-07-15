@@ -380,6 +380,11 @@ target_link_libraries(test_rebuild PRIVATE maul3d)
 maul3d_apply_flags(test_rebuild)
 add_test(NAME rebuild COMMAND test_rebuild)
 
+add_executable(test_water test/test_water.c)
+target_link_libraries(test_water PRIVATE maul3d)
+maul3d_apply_flags(test_water)
+add_test(NAME water COMMAND test_water)
+
 add_executable(test_fuzz test/test_fuzz.c)
 target_link_libraries(test_fuzz PRIVATE maul3d)
 maul3d_apply_flags(test_fuzz)

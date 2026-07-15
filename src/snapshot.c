@@ -22,7 +22,8 @@
 #endif
 
 #define M3_SNAPSHOT_MAGIC   0x4D33534Eu // 'M3SN'
-#define M3_SNAPSHOT_VERSION 47u
+#define M3_SNAPSHOT_VERSION 48u
+// v48: water volumes (18-1).
 // v47: per-triangle mesh materials (17-2).
 // v46: count-derived hull content (17-1): the 5808-byte fixed
 //      slabs leave the fixed prefix; an empty slot costs 16 bytes.
@@ -413,6 +414,15 @@ static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3Wal
     M3_BLOCK(world->jointGenAngUpper, world->jointCapacity * (int32_t)sizeof(m3Vec3));
     M3_BLOCK(world->jointGroundA, world->jointCapacity * (int32_t)sizeof(m3Pos3));
     M3_BLOCK(world->jointGroundB, world->jointCapacity * (int32_t)sizeof(m3Pos3));
+    M3_BLOCK(world->waterLo, M3_MAX_WATER_VOLUMES * (int32_t)sizeof(m3Pos3));
+    M3_BLOCK(world->waterHi, M3_MAX_WATER_VOLUMES * (int32_t)sizeof(m3Pos3));
+    M3_BLOCK(world->waterDensity, M3_MAX_WATER_VOLUMES * (int32_t)sizeof(float));
+    M3_BLOCK(world->waterLinDrag, M3_MAX_WATER_VOLUMES * (int32_t)sizeof(float));
+    M3_BLOCK(world->waterAngDrag, M3_MAX_WATER_VOLUMES * (int32_t)sizeof(float));
+    M3_BLOCK(world->waterFlow, M3_MAX_WATER_VOLUMES * (int32_t)sizeof(m3Vec3));
+    M3_BLOCK(world->waterPool.generations, M3_MAX_WATER_VOLUMES * (int32_t)sizeof(uint16_t));
+    M3_BLOCK(world->waterPool.alive, M3_MAX_WATER_VOLUMES * (int32_t)sizeof(uint8_t));
+    M3_BLOCK(world->waterPool.freeQueue, M3_MAX_WATER_VOLUMES * (int32_t)sizeof(int32_t));
     M3_BLOCK(world->jointNextA, world->jointCapacity * (int32_t)sizeof(int32_t));
     M3_BLOCK(world->jointNextB, world->jointCapacity * (int32_t)sizeof(int32_t));
     M3_BLOCK(world->bodyJointHead, cap * (int32_t)sizeof(int32_t));
@@ -1159,6 +1169,27 @@ uint64_t m3World_Hash(m3WorldId worldId)
             // anchors exist only under a pulley.
             h = m3Hash64(h, &world->jointGroundA[i], (int32_t)sizeof(m3Pos3));
             h = m3Hash64(h, &world->jointGroundB[i], (int32_t)sizeof(m3Pos3));
+        }
+    }
+
+    // Water volumes (18-1): folded ONLY while any volume is alive
+    // (the off-default law, in its own block); the pool identity
+    // rides along so a destroyed-and-recreated volume moves bits.
+    {
+        int32_t waterAlive = 0;
+        for (int32_t k = 0; k < world->waterPool.maxIndex; ++k)
+        {
+            waterAlive += world->waterPool.alive[k];
+        }
+        if (waterAlive > 0)
+        {
+            h = m3Hash64(h, world->waterLo, M3_MAX_WATER_VOLUMES * (int32_t)sizeof(m3Pos3));
+            h = m3Hash64(h, world->waterHi, M3_MAX_WATER_VOLUMES * (int32_t)sizeof(m3Pos3));
+            h = m3Hash64(h, world->waterDensity, M3_MAX_WATER_VOLUMES * (int32_t)sizeof(float));
+            h = m3Hash64(h, world->waterLinDrag, M3_MAX_WATER_VOLUMES * (int32_t)sizeof(float));
+            h = m3Hash64(h, world->waterAngDrag, M3_MAX_WATER_VOLUMES * (int32_t)sizeof(float));
+            h = m3Hash64(h, world->waterFlow, M3_MAX_WATER_VOLUMES * (int32_t)sizeof(m3Vec3));
+            h = m3Hash64(h, world->waterPool.alive, M3_MAX_WATER_VOLUMES);
         }
     }
 

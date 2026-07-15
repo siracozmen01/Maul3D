@@ -239,6 +239,7 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     M3_ALLOC(world->jointGenAngUpper, def->jointCapacity, m3Vec3);
     M3_ALLOC(world->jointGroundA, def->jointCapacity, m3Pos3);
     M3_ALLOC(world->jointGroundB, def->jointCapacity, m3Pos3);
+    world->waterPool = m3IdPoolCreate(M3_MAX_WATER_VOLUMES);
     world->charPool = m3IdPoolCreate(def->characterCapacity);
     M3_ALLOC(world->charBody, def->characterCapacity, int32_t);
     M3_ALLOC(world->charRadius, def->characterCapacity, m3real);
@@ -496,6 +497,7 @@ void m3DestroyWorld(m3WorldId worldId)
     m3Free(world->jointGenAngUpper);
     m3Free(world->jointGroundA);
     m3Free(world->jointGroundB);
+    m3IdPoolDestroy(&world->waterPool);
     m3IdPoolDestroy(&world->charPool);
     m3Free(world->charBody);
     m3Free(world->charRadius);
@@ -1077,6 +1079,139 @@ void m3World_RebuildBroadphase(m3WorldId worldId)
         m3JournalRecord(world, m3_opRebuildBroadphase, &zero, 4);
     }
     m3RebuildBroadphaseInternal(world);
+}
+
+#define M3_WATER_COOKIE ((int32_t)(M3_COOKIE ^ ((int32_t)sizeof(m3WaterVolumeDef) << 8) ^ 7))
+
+m3WaterVolumeDef m3DefaultWaterVolumeDef(void)
+{
+    m3WaterVolumeDef def;
+    memset(&def, 0, sizeof(def));
+    def.hi = (m3Pos3){1.0, 1.0, 1.0};
+    def.density = 1000.0f;
+    def.linearDrag = 2.0f;
+    def.angularDrag = 1.0f;
+    def.internalValue = M3_WATER_COOKIE;
+    return def;
+}
+
+static bool WakeInBoxFn(int32_t shape, void* context)
+{
+    m3World* world = (m3World*)context;
+    int32_t body = world->shapeBody[shape];
+    if (world->types[body] == (uint8_t)m3_dynamicBody)
+    {
+        m3SetAwakeInternal(world, body, 1);
+    }
+    return true;
+}
+
+static void WakeAroundWater(m3World* world, int32_t slot)
+{
+    // The tide moves things: sleepers touching the volume wake on
+    // create AND destroy (without water under it, a sleeper falls).
+    double lo[3] = {world->waterLo[slot].x, world->waterLo[slot].y, world->waterLo[slot].z};
+    double hi[3] = {world->waterHi[slot].x, world->waterHi[slot].y, world->waterHi[slot].z};
+    m3TreeQuery(&world->tree, lo, hi, WakeInBoxFn, world);
+}
+
+int32_t m3CreateWaterVolumeInternal(m3World* world, const m3WaterVolumeDef* def)
+{
+    // The full wall (18-1), here because replay hands this function
+    // raw journal bytes.
+    if (!m3FinitePos3(def->lo) || !m3FinitePos3(def->hi) || !(def->hi.x > def->lo.x) ||
+        !(def->hi.y > def->lo.y) || !(def->hi.z > def->lo.z) || !m3FiniteF(def->density) ||
+        !(def->density > 0.0f) || !m3FiniteF(def->linearDrag) || def->linearDrag < 0.0f ||
+        !m3FiniteF(def->angularDrag) || def->angularDrag < 0.0f || !m3FiniteV3(def->flow))
+    {
+        return -1;
+    }
+    int32_t slot = m3IdPoolAlloc(&world->waterPool);
+    if (slot < 0)
+    {
+        return -1; // all 8 slots taken: loud at the caller
+    }
+    world->waterLo[slot] = def->lo;
+    world->waterHi[slot] = def->hi;
+    world->waterDensity[slot] = def->density;
+    world->waterLinDrag[slot] = def->linearDrag;
+    world->waterAngDrag[slot] = def->angularDrag;
+    world->waterFlow[slot] = def->flow;
+    WakeAroundWater(world, slot);
+    return slot;
+}
+
+void m3DestroyWaterVolumeInternal(m3World* world, int32_t slot)
+{
+    WakeAroundWater(world, slot);
+    world->waterLo[slot] = (m3Pos3){0.0, 0.0, 0.0};
+    world->waterHi[slot] = (m3Pos3){0.0, 0.0, 0.0};
+    world->waterDensity[slot] = 0.0f;
+    world->waterLinDrag[slot] = 0.0f;
+    world->waterAngDrag[slot] = 0.0f;
+    world->waterFlow[slot] = (m3Vec3){0.0f, 0.0f, 0.0f};
+    m3IdPoolFree(&world->waterPool, slot);
+}
+
+m3WaterVolumeId m3CreateWaterVolume(m3WorldId worldId, const m3WaterVolumeDef* def)
+{
+    m3WaterVolumeId null = {0, 0, 0};
+    m3World* world = m3WorldFromId(worldId);
+    if (world == NULL || def == NULL || def->internalValue != M3_WATER_COOKIE)
+    {
+        return null;
+    }
+    int32_t slot = m3CreateWaterVolumeInternal(world, def);
+    if (slot < 0)
+    {
+        return null;
+    }
+    m3WaterVolumeId id = {slot + 1, world->worldIndex0, world->waterPool.generations[slot]};
+    if (world->journalActive != 0)
+    {
+        struct
+        {
+            m3WaterVolumeDef def;
+            m3WaterVolumeId expected;
+        } record;
+        memset(&record, 0, sizeof(record));
+        record.def = *def;
+        record.expected = id;
+        m3JournalRecord(world, m3_opCreateWaterVolume, &record, (int32_t)sizeof(record));
+    }
+    return id;
+}
+
+static int32_t WaterSlot(const m3World* world, m3WaterVolumeId id)
+{
+    int32_t index = id.index1 - 1;
+    if (world == NULL || id.world0 != world->worldIndex0 ||
+        !m3IdPoolValid(&world->waterPool, index, id.generation))
+    {
+        return -1;
+    }
+    return index;
+}
+
+bool m3WaterVolume_IsValid(m3WaterVolumeId id)
+{
+    m3World* world = m3WorldFromIndex0(id.world0);
+    return world != NULL && WaterSlot(world, id) >= 0;
+}
+
+void m3DestroyWaterVolume(m3WaterVolumeId id)
+{
+    m3World* world = m3WorldFromIndex0(id.world0);
+    int32_t slot = world != NULL ? WaterSlot(world, id) : -1;
+    if (slot < 0)
+    {
+        return;
+    }
+    if (world->journalActive != 0)
+    {
+        m3JournalRecord(world, m3_opDestroyWaterVolume, &id, (int32_t)sizeof(id));
+    }
+    m3DestroyWaterVolumeInternal(world, slot);
 }
 
 void m3JournalRecord(m3World* world, int32_t op, const void* payload, int32_t bytes)
@@ -2337,6 +2472,43 @@ static bool JournalReplayApply(m3World* world, const void* data, int32_t size)
             }
             record.name[M3_BODY_NAME_CAPACITY - 1] = 0;
             m3SetBodyNameInternal(world, index, record.name);
+            break;
+        }
+        case m3_opCreateWaterVolume:
+        {
+            struct
+            {
+                m3WaterVolumeDef def;
+                m3WaterVolumeId expected;
+            } record;
+            if (bytes != (int32_t)sizeof(record))
+            {
+                return false;
+            }
+            memcpy(&record, payload, sizeof(record));
+            int32_t slot = m3CreateWaterVolumeInternal(world, &record.def);
+            if (slot < 0 || slot + 1 != record.expected.index1 ||
+                world->waterPool.generations[slot] != record.expected.generation)
+            {
+                return false; // id determinism holds for water too
+            }
+            break;
+        }
+        case m3_opDestroyWaterVolume:
+        {
+            m3WaterVolumeId id;
+            if (bytes != (int32_t)sizeof(id))
+            {
+                return false;
+            }
+            memcpy(&id, payload, sizeof(id));
+            id.world0 = world->worldIndex0;
+            int32_t index = id.index1 - 1;
+            if (!m3IdPoolValid(&world->waterPool, index, id.generation))
+            {
+                return false;
+            }
+            m3DestroyWaterVolumeInternal(world, index);
             break;
         }
         case m3_opRebuildBroadphase:
