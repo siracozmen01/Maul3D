@@ -84,6 +84,31 @@ int32_t m3VehicleSlot(const m3World* world, m3VehicleId vehicleId)
 
 int32_t m3CreateVehicleInternal(m3World* world, const m3VehicleDef* def)
 {
+    // The validation wall (16-4 cure, the soft-body lesson again):
+    // replay hands this function raw mutated bytes, and a flipped
+    // wheelCount overran every per-wheel array. Every field check
+    // the public door ran now lives here, where BOTH doors pass.
+    if (def->wheelCount < 1 || def->wheelCount > M3_VEHICLE_MAX_WHEELS ||
+        !m3FiniteF(def->maxSteerAngle) || def->maxSteerAngle < 0.0f ||
+        !m3FiniteF(def->driveForce) || def->driveForce < 0.0f || !m3FiniteF(def->brakeForce) ||
+        def->brakeForce < 0.0f || !m3FiniteF(def->tireGrip) || def->tireGrip < 0.0f)
+    {
+        return -1;
+    }
+    for (int32_t w = 0; w < def->wheelCount; ++w)
+    {
+        const m3WheelDef* wd = &def->wheels[w];
+        m3real d2 = m3Dot3(wd->direction, wd->direction);
+        if (!m3FiniteV3(wd->anchor) || !m3FiniteV3(wd->direction) || !(d2 > 0.81f) ||
+            !(d2 < 1.21f) || !m3FiniteF(wd->restLength) || !(wd->restLength > 0.0f) ||
+            !m3FiniteF(wd->travel) || !(wd->travel > 0.0f) || wd->travel > wd->restLength ||
+            !m3FiniteF(wd->hertz) || !(wd->hertz > 0.0f) || !m3FiniteF(wd->zeta) ||
+            wd->zeta < 0.0f || !m3FiniteF(wd->radius) || !(wd->radius > 0.0f) ||
+            !m3FiniteF(wd->brakeShare) || wd->brakeShare < 0.0f)
+        {
+            return -1;
+        }
+    }
     int32_t chassis = def->chassis.index1 - 1;
     if (chassis < 0 || chassis >= world->bodyCapacity || world->bodyPool.alive[chassis] == 0 ||
         world->bodyPool.generations[chassis] != def->chassis.generation ||
@@ -578,27 +603,9 @@ void m3VehicleCommandsInternal(m3World* world, int32_t slot, m3real throttle, m3
 m3VehicleId m3CreateVehicle(m3WorldId worldId, const m3VehicleDef* def)
 {
     m3World* world = m3WorldFromId(worldId);
-    if (world == NULL || def == NULL || def->internalValue != M3_VEHICLE_COOKIE ||
-        def->wheelCount < 1 || def->wheelCount > M3_VEHICLE_MAX_WHEELS ||
-        !m3FiniteF(def->maxSteerAngle) || def->maxSteerAngle < 0.0f ||
-        !m3FiniteF(def->driveForce) || def->driveForce < 0.0f || !m3FiniteF(def->brakeForce) ||
-        def->brakeForce < 0.0f || !m3FiniteF(def->tireGrip) || def->tireGrip < 0.0f)
+    if (world == NULL || def == NULL || def->internalValue != M3_VEHICLE_COOKIE)
     {
-        return m3_nullVehicleId;
-    }
-    for (int32_t w = 0; w < def->wheelCount; ++w)
-    {
-        const m3WheelDef* wd = &def->wheels[w];
-        m3real d2 = m3Dot3(wd->direction, wd->direction);
-        if (!m3FiniteV3(wd->anchor) || !m3FiniteV3(wd->direction) || !(d2 > 0.81f) ||
-            !(d2 < 1.21f) || !m3FiniteF(wd->restLength) || !(wd->restLength > 0.0f) ||
-            !m3FiniteF(wd->travel) || !(wd->travel > 0.0f) || wd->travel > wd->restLength ||
-            !m3FiniteF(wd->hertz) || !(wd->hertz > 0.0f) || !m3FiniteF(wd->zeta) ||
-            wd->zeta < 0.0f || !m3FiniteF(wd->radius) || !(wd->radius > 0.0f) ||
-            !m3FiniteF(wd->brakeShare) || wd->brakeShare < 0.0f)
-        {
-            return m3_nullVehicleId;
-        }
+        return m3_nullVehicleId; // field checks live in the internal
     }
     int32_t slot = m3CreateVehicleInternal(world, def);
     if (slot < 0)
