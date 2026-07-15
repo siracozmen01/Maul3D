@@ -358,6 +358,23 @@ static tbScene SceneBlastyard(void)
         m3Sphere orb = {{0.0f, 0.0f, 0.0f}, 0.4f};
         m3CreateSphereShape(ball, &sd, &orb);
     }
+    // The flooded quarter (18-3): a basin beside the keep, debris
+    // that floats, and a current that ferries it along.
+    m3WaterVolumeDef water = m3DefaultWaterVolumeDef();
+    water.lo = (m3Pos3){8.0, 0.0, -6.0};
+    water.hi = (m3Pos3){20.0, 2.5, 6.0};
+    water.flow = (m3Vec3){0.0f, 0.0f, 0.6f};
+    m3CreateWaterVolume(scene.world, &water);
+    for (int32_t k = 0; k < 6; ++k)
+    {
+        m3BodyDef fd2 = m3DefaultBodyDef();
+        fd2.type = m3_dynamicBody;
+        fd2.position = (m3Pos3){10.0 + (double)(k % 3) * 2.0, 3.0, -3.0 + (double)(k / 3) * 2.0};
+        m3BodyId flotsam = m3CreateBody(scene.world, &fd2);
+        m3ShapeDef fs = m3DefaultShapeDef();
+        fs.density = 350.0f;
+        m3CreateBoxShape(flotsam, &fs, (m3Vec3){0.3f, 0.2f, 0.3f});
+    }
     return scene;
 }
 

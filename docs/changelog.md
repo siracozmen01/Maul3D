@@ -4,7 +4,25 @@ All notable changes to Maul3D. Versions are tags on green CI SHAs;
 every entry's determinism gates were verified across all CI cells at
 tag time.
 
-## Unreleased (v1.14 in tree)
+## Unreleased (v1.15 in tree)
+
+Water: the flood, the current, and the tide law.
+
+- Water volumes (ops 74/75, snapshot v48): up to 8 world-anchored
+  boxes of still or flowing water per world. Rigid buoyancy at
+  the submerged-bounds centroid, drag toward the flow, spin
+  damping; hostile defs refuse in the create internal; volumes
+  hash only while alive (dry worlds keep their exact bits).
+- The tide law: creating or destroying a volume wakes every body
+  its box touches; the suite proves sleep, flood, float, ebb,
+  fall end to end.
+- Soft-particle buoyancy under the rho-1000 convention: cloth
+  hangs in the water column and drifts with the current; the
+  Jolt-admitted soft-buoyancy gap is real here now.
+- Suite 50 (water) and the phase 18 mutation storm (300
+  journal-aimed bit flips over a tides-in-and-out session).
+
+## v1.14 (2026-07-15)
 
 Memory engineering and painted floors.
 

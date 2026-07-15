@@ -30,7 +30,7 @@ extern "C"
 
     /// Library version, encoded as major * 10000 + minor * 100 + patch.
 #define M3_VERSION_MAJOR 1
-#define M3_VERSION_MINOR 14
+#define M3_VERSION_MINOR 15
 #define M3_VERSION_PATCH 0
 
     /// The linked library's version as major * 10000 + minor * 100 +
