@@ -308,6 +308,11 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     M3_ALLOC(world->softCompliance, def->softBodyCapacity, m3real);
     M3_ALLOC(world->softBendStart, def->softBodyCapacity, int32_t);
     M3_ALLOC(world->softBendCompliance, def->softBodyCapacity, m3real);
+    M3_ALLOC(world->softDimX, def->softBodyCapacity, uint16_t);
+    M3_ALLOC(world->softDimY, def->softBodyCapacity, uint16_t);
+    M3_ALLOC(world->softDimZ, def->softBodyCapacity, uint16_t);
+    M3_ALLOC(world->softRestVolume, def->softBodyCapacity, m3real);
+    M3_ALLOC(world->softPressure, def->softBodyCapacity, m3real);
     M3_ALLOC(world->softRadius, def->softBodyCapacity, m3real);
     M3_ALLOC(world->softGravityScale, def->softBodyCapacity, m3real);
     M3_ALLOC(world->softUserData, def->softBodyCapacity, uint64_t);
@@ -576,6 +581,11 @@ void m3DestroyWorld(m3WorldId worldId)
     m3Free(world->softCompliance);
     m3Free(world->softBendStart);
     m3Free(world->softBendCompliance);
+    m3Free(world->softDimX);
+    m3Free(world->softDimY);
+    m3Free(world->softDimZ);
+    m3Free(world->softRestVolume);
+    m3Free(world->softPressure);
     m3Free(world->softRadius);
     m3Free(world->softGravityScale);
     m3Free(world->softUserData);

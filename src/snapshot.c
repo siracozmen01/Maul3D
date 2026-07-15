@@ -22,7 +22,8 @@
 #endif
 
 #define M3_SNAPSHOT_MAGIC   0x4D33534Eu // 'M3SN'
-#define M3_SNAPSHOT_VERSION 50u
+#define M3_SNAPSHOT_VERSION 51u
+// v51: soft pressure (20-2).
 // v50: soft bend tethers (20-1).
 // v49: native heightfields (19-1).
 // v48: water volumes (18-1).
@@ -354,6 +355,11 @@ static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3Wal
     M3_BLOCK(world->softCompliance, world->softBodyCapacity * (int32_t)sizeof(m3real));
     M3_BLOCK(world->softBendStart, world->softBodyCapacity * (int32_t)sizeof(int32_t));
     M3_BLOCK(world->softBendCompliance, world->softBodyCapacity * (int32_t)sizeof(m3real));
+    M3_BLOCK(world->softDimX, world->softBodyCapacity * (int32_t)sizeof(uint16_t));
+    M3_BLOCK(world->softDimY, world->softBodyCapacity * (int32_t)sizeof(uint16_t));
+    M3_BLOCK(world->softDimZ, world->softBodyCapacity * (int32_t)sizeof(uint16_t));
+    M3_BLOCK(world->softRestVolume, world->softBodyCapacity * (int32_t)sizeof(m3real));
+    M3_BLOCK(world->softPressure, world->softBodyCapacity * (int32_t)sizeof(m3real));
     M3_BLOCK(world->softRadius, world->softBodyCapacity * (int32_t)sizeof(m3real));
     M3_BLOCK(world->softGravityScale, world->softBodyCapacity * (int32_t)sizeof(m3real));
     M3_BLOCK(world->softUserData, world->softBodyCapacity * (int32_t)sizeof(uint64_t));
@@ -661,6 +667,31 @@ bool m3World_Restore(m3WorldId worldId, const void* data, int32_t size)
         // never a partial restore.
         return false;
     }
+    // Pool cursor walls (20-2 cure): a flipped header bit made
+    // jointPool.maxIndex outrun its capacity and the island pass
+    // read past the alive array (ASAN, the fuzz gate). Every
+    // cursor is ranged BEFORE any byte lands.
+#define M3_POOL_SANE(mx, fh, fc, rc, cap)                                                          \
+    ((mx) >= 0 && (mx) <= (cap) && (fh) >= -1 && (fh) < (cap) && (fc) >= 0 && (fc) <= (cap) &&     \
+     (rc) >= 0 && (rc) <= (cap))
+    if (!M3_POOL_SANE(header.maxIndex, header.freeHead, header.freeCount, header.retiredCount,
+                      world->bodyCapacity) ||
+        !M3_POOL_SANE(header.shapeMaxIndex, header.shapeFreeHead, header.shapeFreeCount,
+                      header.shapeRetiredCount, world->shapeCapacity) ||
+        !M3_POOL_SANE(header.hullMaxIndex, header.hullFreeHead, header.hullFreeCount,
+                      header.hullRetiredCount, world->shapeCapacity) ||
+        !M3_POOL_SANE(header.jointMaxIndex, header.jointFreeHead, header.jointFreeCount,
+                      header.jointRetiredCount, world->jointCapacity) ||
+        !M3_POOL_SANE(header.meshMaxIndex, header.meshFreeHead, header.meshFreeCount,
+                      header.meshRetiredCount, world->meshCapacity) ||
+        !M3_POOL_SANE(header.voxelMaxIndex, header.voxelFreeHead, header.voxelFreeCount,
+                      header.voxelRetiredCount, world->voxelCapacity) ||
+        !M3_POOL_SANE(header.charMaxIndex, header.charFreeHead, header.charFreeCount,
+                      header.charRetiredCount, world->characterCapacity))
+    {
+        return false; // hostile cursors refuse before any write
+    }
+#undef M3_POOL_SANE
     // Two-phase size validation (10-3): the fixed prefix is
     // state-independent, and the variable mesh tail is parsed
     // straight from the buffer BEFORE any byte lands in the world,
@@ -1051,6 +1082,15 @@ uint64_t m3World_Hash(m3WorldId worldId)
             // Bend tethers fold off-default (20-1), their own block.
             h = m3Hash64(h, &world->softBendStart[i], 4);
             h = m3Hash64(h, &world->softBendCompliance[i], 4);
+        }
+        if (world->softPressure[i] != 0.0f)
+        {
+            // Pressure folds off-default (20-2), its own block.
+            h = m3Hash64(h, &world->softDimX[i], 2);
+            h = m3Hash64(h, &world->softDimY[i], 2);
+            h = m3Hash64(h, &world->softDimZ[i], 2);
+            h = m3Hash64(h, &world->softRestVolume[i], 4);
+            h = m3Hash64(h, &world->softPressure[i], 4);
         }
         h = m3Hash64(h, &world->softRadius[i], 4);
         h = m3Hash64(h, &world->softGravityScale[i], 4);

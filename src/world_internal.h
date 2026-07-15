@@ -795,6 +795,13 @@ typedef struct m3World
     // compliance.
     int32_t* softBendStart;
     m3real* softBendCompliance;
+    // Pressure (20-2): lattice dims + the create volume + target
+    // multiplier; all folded off-default.
+    uint16_t* softDimX;
+    uint16_t* softDimY;
+    uint16_t* softDimZ;
+    m3real* softRestVolume;
+    m3real* softPressure;
     m3Vec3* softKick;    // pending explosion velocity kicks (13-3):
                          // integrated once next step, then zeroed,
                          // hashed only when nonzero (additive rule)

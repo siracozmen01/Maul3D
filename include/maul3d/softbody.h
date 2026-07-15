@@ -51,6 +51,12 @@ extern "C"
         /// smaller positive values bend stiffer. Full Cosserat
         /// twist stays out by design: positions carry no frames.
         m3real bendCompliance;
+        /// Internal pressure (20-2): a target volume multiplier for
+        /// CLOSED lattices (every axis count >= 2). Zero (default)
+        /// is off, bit-exact with pre-20; 1 holds the create
+        /// volume, 2 inflates toward double. One global volume
+        /// constraint over the surface, solved beside the edges.
+        m3real pressure;
         int32_t internalValue;
     } m3SoftBodyDef;
 

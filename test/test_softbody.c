@@ -662,6 +662,64 @@ static void TestAnchorRedTeam(void)
     m3DestroyWorld(world);
 }
 
+static void TestPressure(void)
+{
+    // 20-2: a pressurized cube inflates toward its target volume in
+    // zero gravity; the unpressurized twin keeps its size. Twins
+    // stay bit-identical, hostile pressure refuses.
+    double diag[2];
+    for (int32_t pass = 0; pass < 2; ++pass)
+    {
+        uint64_t hashes[2];
+        for (int32_t run = 0; run < 2; ++run)
+        {
+            m3WorldDef wd = m3DefaultWorldDef();
+            wd.gravity = (m3Vec3){0.0f, 0.0f, 0.0f};
+            wd.bodyCapacity = 4;
+            wd.shapeCapacity = 4;
+            m3WorldId world = m3CreateWorld(&wd);
+            m3SoftBodyDef sb = m3DefaultSoftBodyDef();
+            sb.position = (m3Pos3){0.0, 2.0, 0.0};
+            sb.countX = 4;
+            sb.countY = 4;
+            sb.countZ = 4;
+            sb.spacing = 0.25f;
+            sb.compliance = 1.0e-4f; // stretchy walls let it puff
+            sb.pressure = pass == 0 ? 0.0f : 2.0f;
+            m3SoftBodyId cube = m3CreateSoftBody(world, &sb);
+            CHECK(m3SoftBody_IsValid(cube), "the cube creates");
+            for (int32_t i = 0; i < 240; ++i)
+            {
+                m3World_Step(world, 1.0f / 60.0f, 4);
+            }
+            m3Pos3 a = m3SoftBody_GetParticlePosition(cube, 0);
+            m3Pos3 b = m3SoftBody_GetParticlePosition(cube, 63);
+            double dx = b.x - a.x;
+            double dy = b.y - a.y;
+            double dz = b.z - a.z;
+            if (run == 0)
+            {
+                diag[pass] = dx * dx + dy * dy + dz * dz;
+            }
+            hashes[run] = m3World_Hash(world);
+            m3DestroyWorld(world);
+        }
+        CHECK(hashes[0] == hashes[1], "twin cubes are bit-identical");
+    }
+    CHECK(diag[1] > diag[0] * 1.2, "the pressurized cube inflates");
+
+    m3WorldDef wd = m3DefaultWorldDef();
+    m3WorldId world = m3CreateWorld(&wd);
+    m3SoftBodyDef sb = m3DefaultSoftBodyDef();
+    sb.pressure = -1.0f;
+    CHECK(!m3SoftBody_IsValid(m3CreateSoftBody(world, &sb)), "negative pressure refuses");
+    sb = m3DefaultSoftBodyDef();
+    sb.countY = 1;
+    sb.pressure = 1.0f;
+    CHECK(!m3SoftBody_IsValid(m3CreateSoftBody(world, &sb)), "a flat sheet takes no pressure");
+    m3DestroyWorld(world);
+}
+
 static void TestBendRods(void)
 {
     // 20-1: a horizontal rope pinned at one end droops deep when
@@ -735,6 +793,7 @@ int main(void)
     TestSoftFractureStorm();
     TestAnchorRedTeam();
     TestBendRods();
+    TestPressure();
     if (s_failures == 0)
     {
         printf("test_softbody: all green\n");

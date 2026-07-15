@@ -32,6 +32,7 @@ m3SoftBodyDef m3DefaultSoftBodyDef(void)
     def.radius = 0.05f;
     def.gravityScale = 1.0f;
     def.bendCompliance = 0.0f;
+    def.pressure = 0.0f;
     def.internalValue = M3_SOFTBODY_COOKIE;
     return def;
 }
@@ -75,7 +76,8 @@ int32_t m3CreateSoftBodyInternal(m3World* world, const m3SoftBodyDef* def)
         !m3FiniteF(def->particleMass) || !(def->particleMass > 0.0f) ||
         !m3FiniteF(def->compliance) || def->compliance < 0.0f || !m3FiniteF(def->radius) ||
         !(def->radius > 0.0f) || !m3FiniteF(def->gravityScale) || !m3FiniteF(def->bendCompliance) ||
-        def->bendCompliance < 0.0f)
+        def->bendCompliance < 0.0f || !m3FiniteF(def->pressure) || def->pressure < 0.0f ||
+        (def->pressure > 0.0f && (def->countX < 2 || def->countY < 2 || def->countZ < 2)))
     {
         return -1;
     }
@@ -97,6 +99,15 @@ int32_t m3CreateSoftBodyInternal(m3World* world, const m3SoftBodyDef* def)
     world->softGravityScale[slot] = def->gravityScale;
     world->softUserData[slot] = def->userData;
     world->softBendCompliance[slot] = def->bendCompliance;
+    world->softDimX[slot] = (uint16_t)def->countX;
+    world->softDimY[slot] = (uint16_t)def->countY;
+    world->softDimZ[slot] = (uint16_t)def->countZ;
+    world->softPressure[slot] = def->pressure;
+    // The create lattice is a perfect grid: the rest volume is the
+    // closed box, no surface walk needed at create.
+    world->softRestVolume[slot] = (m3real)(def->countX - 1) * (m3real)(def->countY - 1) *
+                                  (m3real)(def->countZ - 1) * def->spacing * def->spacing *
+                                  def->spacing;
 
     m3real invMass = 1.0f / def->particleMass;
     for (int32_t z = 0; z < nz; ++z)
@@ -238,6 +249,11 @@ void m3DestroySoftBodyInternal(m3World* world, int32_t slot)
     world->softUserData[slot] = 0;
     world->softBendStart[slot] = 0;
     world->softBendCompliance[slot] = 0.0f;
+    world->softDimX[slot] = 0;
+    world->softDimY[slot] = 0;
+    world->softDimZ[slot] = 0;
+    world->softRestVolume[slot] = 0.0f;
+    world->softPressure[slot] = 0.0f;
     m3IdPoolFree(&world->softPool, slot);
 }
 
@@ -550,6 +566,89 @@ static void SoftCollideParticle(m3World* world, int32_t slot, int32_t k, int32_t
     }
 }
 
+// The closed-lattice volume and its gradients (20-2): six faces
+// walked in fixed order, outward winding, signed tet sum against a
+// local origin (the first particle: double-safe far from zero).
+// dV/da for triangle (a, b, c) is cross(b, c) / 6; the division by
+// six is folded once at the call site.
+static m3real SoftSurfaceVolume6(m3World* world, int32_t slot, m3Vec3* grads, m3Pos3 origin)
+{
+    int32_t nx = world->softDimX[slot];
+    int32_t ny = world->softDimY[slot];
+    int32_t nz = world->softDimZ[slot];
+    int32_t base = slot * M3_SOFTBODY_MAX_PARTICLES;
+    int32_t count = world->softParticleCount[slot];
+    for (int32_t i = 0; i < count; ++i)
+    {
+        grads[i] = (m3Vec3){0.0f, 0.0f, 0.0f};
+    }
+    m3real volume6 = 0.0f;
+    for (int32_t face = 0; face < 6; ++face)
+    {
+        int32_t nu = face < 2 ? ny : nx;
+        int32_t nv = face < 4 ? nz : ny;
+        for (int32_t v = 0; v + 1 < nv; ++v)
+        {
+            for (int32_t u = 0; u + 1 < nu; ++u)
+            {
+                int32_t i00;
+                int32_t i10;
+                int32_t i01;
+                int32_t i11;
+                if (face < 2)
+                {
+                    int32_t x = face == 0 ? 0 : nx - 1;
+                    i00 = x + nx * (u + ny * v);
+                    i10 = x + nx * ((u + 1) + ny * v);
+                    i01 = x + nx * (u + ny * (v + 1));
+                    i11 = x + nx * ((u + 1) + ny * (v + 1));
+                }
+                else if (face < 4)
+                {
+                    int32_t y = face == 2 ? 0 : ny - 1;
+                    i00 = u + nx * (y + ny * v);
+                    i10 = (u + 1) + nx * (y + ny * v);
+                    i01 = u + nx * (y + ny * (v + 1));
+                    i11 = (u + 1) + nx * (y + ny * (v + 1));
+                }
+                else
+                {
+                    int32_t z = face == 4 ? 0 : nz - 1;
+                    i00 = u + nx * (v + ny * z);
+                    i10 = (u + 1) + nx * (v + ny * z);
+                    i01 = u + nx * ((v + 1) + ny * z);
+                    i11 = (u + 1) + nx * ((v + 1) + ny * z);
+                }
+                // Outward winding: faces 1 (+x), 2 (-y), 5 (+z) take
+                // one diagonal orientation, their mirrors flip.
+                int flip = face == 0 || face == 3 || face == 4;
+                int32_t t0b = flip ? i01 : i10;
+                int32_t t0c = i11;
+                int32_t t1b = i11;
+                int32_t t1c = flip ? i10 : i01;
+                int32_t tris[2][3] = {{i00, t0b, t0c}, {i00, t1b, t1c}};
+                for (int32_t t = 0; t < 2; ++t)
+                {
+                    m3Vec3 pa = {(m3real)(world->softPos[base + tris[t][0]].x - origin.x),
+                                 (m3real)(world->softPos[base + tris[t][0]].y - origin.y),
+                                 (m3real)(world->softPos[base + tris[t][0]].z - origin.z)};
+                    m3Vec3 pb = {(m3real)(world->softPos[base + tris[t][1]].x - origin.x),
+                                 (m3real)(world->softPos[base + tris[t][1]].y - origin.y),
+                                 (m3real)(world->softPos[base + tris[t][1]].z - origin.z)};
+                    m3Vec3 pc = {(m3real)(world->softPos[base + tris[t][2]].x - origin.x),
+                                 (m3real)(world->softPos[base + tris[t][2]].y - origin.y),
+                                 (m3real)(world->softPos[base + tris[t][2]].z - origin.z)};
+                    volume6 += m3Dot3(pa, m3Cross3(pb, pc));
+                    grads[tris[t][0]] = m3Add3(grads[tris[t][0]], m3Cross3(pb, pc));
+                    grads[tris[t][1]] = m3Add3(grads[tris[t][1]], m3Cross3(pc, pa));
+                    grads[tris[t][2]] = m3Add3(grads[tris[t][2]], m3Cross3(pa, pb));
+                }
+            }
+        }
+    }
+    return volume6;
+}
+
 // The soft pass: XPBD small steps over the full shape set (7-2).
 void m3SoftBodyPass(m3World* world, float dt, int32_t substeps)
 {
@@ -710,6 +809,45 @@ void m3SoftBodyPass(m3World* world, float dt, int32_t substeps)
                 world->softPos[kb].x -= (double)(wb * scale * diff.x);
                 world->softPos[kb].y -= (double)(wb * scale * diff.y);
                 world->softPos[kb].z -= (double)(wb * scale * diff.z);
+            }
+
+            // The pressure row (20-2): one global volume constraint
+            // per substep, PBD-projected in fixed particle order.
+            // Gradients are of 6V, so the projection solves
+            // C6 = 6 (V - target) against them directly: the sixes
+            // cancel and no epsilon-sensitive division sneaks in.
+            if (world->softPressure[slot] > 0.0f)
+            {
+                m3Vec3 grads[M3_SOFTBODY_MAX_PARTICLES];
+                m3Pos3 origin = world->softPos[base];
+                m3real vol6 = SoftSurfaceVolume6(world, slot, grads, origin);
+                m3real c6 = vol6 - 6.0f * world->softRestVolume[slot] * world->softPressure[slot];
+                m3real denom = 0.0f;
+                for (int32_t i = 0; i < count; ++i)
+                {
+                    int pinned = world->softInvMass[base + i] == 0.0f ||
+                                 (anchored[i >> 3] & (uint8_t)(1u << (i & 7))) != 0;
+                    if (!pinned)
+                    {
+                        denom += world->softInvMass[base + i] * m3Dot3(grads[i], grads[i]);
+                    }
+                }
+                if (denom > 1.0e-9f)
+                {
+                    m3real lambda = -c6 / denom;
+                    for (int32_t i = 0; i < count; ++i)
+                    {
+                        int pinned = world->softInvMass[base + i] == 0.0f ||
+                                     (anchored[i >> 3] & (uint8_t)(1u << (i & 7))) != 0;
+                        if (!pinned)
+                        {
+                            m3Vec3 dp = m3MulSV3(lambda * world->softInvMass[base + i], grads[i]);
+                            world->softPos[base + i].x += (double)dp.x;
+                            world->softPos[base + i].y += (double)dp.y;
+                            world->softPos[base + i].z += (double)dp.z;
+                        }
+                    }
+                }
             }
 
             // Anchors (7-3): snap each anchored particle to its
