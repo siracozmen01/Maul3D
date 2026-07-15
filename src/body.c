@@ -261,7 +261,10 @@ void m3SetEnabledInternal(m3World* world, int32_t index, int enabled)
 
 void m3SetMotionLocksInternal(m3World* world, int32_t index, uint8_t locks)
 {
-    world->bodyLocks[index] = locks;
+    // Bit 6 is allowFastRotation (13-1), owned by its own op; a
+    // locks write must not clobber it.
+    world->bodyLocks[index] =
+        (uint8_t)((world->bodyLocks[index] & M3_LOCKS_ALLOW_FAST_ROTATION) | (locks & 0x3Fu));
     m3Vec3* v = &world->linearVelocities[index];
     m3Vec3* w = &world->angularVelocities[index];
     if (locks & 1u)
@@ -635,7 +638,49 @@ uint32_t m3Body_GetMotionLocks(m3BodyId bodyId)
 {
     int32_t index;
     m3World* world = ResolveBody(bodyId, &index);
-    return world != NULL ? (uint32_t)world->bodyLocks[index] : 0u;
+    return world != NULL ? (uint32_t)(world->bodyLocks[index] & 0x3Fu) : 0u;
+}
+
+void m3SetAllowFastRotationInternal(m3World* world, int32_t index, int32_t allow)
+{
+    if (allow != 0)
+    {
+        world->bodyLocks[index] |= (uint8_t)M3_LOCKS_ALLOW_FAST_ROTATION;
+    }
+    else
+    {
+        world->bodyLocks[index] &= (uint8_t)~M3_LOCKS_ALLOW_FAST_ROTATION;
+    }
+}
+
+void m3Body_SetAllowFastRotation(m3BodyId bodyId, bool allow)
+{
+    int32_t index;
+    m3World* world = ResolveBody(bodyId, &index);
+    if (world == NULL)
+    {
+        return;
+    }
+    if (world->journalActive != 0)
+    {
+        struct
+        {
+            m3BodyId id;
+            uint32_t allow;
+        } record;
+        memset(&record, 0, sizeof(record));
+        record.id = bodyId;
+        record.allow = allow ? 1u : 0u;
+        m3JournalRecord(world, m3_opSetAllowFastRotation, &record, (int32_t)sizeof(record));
+    }
+    m3SetAllowFastRotationInternal(world, index, allow ? 1 : 0);
+}
+
+bool m3Body_GetAllowFastRotation(m3BodyId bodyId)
+{
+    int32_t index;
+    m3World* world = ResolveBody(bodyId, &index);
+    return world != NULL && (world->bodyLocks[index] & M3_LOCKS_ALLOW_FAST_ROTATION) != 0;
 }
 
 void m3Body_SetSleepControls(m3BodyId bodyId, float threshold, bool canSleep)

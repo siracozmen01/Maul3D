@@ -152,6 +152,9 @@ typedef enum m3Op
     m3_opVehicleDrivetrain = 62,    // vehicle + drivetrain def (12-1)
     m3_opVehicleGear = 63,          // vehicle + gear select
     m3_opCharacterStance = 64,      // character + halfHeight + radius (12-3)
+    m3_opSetAllowFastRotation = 65, // body + 0/1 spin-cap escape (13-1)
+    m3_opSetMaximumAngularSpeed = 66, // world spin cap (13-1)
+    m3_opWorldExplode = 67,           // explosion def (13-2)
 } m3Op;
 
 // Immutable interned hull data (lifetime 3): vertices, face planes,
@@ -434,6 +437,7 @@ typedef struct m3World
     float contactPushMaxSpeed;
     float restitutionThreshold;
     float maximumLinearSpeed;
+    float maximumAngularSpeed; // rad/s spin cap (13-1)
     uint8_t sleepEnabled;
     uint8_t continuousEnabled;
     float hitEventThreshold; // approach speed gate for hit events (8-5)
@@ -481,7 +485,8 @@ typedef struct m3World
     m3Vec3* bodyTorque;        // each substep, cleared after the step,
                                // hashed only when nonzero (additive rule)
     uint8_t* bodyEnabled;      // 8-3: disabled = invisible everywhere
-    uint8_t* bodyLocks;        // bits 0-2 linear xyz, 3-5 angular xyz
+    uint8_t* bodyLocks;        // bits 0-2 linear xyz, 3-5 angular xyz,
+                               // bit 6 allowFastRotation (13-1)
     float* bodySleepThreshold; // per-body; default the world constant
     uint8_t* bodyCanSleep;     // 0 = never sleeps
     uint8_t* bodyHasTarget;    // kinematic servo pending (one step)
@@ -765,7 +770,18 @@ void m3WakeRegionAabb(m3World* world, const double lo[3], const double hi[3]);
 #define M3_CONTACT_PUSH_MAX_SPEED_DEFAULT 3.0f
 #define M3_RESTITUTION_THRESHOLD_DEFAULT  1.0f
 #define M3_MAX_LINEAR_SPEED_DEFAULT       400.0f
+// The angular twin (13-1) keeps the linear cap's philosophy: a
+// catastrophe guard far above legal tumbling, not the reference's
+// aggressive dt-derived clamp. Hosts wanting the tight reference
+// behavior set a low cap and flag their wheels.
+#define M3_MAX_ANGULAR_SPEED_DEFAULT      800.0f
 #define M3_HIT_EVENT_THRESHOLD_DEFAULT    1.0f
+
+// bodyLocks bit 6: this body bypasses the angular speed cap (the
+// reference allowFastRotation escape hatch). Bits 0..5 stay the
+// motion locks; the byte already snapshots and hashes off-default
+// as one block, so the flag rides for free.
+#define M3_LOCKS_ALLOW_FAST_ROTATION 0x40u
 
 void m3SetHitEventThresholdInternal(m3World* world, float value);
 void m3EnableShapeHitEventsInternal(m3World* world, int32_t slot, int32_t on);
@@ -816,6 +832,9 @@ void m3SetShapeDensityInternal(m3World* world, int32_t slot, float value, int32_
 void m3SetContactTuningInternal(m3World* world, float hertz, float dampingRatio, float pushSpeed);
 void m3SetRestitutionThresholdInternal(m3World* world, float value);
 void m3SetMaximumLinearSpeedInternal(m3World* world, float value);
+void m3SetMaximumAngularSpeedInternal(m3World* world, float value);
+void m3SetAllowFastRotationInternal(m3World* world, int32_t index, int32_t allow);
+bool m3WorldExplodeInternal(m3World* world, const m3ExplosionDef* def);
 void m3EnableSleepingInternal(m3World* world, int32_t on);
 void m3EnableContinuousInternal(m3World* world, int32_t on);
 #define M3_SLEEP_VELOCITY_DEFAULT 0.05f

@@ -22,7 +22,8 @@
 #endif
 
 #define M3_SNAPSHOT_MAGIC   0x4D33534Eu // 'M3SN'
-#define M3_SNAPSHOT_VERSION 42u
+#define M3_SNAPSHOT_VERSION 43u
+// v43: angular speed cap (13-1).
 // v42: vehicle drivetrain, the engine curve and gearbox (12-1).
 // v41: wind field and conveyor surface velocities (11-3).
 // v40: soft-to-soft anchors (11-2).
@@ -194,6 +195,7 @@ static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3Wal
     M3_BLOCK(&world->contactPushMaxSpeed, (int32_t)sizeof(float));
     M3_BLOCK(&world->restitutionThreshold, (int32_t)sizeof(float));
     M3_BLOCK(&world->maximumLinearSpeed, (int32_t)sizeof(float));
+    M3_BLOCK(&world->maximumAngularSpeed, (int32_t)sizeof(float)); // v43
     M3_BLOCK(&world->sleepEnabled, 1);
     M3_BLOCK(&world->continuousEnabled, 1);
     M3_BLOCK(&world->hitEventThreshold, (int32_t)sizeof(float));
@@ -689,6 +691,13 @@ uint64_t m3World_Hash(m3WorldId worldId)
         h = m3Hash64(h, &world->sleepEnabled, 1);
         h = m3Hash64(h, &world->continuousEnabled, 1);
         h = m3Hash64(h, &world->hitEventThreshold, 4);
+    }
+    if (world->maximumAngularSpeed != M3_MAX_ANGULAR_SPEED_DEFAULT)
+    {
+        // The angular cap folds in its OWN block (13-1), not the 8-4
+        // knob block above: appending there would move the hash of
+        // every world already off-default on an older knob.
+        h = m3Hash64(h, &world->maximumAngularSpeed, 4);
     }
     if (world->windSpeed != 0.0f)
     {

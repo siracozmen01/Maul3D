@@ -119,6 +119,9 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     world->contactPushMaxSpeed = def->contactPushMaxSpeed;
     world->restitutionThreshold = def->restitutionThreshold;
     world->maximumLinearSpeed = def->maximumLinearSpeed;
+    // Not a def field (13-1): the def cookie stays put under 1.x.
+    // Hosts tune it through the journaled setter.
+    world->maximumAngularSpeed = M3_MAX_ANGULAR_SPEED_DEFAULT;
     world->sleepEnabled = def->enableSleeping != 0 ? 1 : 0;
     world->continuousEnabled = def->enableContinuous != 0 ? 1 : 0;
     world->hitEventThreshold = def->hitEventThreshold;
@@ -636,6 +639,11 @@ void m3SetMaximumLinearSpeedInternal(m3World* world, float value)
     world->maximumLinearSpeed = value;
 }
 
+void m3SetMaximumAngularSpeedInternal(m3World* world, float value)
+{
+    world->maximumAngularSpeed = value;
+}
+
 void m3EnableSleepingInternal(m3World* world, int32_t on)
 {
     world->sleepEnabled = on != 0 ? 1 : 0;
@@ -733,6 +741,20 @@ void m3World_SetMaximumLinearSpeed(m3WorldId worldId, float value)
         m3JournalRecord(world, m3_opSetMaximumLinearSpeed, &value, (int32_t)sizeof(value));
     }
     m3SetMaximumLinearSpeedInternal(world, value);
+}
+
+void m3World_SetMaximumAngularSpeed(m3WorldId worldId, float value)
+{
+    m3World* world = m3WorldFromId(worldId);
+    if (world == NULL || !m3FiniteF(value) || value <= 0.0f)
+    {
+        return;
+    }
+    if (world->journalActive != 0)
+    {
+        m3JournalRecord(world, m3_opSetMaximumAngularSpeed, &value, (int32_t)sizeof(value));
+    }
+    m3SetMaximumAngularSpeedInternal(world, value);
 }
 
 void m3World_EnableSleeping(m3WorldId worldId, bool flag)
@@ -2094,6 +2116,63 @@ static bool JournalReplayApply(m3World* world, const void* data, int32_t size)
             else
             {
                 m3SetMaximumLinearSpeedInternal(world, value);
+            }
+            break;
+        }
+        case m3_opSetMaximumAngularSpeed:
+        {
+            // A new op gets the strict wall: hostile caps (NaN,
+            // nonpositive) fail the replay loudly instead of riding
+            // into the solver. Op 46 keeps its 8-4 byte contract.
+            float value;
+            if (bytes != (int32_t)sizeof(value))
+            {
+                return false;
+            }
+            memcpy(&value, payload, sizeof(value));
+            if (!m3FiniteF(value) || value <= 0.0f)
+            {
+                return false;
+            }
+            m3SetMaximumAngularSpeedInternal(world, value);
+            break;
+        }
+        case m3_opSetAllowFastRotation:
+        {
+            struct
+            {
+                m3BodyId id;
+                uint32_t allow;
+            } record;
+            if (bytes != (int32_t)sizeof(record))
+            {
+                return false;
+            }
+            memcpy(&record, payload, sizeof(record));
+            if (record.allow > 1u)
+            {
+                return false;
+            }
+            record.id.world0 = world->worldIndex0;
+            int32_t index = m3BodySlot(world, record.id);
+            if (index < 0)
+            {
+                return false;
+            }
+            m3SetAllowFastRotationInternal(world, index, (int32_t)record.allow);
+            break;
+        }
+        case m3_opWorldExplode:
+        {
+            m3ExplosionDef def;
+            if (bytes != (int32_t)sizeof(def))
+            {
+                return false;
+            }
+            memcpy(&def, payload, sizeof(def));
+            if (!m3WorldExplodeInternal(world, &def))
+            {
+                return false; // hostile blast fields fail loudly
             }
             break;
         }

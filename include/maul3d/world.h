@@ -102,6 +102,12 @@ extern "C"
     /// Journaled.
     M3_API void m3World_SetMaximumLinearSpeed(m3WorldId worldId, float value);
 
+    /// Hard cap on any body's angular speed in rad/s, applied every
+    /// substep. The default (800) is a catastrophe guard, not a
+    /// gameplay clamp; bodies flagged with
+    /// m3Body_SetAllowFastRotation bypass it. Journaled.
+    M3_API void m3World_SetMaximumAngularSpeed(m3WorldId worldId, float value);
+
     /// Turn island sleeping on or off. Turning it OFF wakes every
     /// sleeping body (the reference behavior). Journaled.
     M3_API void m3World_EnableSleeping(m3WorldId worldId, bool flag);
@@ -353,6 +359,31 @@ extern "C"
     M3_API int32_t m3World_OverlapSphereEx(m3WorldId worldId, m3Pos3 center, m3real radius,
                                            m3ShapeId* shapes, int32_t capacity,
                                            m3QueryFilter filter);
+
+    /// Explosion definition (13-2): one journaled call pushes every
+    /// dynamic convex shape in range. The impulse scales with the
+    /// area the shape shows to the blast (the reference model),
+    /// fades linearly to zero across the falloff band past the
+    /// radius, wakes everything it reaches, and may be negative for
+    /// an implosion. Spheres, capsules, and hulls respond; meshes
+    /// and planes are static; voxel chunks couple through charges.
+    typedef struct m3ExplosionDef
+    {
+        m3Pos3 position;      // world-space center
+        m3QueryFilter filter; // which shapes the blast may touch
+        float radius;         // full-impulse radius, >= 0
+        float falloff;        // fade band past the radius, >= 0
+        float impulsePerArea; // impulse per m^2 of facing area
+        int32_t internalValue;
+    } m3ExplosionDef;
+
+    /// Returns a def with pinned defaults (10 m radius, 5 m falloff,
+    /// zero impulse, open filter) and a valid cookie.
+    M3_API m3ExplosionDef m3DefaultExplosionDef(void);
+
+    /// Apply the explosion now. Journaled; hostile defs apply
+    /// nothing and journal nothing.
+    M3_API void m3World_Explode(m3WorldId worldId, const m3ExplosionDef* def);
 
     /// FNV-1a 64 over the curated deterministic state (transforms,
     /// velocities, mass, types, step count, gravity) in canonical slot

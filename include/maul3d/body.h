@@ -84,6 +84,10 @@ extern "C"
     /// substep, so 2.5D scenes and upright enemies stay exact.
     M3_API void m3Body_SetMotionLocks(m3BodyId bodyId, uint32_t locks);
     M3_API uint32_t m3Body_GetMotionLocks(m3BodyId bodyId);
+    /// Let this body spin past the world's angular speed cap (for
+    /// wheels and other legal fast spinners). Journaled.
+    M3_API void m3Body_SetAllowFastRotation(m3BodyId bodyId, bool allow);
+    M3_API bool m3Body_GetAllowFastRotation(m3BodyId bodyId);
     /// Sleep controls: a per-body velocity threshold (zero restores
     /// the world default) and a can-sleep switch.
     M3_API void m3Body_SetSleepControls(m3BodyId bodyId, float threshold, bool canSleep);

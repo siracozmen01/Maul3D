@@ -3400,16 +3400,26 @@ void m3StepInternal(m3World* world, float dt, int32_t substeps)
             v = m3MulSV3(1.0f / (1.0f + h * world->linearDamping[i]), v);
             w = m3MulSV3(1.0f / (1.0f + h * world->angularDamping[i]), w);
             w = GyroscopicOmega(world, i, w, h);
-            // Hard linear speed cap (8-4), the reference clamp. The
-            // angular cap stays out: the reference pairs it with an
-            // allowFastRotation escape hatch we have not shipped,
-            // and capping spin silently would rewrite scenes that
-            // legally tumble fast (argued in the plan).
+            // Hard linear speed cap (8-4), the reference clamp.
             m3real v2 = m3Dot3(v, v);
             m3real cap = world->maximumLinearSpeed;
             if (v2 > cap * cap)
             {
                 v = m3MulSV3(cap / sqrtf(v2), v);
+            }
+            // Hard angular speed cap (13-1) with the reference's
+            // allowFastRotation escape hatch on bodyLocks bit 6. The
+            // default cap is a catastrophe guard like the 400 m/s
+            // linear one, far above legal tumbling, so scenes that
+            // never touch the knob keep their bits.
+            if ((world->bodyLocks[i] & M3_LOCKS_ALLOW_FAST_ROTATION) == 0)
+            {
+                m3real w2 = m3Dot3(w, w);
+                m3real wcap = world->maximumAngularSpeed;
+                if (w2 > wcap * wcap)
+                {
+                    w = m3MulSV3(wcap / sqrtf(w2), w);
+                }
             }
             world->linearVelocities[i] = v;
             world->angularVelocities[i] = w;

@@ -1033,3 +1033,200 @@ int32_t m3World_OverlapSphere(m3WorldId worldId, m3Pos3 center, m3real radius, m
     return m3World_OverlapSphereEx(worldId, center, radius, shapes, capacity,
                                    m3DefaultQueryFilter());
 }
+
+// --- Explosions (13-2) ------------------------------------------------------
+
+#define M3_EXPLOSION_COOKIE ((int32_t)(M3_COOKIE ^ ((int32_t)sizeof(m3ExplosionDef) << 8) ^ 13))
+
+// Projected area of a convex shape onto a plane facing `direction`
+// (a unit vector in the shape's local frame): the reference scales
+// blast impulse by the area the shape shows to the front.
+static m3real ShapeProjectedArea(const m3World* world, int32_t shape, m3Vec3 direction)
+{
+    uint8_t type = world->shapeType[shape];
+    const m3ShapeGeom* geom = &world->shapeGeom[shape];
+    if (type == (uint8_t)m3_sphereShape)
+    {
+        return M3_PI * geom->s * geom->s;
+    }
+    if (type == (uint8_t)m3_capsuleShape)
+    {
+        m3Vec3 axis = m3Sub3(geom->v2, geom->v);
+        m3real projected = m3Length3(m3Cross3(axis, direction));
+        return M3_PI * geom->s * geom->s + 2.0f * geom->s * projected;
+    }
+    if (type == (uint8_t)m3_hullShape)
+    {
+        // Fan every face from its first vertex and keep the facing
+        // triangles; half the summed cross products is the area.
+        const m3HullData* hull = &world->hullData[world->shapeHullIndex[shape]];
+        m3real area = 0.0f;
+        for (int32_t f = 0; f < hull->faceCount; ++f)
+        {
+            int32_t start = (int32_t)hull->faceVertStart[f];
+            int32_t count = (int32_t)hull->faceVertCounts[f];
+            m3Vec3 p1 = hull->vertices[hull->faceIndices[start]];
+            for (int32_t k = 2; k < count; ++k)
+            {
+                m3Vec3 p2 = hull->vertices[hull->faceIndices[start + k - 1]];
+                m3Vec3 p3 = hull->vertices[hull->faceIndices[start + k]];
+                m3real a = m3Dot3(m3Cross3(m3Sub3(p2, p1), m3Sub3(p3, p1)), direction);
+                area += a > 0.0f ? a : 0.0f;
+            }
+        }
+        return 0.5f * area;
+    }
+    return 0.0f;
+}
+
+// The shape's own stable interior point, local frame: the fallback
+// direction anchor when the blast center sits inside the shape.
+static m3Vec3 ShapeLocalCentroid(const m3World* world, int32_t shape)
+{
+    uint8_t type = world->shapeType[shape];
+    const m3ShapeGeom* geom = &world->shapeGeom[shape];
+    if (type == (uint8_t)m3_capsuleShape)
+    {
+        return m3MulSV3(0.5f, m3Add3(geom->v, geom->v2));
+    }
+    if (type == (uint8_t)m3_hullShape)
+    {
+        return world->hullData[world->shapeHullIndex[shape]].center;
+    }
+    return geom->v; // sphere center
+}
+
+typedef struct m3ExplodeContext
+{
+    m3World* world;
+    const m3ExplosionDef* def;
+} m3ExplodeContext;
+
+static bool ExplodeCallback(int32_t shape, void* userContext)
+{
+    m3ExplodeContext* ctx = (m3ExplodeContext*)userContext;
+    m3World* world = ctx->world;
+    const m3ExplosionDef* def = ctx->def;
+    uint8_t type = world->shapeType[shape];
+    if (type != (uint8_t)m3_sphereShape && type != (uint8_t)m3_capsuleShape &&
+        type != (uint8_t)m3_hullShape)
+    {
+        return true; // voxel charges couple in 13-3; the rest is static
+    }
+    int32_t body = world->shapeBody[shape];
+    if (world->types[body] != (uint8_t)m3_dynamicBody || world->bodyEnabled[body] == 0 ||
+        world->invMass[body] <= 0.0f)
+    {
+        return true;
+    }
+    if (!m3FilterPass(def->filter.categoryBits, def->filter.maskBits, world->shapeCategory[shape],
+                      world->shapeMask[shape]))
+    {
+        return true;
+    }
+    // Work in the shape's local frame so distance and direction stay
+    // precise far from the origin (the reference recentering).
+    m3Transform xf = m3ShapeWorldTransform(world, shape);
+    m3Vec3 local = m3InvRotateVec3(
+        xf.q, (m3Vec3){(m3real)(def->position.x - xf.p.x), (m3real)(def->position.y - xf.p.y),
+                       (m3real)(def->position.z - xf.p.z)});
+    m3Vec3 scratch[2];
+    m3DistanceProxy proxy = m3MakeShapeProxy(world, shape, scratch);
+    m3Vec3 point = local;
+    m3DistanceInput input;
+    memset(&input, 0, sizeof(input));
+    input.proxyA = proxy;
+    input.proxyB.points = &point;
+    input.proxyB.count = 1;
+    input.proxyB.radius = 0.0f;
+    input.q = m3MakeIdentityQuat();
+    input.p = (m3Vec3){0.0f, 0.0f, 0.0f};
+    input.useRadii = false;
+    m3SimplexCache cache;
+    cache.count = 0;
+    cache.metric = 0.0f;
+    m3DistanceOutput out = m3ShapeDistance(&input, &cache);
+    m3real surface = out.distance - proxy.radius;
+    if (surface > def->radius + def->falloff)
+    {
+        return true;
+    }
+    // The blast wakes everything it reaches, sleepers included.
+    m3SetAwakeInternal(world, body, 1);
+    m3Vec3 direction;
+    m3Vec3 contact;
+    if (out.distance > 1e-6f && surface > 1e-6f)
+    {
+        direction = m3Normalize3(m3Sub3(out.pointA, point));
+        contact = m3Sub3(out.pointA, m3MulSV3(proxy.radius, direction));
+    }
+    else
+    {
+        // The center sits inside the shape: push through the
+        // centroid (the reference fallback), fixed axis when even
+        // that is degenerate.
+        m3Vec3 centroid = ShapeLocalCentroid(world, shape);
+        m3Vec3 d = m3Sub3(centroid, point);
+        direction = m3Dot3(d, d) > 1e-10f ? m3Normalize3(d) : (m3Vec3){1.0f, 0.0f, 0.0f};
+        contact = centroid;
+    }
+    m3real scale = 1.0f;
+    if (surface > def->radius && def->falloff > 0.0f)
+    {
+        scale = (def->radius + def->falloff - surface) / def->falloff;
+        scale = scale < 0.0f ? 0.0f : (scale > 1.0f ? 1.0f : scale);
+    }
+    m3real magnitude = def->impulsePerArea * ShapeProjectedArea(world, shape, direction) * scale;
+    if (magnitude != 0.0f)
+    {
+        m3Vec3 impulse = m3MulSV3(magnitude, m3RotateVec3(xf.q, direction));
+        m3Vec3 arm = m3RotateVec3(xf.q, contact);
+        m3Pos3 at = {xf.p.x + (double)arm.x, xf.p.y + (double)arm.y, xf.p.z + (double)arm.z};
+        m3ApplyImpulseAtPointInternal(world, body, impulse, at);
+    }
+    return true;
+}
+
+bool m3WorldExplodeInternal(m3World* world, const m3ExplosionDef* def)
+{
+    if (!m3FinitePos3(def->position) || !m3FiniteF(def->radius) || def->radius < 0.0f ||
+        !m3FiniteF(def->falloff) || def->falloff < 0.0f || !m3FiniteF(def->impulsePerArea))
+    {
+        return false;
+    }
+    double extent = (double)def->radius + (double)def->falloff;
+    double lo[3] = {def->position.x - extent, def->position.y - extent, def->position.z - extent};
+    double hi[3] = {def->position.x + extent, def->position.y + extent, def->position.z + extent};
+    m3ExplodeContext ctx = {world, def};
+    m3TreeQuery(&world->tree, lo, hi, ExplodeCallback, &ctx);
+    return true;
+}
+
+m3ExplosionDef m3DefaultExplosionDef(void)
+{
+    m3ExplosionDef def;
+    memset(&def, 0, sizeof(def));
+    def.filter = m3DefaultQueryFilter();
+    def.radius = 10.0f;
+    def.falloff = 5.0f;
+    def.impulsePerArea = 0.0f;
+    def.internalValue = M3_EXPLOSION_COOKIE;
+    return def;
+}
+
+void m3World_Explode(m3WorldId worldId, const m3ExplosionDef* def)
+{
+    m3World* world = m3WorldFromId(worldId);
+    if (world == NULL || def == NULL || def->internalValue != M3_EXPLOSION_COOKIE)
+    {
+        return;
+    }
+    if (!m3WorldExplodeInternal(world, def))
+    {
+        return; // hostile fields apply nothing and journal nothing
+    }
+    if (world->journalActive != 0)
+    {
+        m3JournalRecord(world, m3_opWorldExplode, def, (int32_t)sizeof(*def));
+    }
+}

@@ -330,6 +330,16 @@ target_link_libraries(test_stance PRIVATE maul3d)
 maul3d_apply_flags(test_stance)
 add_test(NAME stance COMMAND test_stance)
 
+add_executable(test_angularcap test/test_angularcap.c)
+target_link_libraries(test_angularcap PRIVATE maul3d)
+maul3d_apply_flags(test_angularcap)
+add_test(NAME angularcap COMMAND test_angularcap)
+
+add_executable(test_explosion test/test_explosion.c)
+target_link_libraries(test_explosion PRIVATE maul3d)
+maul3d_apply_flags(test_explosion)
+add_test(NAME explosion COMMAND test_explosion)
+
 add_executable(test_fuzz test/test_fuzz.c)
 target_link_libraries(test_fuzz PRIVATE maul3d)
 maul3d_apply_flags(test_fuzz)
