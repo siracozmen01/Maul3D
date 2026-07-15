@@ -370,6 +370,11 @@ target_link_libraries(test_gearpulley PRIVATE maul3d)
 maul3d_apply_flags(test_gearpulley)
 add_test(NAME gearpulley COMMAND test_gearpulley)
 
+add_executable(test_meshmaterial test/test_meshmaterial.c)
+target_link_libraries(test_meshmaterial PRIVATE maul3d)
+maul3d_apply_flags(test_meshmaterial)
+add_test(NAME meshmaterial COMMAND test_meshmaterial)
+
 add_executable(test_fuzz test/test_fuzz.c)
 target_link_libraries(test_fuzz PRIVATE maul3d)
 maul3d_apply_flags(test_fuzz)

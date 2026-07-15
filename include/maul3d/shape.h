@@ -156,6 +156,29 @@ extern "C"
                                        const m3Vec3* vertices, int32_t vertexCount,
                                        const uint16_t* indices, int32_t triangleCount);
 
+    /// A per-triangle surface material for mesh shapes (17-2): the
+    /// struck triangle's entry replaces the SHAPE's friction,
+    /// restitution, and rolling resistance in the contact mix, and
+    /// its surface velocity feeds the conveyor row (a moving
+    /// walkway per triangle). All finite, frictions and resistances
+    /// nonnegative.
+    typedef struct m3MeshSurfaceMaterial
+    {
+        float friction;
+        float restitution;
+        float rollingResistance;
+        m3Vec3 surfaceVelocity; // world frame, the conveyor tangent
+    } m3MeshSurfaceMaterial;
+
+    /// Paint material groups onto a mesh shape: up to 8 entries and
+    /// one group index byte per triangle (triangleMaterials, length
+    /// = the mesh's triangle count, every byte < materialCount).
+    /// Journaled; refuses loudly on a non-mesh shape, hostile
+    /// values, or out-of-range group bytes. A mesh without painted
+    /// materials keeps using its shape material everywhere.
+    M3_API void m3Shape_SetMeshMaterials(m3ShapeId shapeId, const m3MeshSurfaceMaterial* materials,
+                                         int32_t materialCount, const uint8_t* triangleMaterials);
+
     /// A heightfield chunk: an nx by nz grid of heights (row-major,
     /// x fastest) spaced `cellSize` apart in x and z, triangulated
     /// into a static mesh through the same welded triangle path.

@@ -2264,6 +2264,33 @@ static bool JournalReplayApply(m3World* world, const void* data, int32_t size)
             m3SetBodyNameInternal(world, index, record.name);
             break;
         }
+        case m3_opSetMeshMaterials:
+        {
+            m3SetMeshMaterialsOp head;
+            if (bytes < (int32_t)sizeof(head))
+            {
+                return false;
+            }
+            memcpy(&head, payload, sizeof(head));
+            head.id.world0 = world->worldIndex0;
+            int32_t slot = m3ShapeSlot(world, head.id);
+            if (slot < 0 || world->shapeType[slot] != (uint8_t)m3_meshShape)
+            {
+                return false;
+            }
+            int32_t meshIndex = world->shapeMeshIndex[slot];
+            if (meshIndex < 0 || head.triangleCount != world->meshData[meshIndex].triangleCount ||
+                bytes != (int32_t)sizeof(head) + head.triangleCount)
+            {
+                return false; // the byte array must match THIS mesh
+            }
+            if (!m3SetMeshMaterialsInternal(world, meshIndex, head.materials, head.materialCount,
+                                            (const uint8_t*)payload + sizeof(head)))
+            {
+                return false; // hostile paint fails loudly
+            }
+            break;
+        }
         case m3_opJointSetMotorPose:
         {
             struct

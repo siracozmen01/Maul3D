@@ -1805,6 +1805,7 @@ static void CollideMeshConvex(m3World* world, m3Manifold* fresh, int32_t meshSha
     m3Vec3 gPoint[GATHER_CAP];
     m3real gSep[GATHER_CAP];
     uint16_t gId[GATHER_CAP];
+    uint16_t gMat[GATHER_CAP];
     int32_t gCount = 0;
     for (int32_t k = 0; k < faceCount && gCount < GATHER_CAP; ++k)
     {
@@ -1818,6 +1819,12 @@ static void CollideMeshConvex(m3World* world, m3Manifold* fresh, int32_t meshSha
             gSep[gCount] = faceAccepted[k].local.separation[p];
             gId[gCount] =
                 (uint16_t)((faceAccepted[k].triIndex << 2) | faceAccepted[k].local.localId[p]);
+            // The material group rides the point flags (17-2): a
+            // material-free mesh writes zeros, so its manifolds
+            // hash exactly as before.
+            gMat[gCount] = mesh->materialCount > 0
+                               ? (uint16_t)(mesh->triMaterials[faceAccepted[k].triIndex] << 12)
+                               : 0;
             gCount += 1;
         }
     }
@@ -1878,6 +1885,7 @@ static void CollideMeshConvex(m3World* world, m3Manifold* fresh, int32_t meshSha
         fresh->points[k].anchorB = meshIsA ? anchorOther : anchorMesh;
         fresh->points[k].separation = gSep[c];
         fresh->points[k].id = gId[c];
+        fresh->points[k].flags = gMat[c];
     }
 }
 

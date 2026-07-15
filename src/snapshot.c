@@ -22,7 +22,8 @@
 #endif
 
 #define M3_SNAPSHOT_MAGIC   0x4D33534Eu // 'M3SN'
-#define M3_SNAPSHOT_VERSION 46u
+#define M3_SNAPSHOT_VERSION 47u
+// v47: per-triangle mesh materials (17-2).
 // v46: count-derived hull content (17-1): the 5808-byte fixed
 //      slabs leave the fixed prefix; an empty slot costs 16 bytes.
 // v45: pulley world anchors (16-6).
@@ -445,6 +446,17 @@ static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3Wal
                 M3_BLOCK(mesh->vertices, mesh->vertexCount * (int32_t)sizeof(m3Vec3));
                 M3_BLOCK(mesh->indices, 3 * mesh->triangleCount * (int32_t)sizeof(uint16_t));
                 M3_BLOCK(mesh->edgeFlags, mesh->triangleCount);
+                // Material groups (17-2): the count, the fixed
+                // table, and one group byte per triangle. A
+                // material-free mesh writes zeros throughout.
+                M3_BLOCK(&mesh->materialCount, 4);
+                if (mode == m3_walkRead &&
+                    (mesh->materialCount < 0 || mesh->materialCount > M3_MESH_MAX_MATERIALS))
+                {
+                    return -1; // corrupt count: refuse
+                }
+                M3_BLOCK(mesh->materials, (int32_t)sizeof(mesh->materials));
+                M3_BLOCK(mesh->triMaterials, mesh->triangleCount);
             }
         }
         // Hull content, count-derived (17-1): counts land first,
@@ -627,7 +639,12 @@ bool m3World_Restore(m3WorldId worldId, const void* data, int32_t size)
         }
         if (tc > 0)
         {
-            int64_t content = (int64_t)vc * (int64_t)sizeof(m3Vec3) + 6LL * tc + (int64_t)tc;
+            // Content (10-3) plus the material section (17-2): the
+            // count word, the fixed eight-entry table, and a group
+            // byte per triangle.
+            int64_t content = (int64_t)vc * (int64_t)sizeof(m3Vec3) + 6LL * tc + (int64_t)tc + 4 +
+                              (int64_t)(M3_MESH_MAX_MATERIALS * sizeof(m3MeshSurfaceMaterial)) +
+                              (int64_t)tc;
             if ((int64_t)size - cursor < content)
             {
                 return false;

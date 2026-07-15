@@ -227,11 +227,54 @@ static int32_t PrepareContacts(m3World* world, m3ContactConstraint* constraints,
         // Reference mixing: friction geometric, restitution maximum,
         // rolling resistance maximum scaled by the pair's extent
         // (the lever that turns the dimensionless knob into torque).
-        c->friction = sqrtf(world->shapeFriction[shapeA] * world->shapeFriction[shapeB]);
-        c->restitution = m3MaxF(world->shapeRestitution[shapeA], world->shapeRestitution[shapeB]);
+        // A painted mesh (17-2) swaps ITS side of the mix for the
+        // struck triangle's entry; the group index rides the first
+        // point's flags (points are id-canonical, so the pick is
+        // deterministic), and the whole manifold wears one material
+        // (the welded points share a face by construction).
+        float fricA = world->shapeFriction[shapeA];
+        float fricB = world->shapeFriction[shapeB];
+        float restA = world->shapeRestitution[shapeA];
+        float restB = world->shapeRestitution[shapeB];
+        float rollA = world->shapeRollingResistance[shapeA];
+        float rollB = world->shapeRollingResistance[shapeB];
+        m3Vec3 surfA = world->shapeSurfaceVel[shapeA];
+        m3Vec3 surfB = world->shapeSurfaceVel[shapeB];
+        if (world->shapeType[shapeA] == (uint8_t)m3_meshShape)
+        {
+            const m3MeshData* mesh = &world->meshData[world->shapeMeshIndex[shapeA]];
+            if (mesh->materialCount > 0)
+            {
+                // Group 0 catches out-of-range bits from a hostile
+                // restored manifold: clamped, deterministic, in
+                // bounds.
+                int32_t mi = manifold->points[0].flags >> 12;
+                const m3MeshSurfaceMaterial* m =
+                    &mesh->materials[mi < mesh->materialCount ? mi : 0];
+                fricA = m->friction;
+                restA = m->restitution;
+                rollA = m->rollingResistance;
+                surfA = m->surfaceVelocity;
+            }
+        }
+        if (world->shapeType[shapeB] == (uint8_t)m3_meshShape)
+        {
+            const m3MeshData* mesh = &world->meshData[world->shapeMeshIndex[shapeB]];
+            if (mesh->materialCount > 0)
+            {
+                int32_t mi = manifold->points[0].flags >> 12;
+                const m3MeshSurfaceMaterial* m =
+                    &mesh->materials[mi < mesh->materialCount ? mi : 0];
+                fricB = m->friction;
+                restB = m->restitution;
+                rollB = m->rollingResistance;
+                surfB = m->surfaceVelocity;
+            }
+        }
+        c->friction = sqrtf(fricA * fricB);
+        c->restitution = m3MaxF(restA, restB);
         c->rollingResistance =
-            m3MaxF(world->shapeRollingResistance[shapeA], world->shapeRollingResistance[shapeB]) *
-            m3MaxF(world->maxExtents[bodyA], world->maxExtents[bodyB]);
+            m3MaxF(rollA, rollB) * m3MaxF(world->maxExtents[bodyA], world->maxExtents[bodyB]);
         c->rollingImpulse = manifold->rollingImpulse; // reference warm start (rev 21)
         if (c->rollingResistance > 0.0f)
         {
@@ -308,7 +351,7 @@ static int32_t PrepareContacts(m3World* world, m3ContactConstraint* constraints,
         // finally fed. Sign law: friction drives the pair's B-minus-A
         // tangential speed TOWARD this target, so a belt at shape A
         // carries the other body along its surface velocity.
-        m3Vec3 surf = m3Sub3(world->shapeSurfaceVel[shapeA], world->shapeSurfaceVel[shapeB]);
+        m3Vec3 surf = m3Sub3(surfA, surfB);
         c->tangentVelocity1 = m3Dot3(surf, c->t1);
         c->tangentVelocity2 = m3Dot3(surf, c->t2);
 

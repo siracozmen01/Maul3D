@@ -1400,6 +1400,83 @@ bool m3Shape_IsPreSolveEnabled(m3ShapeId shapeId)
     return world != NULL && world->shapePreSolve[slot] != 0;
 }
 
+bool m3SetMeshMaterialsInternal(m3World* world, int32_t meshIndex,
+                                const m3MeshSurfaceMaterial* materials, int32_t materialCount,
+                                const uint8_t* triangleMaterials)
+{
+    // The full wall (17-2), here because replay hands this function
+    // raw journal bytes: hostile counts, values, or group indices
+    // refuse loudly and paint nothing.
+    if (meshIndex < 0 || materialCount < 1 || materialCount > M3_MESH_MAX_MATERIALS)
+    {
+        return false;
+    }
+    m3MeshData* mesh = &world->meshData[meshIndex];
+    if (mesh->triangleCount <= 0)
+    {
+        return false;
+    }
+    for (int32_t k = 0; k < materialCount; ++k)
+    {
+        const m3MeshSurfaceMaterial* m = &materials[k];
+        if (!m3FiniteF(m->friction) || m->friction < 0.0f || !m3FiniteF(m->restitution) ||
+            m->restitution < 0.0f || !m3FiniteF(m->rollingResistance) ||
+            m->rollingResistance < 0.0f || !m3FiniteV3(m->surfaceVelocity))
+        {
+            return false;
+        }
+    }
+    for (int32_t t = 0; t < mesh->triangleCount; ++t)
+    {
+        if (triangleMaterials[t] >= materialCount)
+        {
+            return false;
+        }
+    }
+    mesh->materialCount = materialCount;
+    memset(mesh->materials, 0, sizeof(mesh->materials));
+    memcpy(mesh->materials, materials, (size_t)materialCount * sizeof(m3MeshSurfaceMaterial));
+    memcpy(mesh->triMaterials, triangleMaterials, (size_t)mesh->triangleCount);
+    return true;
+}
+
+void m3Shape_SetMeshMaterials(m3ShapeId shapeId, const m3MeshSurfaceMaterial* materials,
+                              int32_t materialCount, const uint8_t* triangleMaterials)
+{
+    int32_t slot;
+    m3World* world = ResolveShape(shapeId, &slot);
+    if (world == NULL || materials == NULL || triangleMaterials == NULL ||
+        world->shapeType[slot] != (uint8_t)m3_meshShape)
+    {
+        return;
+    }
+    int32_t meshIndex = world->shapeMeshIndex[slot];
+    if (!m3SetMeshMaterialsInternal(world, meshIndex, materials, materialCount, triangleMaterials))
+    {
+        return; // refused: nothing journals
+    }
+    if (world->journalActive != 0)
+    {
+        int32_t triCount = world->meshData[meshIndex].triangleCount;
+        int32_t bytes = (int32_t)sizeof(m3SetMeshMaterialsOp) + triCount;
+        uint8_t* payload = (uint8_t*)m3AllocZeroed(bytes);
+        if (payload == NULL)
+        {
+            return;
+        }
+        m3SetMeshMaterialsOp head;
+        memset(&head, 0, sizeof(head));
+        head.id = shapeId;
+        head.materialCount = materialCount;
+        head.triangleCount = triCount;
+        memcpy(head.materials, materials, (size_t)materialCount * sizeof(m3MeshSurfaceMaterial));
+        memcpy(payload, &head, sizeof(head));
+        memcpy(payload + sizeof(head), triangleMaterials, (size_t)triCount);
+        m3JournalRecord(world, m3_opSetMeshMaterials, payload, bytes);
+        m3Free(payload);
+    }
+}
+
 void m3SetSurfaceVelocityInternal(m3World* world, int32_t slot, m3Vec3 v)
 {
     world->shapeSurfaceVel[slot] = v;
@@ -1440,9 +1517,11 @@ bool m3MeshDataAlloc(m3MeshData* mesh)
     m3Free(mesh->vertices);
     m3Free(mesh->indices);
     m3Free(mesh->edgeFlags);
+    m3Free(mesh->triMaterials);
     mesh->vertices = NULL;
     mesh->indices = NULL;
     mesh->edgeFlags = NULL;
+    mesh->triMaterials = NULL;
     if (mesh->vertexCount <= 0 || mesh->triangleCount <= 0)
     {
         return mesh->vertexCount == 0 && mesh->triangleCount == 0; // an empty slot is legal
@@ -1450,7 +1529,11 @@ bool m3MeshDataAlloc(m3MeshData* mesh)
     mesh->vertices = (m3Vec3*)m3AllocZeroed(mesh->vertexCount * (int32_t)sizeof(m3Vec3));
     mesh->indices = (uint16_t*)m3AllocZeroed(3 * mesh->triangleCount * (int32_t)sizeof(uint16_t));
     mesh->edgeFlags = (uint8_t*)m3AllocZeroed(mesh->triangleCount);
-    if (mesh->vertices == NULL || mesh->indices == NULL || mesh->edgeFlags == NULL)
+    // Material groups (17-2) ride beside the content: all-zero
+    // bytes and count 0 ARE the "shape material everywhere" state.
+    mesh->triMaterials = (uint8_t*)m3AllocZeroed(mesh->triangleCount);
+    if (mesh->vertices == NULL || mesh->indices == NULL || mesh->edgeFlags == NULL ||
+        mesh->triMaterials == NULL)
     {
         m3MeshDataFree(mesh);
         return false;
@@ -1463,5 +1546,6 @@ void m3MeshDataFree(m3MeshData* mesh)
     m3Free(mesh->vertices);
     m3Free(mesh->indices);
     m3Free(mesh->edgeFlags);
+    m3Free(mesh->triMaterials);
     memset(mesh, 0, sizeof(*mesh));
 }

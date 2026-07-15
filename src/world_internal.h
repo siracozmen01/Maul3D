@@ -164,6 +164,7 @@ typedef enum m3Op
     m3_opSetShapeGeom = 69,           // shape + type + geom swap (15-2)
     m3_opJointSetSteer = 70,          // wheel strut drive (16-3)
     m3_opJointSetMotorPose = 71,      // motor joint servo aim (16-5)
+    m3_opSetMeshMaterials = 72,       // per-triangle materials (17-2)
 } m3Op;
 
 // Debug names (14-3): journaled and snapshot like userData, NEVER
@@ -231,6 +232,12 @@ _Static_assert(sizeof(m3HullData) == 5808, "hull data must be padding-free");
 #define M3_MESH_MAX_VERTS 65535
 #define M3_MESH_MAX_TRIS  65535
 
+// Per-triangle surface material (17-2): a mesh carries up to eight
+// entries (the public m3MeshSurfaceMaterial) and a byte per
+// triangle naming one; count 0 means "use the shape material"
+// everywhere (the pre-17 behavior, bit-exact).
+#define M3_MESH_MAX_MATERIALS 8
+
 typedef struct m3MeshData
 {
     int32_t vertexCount;
@@ -242,6 +249,13 @@ typedef struct m3MeshData
     // ghost candidate the welding filter may silence. Baked at
     // create time (2b-9d), deterministic.
     uint8_t* edgeFlags;
+    // 17-2: material groups. materialCount 0 = the mesh defers to
+    // its shape's material everywhere (canonical zeros throughout,
+    // so a material-free mesh hashes and snapshots exactly like a
+    // pre-17 one modulo the version bump).
+    int32_t materialCount;
+    uint8_t* triMaterials; // one group index per triangle
+    m3MeshSurfaceMaterial materials[M3_MESH_MAX_MATERIALS];
 } m3MeshData;
 
 // Count-derived ownership (10-3): Alloc frees any old arrays and
@@ -393,6 +407,16 @@ typedef struct m3Manifold
 } m3Manifold;
 
 _Static_assert(sizeof(m3Manifold) == 188, "manifold must be padding-free");
+
+// Journal payload for mesh materials (17-2): the fixed head below,
+// followed by triangleCount group bytes.
+typedef struct m3SetMeshMaterialsOp
+{
+    m3ShapeId id;
+    int32_t materialCount;
+    int32_t triangleCount;
+    m3MeshSurfaceMaterial materials[M3_MESH_MAX_MATERIALS];
+} m3SetMeshMaterialsOp;
 
 // Journal payload for shape creation (replay re-derives mass).
 typedef struct m3CreateShapeOp
@@ -878,6 +902,12 @@ void m3SetShapeRestitutionInternal(m3World* world, int32_t slot, float value);
 void m3SetShapeRollingInternal(m3World* world, int32_t slot, float value);
 void m3SetShapeDensityInternal(m3World* world, int32_t slot, float value, int32_t updateMass);
 bool m3SetShapeGeomInternal(m3World* world, int32_t slot, uint8_t type, const m3ShapeGeom* geom);
+// The 17-2 material wall lives in the internal (replay hands it raw
+// bytes): count 1..8, finite entries, nonnegative frictions and
+// resistances, every triangle byte < count.
+bool m3SetMeshMaterialsInternal(m3World* world, int32_t meshIndex,
+                                const m3MeshSurfaceMaterial* materials, int32_t materialCount,
+                                const uint8_t* triangleMaterials);
 void m3SetContactTuningInternal(m3World* world, float hertz, float dampingRatio, float pushSpeed);
 void m3SetRestitutionThresholdInternal(m3World* world, float value);
 void m3SetMaximumLinearSpeedInternal(m3World* world, float value);
