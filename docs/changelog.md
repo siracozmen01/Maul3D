@@ -4,7 +4,24 @@ All notable changes to Maul3D. Versions are tags on green CI SHAs;
 every entry's determinism gates were verified across all CI cells at
 tag time.
 
-## Unreleased (v1.17 in tree)
+## Unreleased (v1.18 in tree)
+
+The performance arc opens: measured, memoized, bit-identical.
+
+- Broadphase fresh-AABB memoization: the pair update recomputed a
+  shape's bounds once per QUERY HIT (a hull's box is a 64-vertex
+  loop); one per-step cache now feeds the refresh, the queries,
+  and every hit re-test. Pure memoization, proven bit-identical
+  by all seven pinned benchmark hashes. Numbers on the 5k dense
+  profile: broadphase 21.45 to 18.30 ms per step (-15%);
+  benchmarks: meshgrand -16%, cityblock -4.5%, hulljam -10%.
+- Measured and deferred, on the record: the sleeper skip (the
+  packed 5k stack never sleeps, no provable win on the profile
+  workload), the persistent pair table (the remaining cost is
+  the walk, not the arithmetic), and solver lane work (any float
+  reorder moves the golden; it waits for its own phase).
+
+## v1.17 (2026-07-15)
 
 Soft body depth: spines, breath, jelly, and a leash.
 
