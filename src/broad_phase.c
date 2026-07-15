@@ -48,6 +48,26 @@ static m3Aabb3d SphereAabb(const m3World* world, int32_t shape)
         return box;
     }
 
+    if (world->shapeType[shape] == (uint8_t)m3_heightFieldShape)
+    {
+        // Native grid bounds (19-2): the same box the fat-AABB
+        // branch uses, minus the fat margin plus the tight one.
+        const m3HeightFieldData* hf = &world->hfData[world->shapeHfIndex[shape]];
+        m3Aabb3d box;
+        box.lo[0] = xf->p.x;
+        box.lo[1] = xf->p.y + (double)hf->minHeight;
+        box.lo[2] = xf->p.z;
+        box.hi[0] = xf->p.x + (double)((float)(hf->nx - 1) * hf->cellSize);
+        box.hi[1] = xf->p.y + (double)hf->maxHeight;
+        box.hi[2] = xf->p.z + (double)((float)(hf->nz - 1) * hf->cellSize);
+        for (int32_t k = 0; k < 3; ++k)
+        {
+            box.lo[k] -= (double)M3_AABB_MARGIN;
+            box.hi[k] += (double)M3_AABB_MARGIN;
+        }
+        return box;
+    }
+
     if (world->shapeType[shape] == (uint8_t)m3_voxelShape)
     {
         // Voxel chunk bounds: the eight corners of the chunk box
@@ -175,13 +195,7 @@ static int PairAllowed(const m3World* world, int32_t i, int32_t j)
     {
         return 0;
     }
-    // 19-1 interim: the native heightfield has no narrowphase yet;
-    // its pairs stay out until 19-2 opens the triangle kernels.
-    if (world->shapeType[i] == (uint8_t)m3_heightFieldShape ||
-        world->shapeType[j] == (uint8_t)m3_heightFieldShape)
-    {
-        return 0;
-    }
+
     // Sensors do not sense other sensors (the reference rule).
     if (world->shapeSensor[i] != 0 && world->shapeSensor[j] != 0)
     {

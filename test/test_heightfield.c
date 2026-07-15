@@ -114,10 +114,135 @@ static void TestSnapshotAndReplay(void)
     m3DestroyWorld(world);
 }
 
+static void TestContacts(void)
+{
+    // 19-2: bodies land ON native terrain. A ball rests on a flat
+    // grid, a box slides across it without ghost snags, and a ball
+    // on a slope rolls downhill.
+    m3WorldDef wd = m3DefaultWorldDef();
+    wd.bodyCapacity = 16;
+    wd.shapeCapacity = 16;
+    m3WorldId world = m3CreateWorld(&wd);
+    m3BodyDef gd = m3DefaultBodyDef();
+    gd.position = (m3Pos3){-8.0, 0.0, -8.0};
+    m3BodyId ground = m3CreateBody(world, &gd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    static float flat[33 * 33]; // zeros: a flat 16m field
+    m3ShapeId terrain = m3CreateHeightFieldGridShape(ground, &sd, flat, 33, 33, 0.5f);
+    CHECK(m3Shape_IsValid(terrain), "the flat field lands");
+
+    m3BodyDef bd = m3DefaultBodyDef();
+    bd.type = m3_dynamicBody;
+    bd.position = (m3Pos3){0.0, 2.0, 0.0};
+    m3BodyId ball = m3CreateBody(world, &bd);
+    m3Sphere s = {{0.0f, 0.0f, 0.0f}, 0.4f};
+    m3CreateSphereShape(ball, &sd, &s);
+
+    bd.position = (m3Pos3){-4.0, 1.0, 3.0};
+    bd.linearVelocity = (m3Vec3){4.0f, 0.0f, 0.0f};
+    m3BodyId slider = m3CreateBody(world, &bd);
+    m3ShapeDef bs = m3DefaultShapeDef();
+    bs.friction = 0.05f;
+    m3CreateBoxShape(slider, &bs, (m3Vec3){0.3f, 0.3f, 0.3f});
+
+    double maxSliderY = 0.0;
+    for (int32_t i = 0; i < 300; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+        if (i > 60)
+        {
+            double y = m3Body_GetPosition(slider).y;
+            maxSliderY = y > maxSliderY ? y : maxSliderY;
+        }
+    }
+    double ballY = m3Body_GetPosition(ball).y;
+    CHECK(ballY > 0.3 && ballY < 0.5, "the ball rests on the field");
+    CHECK(m3Body_GetPosition(slider).x > -1.0, "the slick box slides across cells");
+    CHECK(maxSliderY < 0.45, "no ghost snag pops the slider");
+    m3DestroyWorld(world);
+
+    // The slope: heights rise along x; a ball rolls downhill (-x).
+    m3WorldDef wd2 = m3DefaultWorldDef();
+    wd2.bodyCapacity = 8;
+    wd2.shapeCapacity = 8;
+    m3WorldId hill = m3CreateWorld(&wd2);
+    m3BodyDef gd2 = m3DefaultBodyDef();
+    gd2.position = (m3Pos3){-8.0, 0.0, -8.0};
+    m3BodyId ground2 = m3CreateBody(hill, &gd2);
+    static float ramp[33 * 33];
+    for (int32_t z = 0; z < 33; ++z)
+    {
+        for (int32_t x = 0; x < 33; ++x)
+        {
+            ramp[z * 33 + x] = 0.3f * (float)x;
+        }
+    }
+    CHECK(m3Shape_IsValid(m3CreateHeightFieldGridShape(ground2, &sd, ramp, 33, 33, 0.5f)),
+          "the ramp lands");
+    m3BodyDef rb = m3DefaultBodyDef();
+    rb.type = m3_dynamicBody;
+    rb.position = (m3Pos3){0.0, 6.0, 0.0}; // the ramp is 4.8 high here
+    m3BodyId roller = m3CreateBody(hill, &rb);
+    m3CreateSphereShape(roller, &sd, &s);
+    for (int32_t i = 0; i < 300; ++i)
+    {
+        m3World_Step(hill, 1.0f / 60.0f, 4);
+    }
+    CHECK(m3Body_GetPosition(roller).x < -1.0, "the ball rolls downhill");
+    m3DestroyWorld(hill);
+}
+
+static void TestContactTwins(void)
+{
+    uint64_t hashes[2];
+    for (int32_t run = 0; run < 2; ++run)
+    {
+        m3WorldDef wd = m3DefaultWorldDef();
+        wd.bodyCapacity = 16;
+        wd.shapeCapacity = 16;
+        m3WorldId w = m3CreateWorld(&wd);
+        m3BodyDef gd = m3DefaultBodyDef();
+        gd.position = (m3Pos3){-4.0, 0.0, -4.0};
+        m3BodyId ground = m3CreateBody(w, &gd);
+        m3ShapeDef sd = m3DefaultShapeDef();
+        static float bumps[17 * 17];
+        for (int32_t i = 0; i < 17 * 17; ++i)
+        {
+            bumps[i] = 0.15f * (float)((i * 13) % 7);
+        }
+        m3CreateHeightFieldGridShape(ground, &sd, bumps, 17, 17, 0.5f);
+        m3BodyDef bd = m3DefaultBodyDef();
+        bd.type = m3_dynamicBody;
+        for (int32_t k = 0; k < 5; ++k)
+        {
+            bd.position = (m3Pos3){-2.0 + (double)k, 3.0 + 0.3 * (double)k, 0.5 * (double)(k % 3)};
+            m3BodyId b = m3CreateBody(w, &bd);
+            if (k % 2 == 0)
+            {
+                m3Sphere sp = {{0.0f, 0.0f, 0.0f}, 0.3f};
+                m3CreateSphereShape(b, &sd, &sp);
+            }
+            else
+            {
+                m3CreateBoxShape(b, &sd, (m3Vec3){0.25f, 0.25f, 0.25f});
+            }
+        }
+        for (int32_t i = 0; i < 240; ++i)
+        {
+            m3World_Step(w, 1.0f / 60.0f, 4);
+        }
+        hashes[run] = m3World_Hash(w);
+        m3DestroyWorld(w);
+    }
+    CHECK(hashes[0] == hashes[1], "twin terrain worlds are bit-identical");
+}
+
 int main(void)
 {
     TestCreateAndWalls();
     TestSnapshotAndReplay();
+    TestContacts();
+    TestContactTwins();
     if (s_failures == 0)
     {
         printf("test_heightfield: all passed\n");

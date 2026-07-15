@@ -1506,10 +1506,14 @@ typedef struct m3MeshCandidate
     int32_t triIndex;
 } m3MeshCandidate;
 
-static void CollideMeshConvex(m3World* world, m3Manifold* fresh, int32_t meshShape,
-                              int32_t otherShape, int meshIsA)
+// The welded triangle pipeline, mesh-agnostic since 19-2: the mesh
+// and its BVH arrive as parameters so the native heightfield can
+// feed a scratch window mesh through the SAME flow. A NULL bvh
+// means every triangle is a candidate (the window is pre-clipped).
+static void CollideMeshCore(m3World* world, m3Manifold* fresh, const m3MeshData* mesh,
+                            const m3MeshBvh* bvh, int32_t meshShape, int32_t otherShape,
+                            int meshIsA)
 {
-    const m3MeshData* mesh = &world->meshData[world->shapeMeshIndex[meshShape]];
     int32_t meshBody = world->shapeBody[meshShape];
     int32_t otherBody = world->shapeBody[otherShape];
     m3Transform xfMv = m3ShapeWorldTransform(world, meshShape);
@@ -1579,10 +1583,22 @@ static void CollideMeshConvex(m3World* world, m3Manifold* fresh, int32_t meshSha
     // (gather returns ascending order; the cap break fires at the
     // same processing point).
     uint16_t gather[M3_MESH_MAX_TRIS];
-    int32_t gatherCount =
-        m3MeshBvhGather(&world->meshBvh[world->shapeMeshIndex[meshShape]],
-                        (m3Vec3){boundLo.x - reach, boundLo.y - reach, boundLo.z - reach},
-                        (m3Vec3){boundHi.x + reach, boundHi.y + reach, boundHi.z + reach}, gather);
+    int32_t gatherCount;
+    if (bvh != NULL)
+    {
+        gatherCount = m3MeshBvhGather(
+            bvh, (m3Vec3){boundLo.x - reach, boundLo.y - reach, boundLo.z - reach},
+            (m3Vec3){boundHi.x + reach, boundHi.y + reach, boundHi.z + reach}, gather);
+    }
+    else
+    {
+        // The window mesh is pre-clipped: full scan, ascending.
+        gatherCount = mesh->triangleCount;
+        for (int32_t t = 0; t < gatherCount; ++t)
+        {
+            gather[t] = (uint16_t)t;
+        }
+    }
 
     m3MeshCandidate faceAccepted[M3_MESH_CANDIDATE_CAP];
     int32_t faceCount = 0;
@@ -1887,6 +1903,162 @@ static void CollideMeshConvex(m3World* world, m3Manifold* fresh, int32_t meshSha
         fresh->points[k].id = gId[c];
         fresh->points[k].flags = gMat[c];
     }
+}
+
+static void CollideMeshConvex(m3World* world, m3Manifold* fresh, int32_t meshShape,
+                              int32_t otherShape, int meshIsA)
+{
+    int32_t meshIndex = world->shapeMeshIndex[meshShape];
+    CollideMeshCore(world, fresh, &world->meshData[meshIndex], &world->meshBvh[meshIndex],
+                    meshShape, otherShape, meshIsA);
+}
+
+// Native heightfield versus convex (19-2): clip the convex's reach
+// to a cell window (a one-cell halo keeps the interior edge flags
+// honest at the window rim), lay the window out as a scratch mesh
+// in the heightfield frame, bake its edge flags, and run the SAME
+// welded pipeline. Window ids are window-local, so the warm carry
+// resets when the window shifts a cell: deterministic, documented.
+#define M3_HF_WINDOW 16 // cells per axis, halo included
+
+static void CollideHeightFieldConvex(m3World* world, m3Manifold* fresh, int32_t hfShape,
+                                     int32_t otherShape, int hfIsA)
+{
+    const m3HeightFieldData* hf = &world->hfData[world->shapeHfIndex[hfShape]];
+    m3Transform xfHv = m3ShapeWorldTransform(world, hfShape);
+    m3Transform xfOv = m3ShapeWorldTransform(world, otherShape);
+    m3Quat conjH = {-xfHv.q.x, -xfHv.q.y, -xfHv.q.z, xfHv.q.w};
+    m3Quat qRel = m3MulQuat(conjH, xfOv.q);
+    m3Vec3 dp = {(m3real)(xfOv.p.x - xfHv.p.x), (m3real)(xfOv.p.y - xfHv.p.y),
+                 (m3real)(xfOv.p.z - xfHv.p.z)};
+    m3Vec3 pRel = m3InvRotateVec3(xfHv.q, dp);
+
+    // The convex's bounds in the heightfield frame (the core's own
+    // recipe, repeated here only to pick the window).
+    uint8_t otherType = world->shapeType[otherShape];
+    m3real radius = world->shapeGeom[otherShape].s;
+    m3Vec3 boundLo;
+    m3Vec3 boundHi;
+    if (otherType == (uint8_t)m3_hullShape)
+    {
+        const m3HullData* hull = &world->hullData[world->shapeHullIndex[otherShape]];
+        boundLo = (m3Vec3){3.4e38f, 3.4e38f, 3.4e38f};
+        boundHi = (m3Vec3){-3.4e38f, -3.4e38f, -3.4e38f};
+        for (int32_t v = 0; v < hull->vertexCount; ++v)
+        {
+            m3Vec3 pt = m3Add3(m3RotateVec3(qRel, hull->vertices[v]), pRel);
+            boundLo.x = m3MinF(boundLo.x, pt.x);
+            boundLo.y = m3MinF(boundLo.y, pt.y);
+            boundLo.z = m3MinF(boundLo.z, pt.z);
+            boundHi.x = m3MaxF(boundHi.x, pt.x);
+            boundHi.y = m3MaxF(boundHi.y, pt.y);
+            boundHi.z = m3MaxF(boundHi.z, pt.z);
+        }
+        radius = 0.0f;
+    }
+    else if (otherType == (uint8_t)m3_sphereShape)
+    {
+        m3Vec3 c = m3Add3(m3RotateVec3(qRel, world->shapeGeom[otherShape].v), pRel);
+        boundLo = c;
+        boundHi = c;
+    }
+    else
+    {
+        m3Vec3 c1 = m3Add3(m3RotateVec3(qRel, world->shapeGeom[otherShape].v), pRel);
+        m3Vec3 c2 = m3Add3(m3RotateVec3(qRel, world->shapeGeom[otherShape].v2), pRel);
+        boundLo.x = m3MinF(c1.x, c2.x);
+        boundLo.y = m3MinF(c1.y, c2.y);
+        boundLo.z = m3MinF(c1.z, c2.z);
+        boundHi.x = m3MaxF(c1.x, c2.x);
+        boundHi.y = m3MaxF(c1.y, c2.y);
+        boundHi.z = m3MaxF(c1.z, c2.z);
+    }
+    m3real reach = radius + M3_SPECULATIVE_DISTANCE;
+
+    m3real inv = 1.0f / hf->cellSize;
+    int32_t cx0 = (int32_t)floorf((boundLo.x - reach) * inv) - 1; // the halo cell
+    int32_t cx1 = (int32_t)floorf((boundHi.x + reach) * inv) + 1;
+    int32_t cz0 = (int32_t)floorf((boundLo.z - reach) * inv) - 1;
+    int32_t cz1 = (int32_t)floorf((boundHi.z + reach) * inv) + 1;
+    cx0 = cx0 < 0 ? 0 : cx0;
+    cz0 = cz0 < 0 ? 0 : cz0;
+    cx1 = cx1 > hf->nx - 2 ? hf->nx - 2 : cx1;
+    cz1 = cz1 > hf->nz - 2 ? hf->nz - 2 : cz1;
+    if (cx1 < cx0 || cz1 < cz0)
+    {
+        return; // fully off the grid
+    }
+    if (cx1 - cx0 + 1 > M3_HF_WINDOW)
+    {
+        cx1 = cx0 + M3_HF_WINDOW - 1; // the documented window bound
+    }
+    if (cz1 - cz0 + 1 > M3_HF_WINDOW)
+    {
+        cz1 = cz0 + M3_HF_WINDOW - 1;
+    }
+    int32_t wx = cx1 - cx0 + 2; // window corners per axis
+    int32_t wz = cz1 - cz0 + 2;
+    int32_t vertCount = wx * wz;
+    int32_t triCount = 2 * (wx - 1) * (wz - 1);
+
+    m3Vec3* verts = (m3Vec3*)m3StackAlloc(&world->scratch, vertCount * (int32_t)sizeof(m3Vec3));
+    uint16_t* tris =
+        (uint16_t*)m3StackAlloc(&world->scratch, 3 * triCount * (int32_t)sizeof(uint16_t));
+    uint8_t* flags = (uint8_t*)m3StackAlloc(&world->scratch, triCount);
+    uint8_t* mats = (uint8_t*)m3StackAlloc(&world->scratch, triCount);
+    if (verts == NULL || tris == NULL || flags == NULL || mats == NULL)
+    {
+        return; // transient scratch stall, grown next step
+    }
+    for (int32_t z = 0; z < wz; ++z)
+    {
+        for (int32_t x = 0; x < wx; ++x)
+        {
+            int32_t gx = cx0 + x;
+            int32_t gz = cz0 + z;
+            verts[z * wx + x] = (m3Vec3){(m3real)gx * hf->cellSize, hf->heights[gz * hf->nx + gx],
+                                         (m3real)gz * hf->cellSize};
+        }
+    }
+    int32_t tw = 0;
+    for (int32_t z = 0; z + 1 < wz; ++z)
+    {
+        for (int32_t x = 0; x + 1 < wx; ++x)
+        {
+            uint16_t a = (uint16_t)(z * wx + x);
+            uint16_t bIdx = (uint16_t)(z * wx + x + 1);
+            uint16_t c = (uint16_t)((z + 1) * wx + x + 1);
+            uint16_t d = (uint16_t)((z + 1) * wx + x);
+            if (((cx0 + x) + (cz0 + z)) % 2 == 0)
+            {
+                tris[tw++] = a;
+                tris[tw++] = c;
+                tris[tw++] = bIdx;
+                tris[tw++] = a;
+                tris[tw++] = d;
+                tris[tw++] = c;
+            }
+            else
+            {
+                tris[tw++] = bIdx;
+                tris[tw++] = a;
+                tris[tw++] = d;
+                tris[tw++] = bIdx;
+                tris[tw++] = d;
+                tris[tw++] = c;
+            }
+        }
+    }
+    m3MeshData window;
+    memset(&window, 0, sizeof(window));
+    window.vertexCount = vertCount;
+    window.triangleCount = triCount;
+    window.vertices = verts;
+    window.indices = tris;
+    window.edgeFlags = flags;
+    window.triMaterials = mats; // zeros: no painted terrain (yet)
+    m3BakeMeshEdgeFlags(&window);
+    CollideMeshCore(world, fresh, &window, NULL, hfShape, otherShape, hfIsA);
 }
 
 // Voxel chunk versus convex (3-1): the surface BVH gathers merged
@@ -2200,6 +2372,7 @@ void m3UpdateContactsRange(m3World* world, int32_t start, int32_t end, const uin
         m3Manifold fresh;
         int voxelPair = typeA == (uint8_t)m3_voxelShape || typeB == (uint8_t)m3_voxelShape;
         int meshPair = typeA == (uint8_t)m3_meshShape || typeB == (uint8_t)m3_meshShape;
+        int hfPair = typeA == (uint8_t)m3_heightFieldShape || typeB == (uint8_t)m3_heightFieldShape;
         int planePair = typeA == (uint8_t)m3_planeShape || typeB == (uint8_t)m3_planeShape;
         int hullPair = typeA == (uint8_t)m3_hullShape || typeB == (uint8_t)m3_hullShape;
         int capsulePair = typeA == (uint8_t)m3_capsuleShape || typeB == (uint8_t)m3_capsuleShape;
@@ -2213,6 +2386,18 @@ void m3UpdateContactsRange(m3World* world, int32_t start, int32_t end, const uin
                 ot == (uint8_t)m3_hullShape)
             {
                 CollideVoxelConvex(world, &fresh, voxelShape, otherShape, voxelShape == shapeA);
+            }
+        }
+        else if (hfPair)
+        {
+            memset(&fresh, 0, sizeof(fresh));
+            int32_t hfShape = typeA == (uint8_t)m3_heightFieldShape ? shapeA : shapeB;
+            int32_t otherShape = hfShape == shapeA ? shapeB : shapeA;
+            uint8_t ot = world->shapeType[otherShape];
+            if (ot == (uint8_t)m3_sphereShape || ot == (uint8_t)m3_capsuleShape ||
+                ot == (uint8_t)m3_hullShape)
+            {
+                CollideHeightFieldConvex(world, &fresh, hfShape, otherShape, hfShape == shapeA);
             }
         }
         else if (meshPair)
