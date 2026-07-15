@@ -575,6 +575,30 @@ void m3SoftBodyPass(m3World* world, float dt, int32_t substeps)
                 {
                     v = m3Add3(v, m3MulSV3(h * windDrag, m3Sub3(windVel, v)));
                 }
+                // Water (18-2): a submerged particle trades gravity
+                // for buoyancy under the rho-1000 particle
+                // convention (density 1000 suspends, denser fluids
+                // lift, thinner ones let it sink) and drags toward
+                // the flow like wind. First live volume wins,
+                // deterministically, and dry worlds never reach the
+                // loop (the pool is empty).
+                for (int32_t wv = 0; wv < world->waterPool.maxIndex; ++wv)
+                {
+                    if (world->waterPool.alive[wv] == 0 ||
+                        world->softPos[k].x < world->waterLo[wv].x ||
+                        world->softPos[k].x > world->waterHi[wv].x ||
+                        world->softPos[k].y < world->waterLo[wv].y ||
+                        world->softPos[k].y > world->waterHi[wv].y ||
+                        world->softPos[k].z < world->waterLo[wv].z ||
+                        world->softPos[k].z > world->waterHi[wv].z)
+                    {
+                        continue;
+                    }
+                    v = m3Add3(v, m3MulSV3(-h * world->waterDensity[wv] * (1.0f / 1000.0f), g));
+                    v = m3Add3(
+                        v, m3MulSV3(h * world->waterLinDrag[wv], m3Sub3(world->waterFlow[wv], v)));
+                    break;
+                }
                 world->softPrev[k] = world->softPos[k];
                 world->softPos[k].x += (double)(v.x * h);
                 world->softPos[k].y += (double)(v.y * h);

@@ -8,6 +8,7 @@
 
 #include "maul3d/body.h"
 #include "maul3d/shape.h"
+#include "maul3d/softbody.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -245,6 +246,64 @@ static void TestWaterTwinsReplayRollback(void)
     CHECK(hashes[0] == hashes[1], "twin wet sessions are bit-identical");
 }
 
+static void TestSoftBuoyancy(void)
+{
+    // The rho-1000 particle convention (18-2): in a density-1500
+    // basin a cloth hangs high in the water column while its dry
+    // twin crumples to the floor; a current drags the wet one
+    // downstream.
+    double wetY = 0.0;
+    double dryY = 0.0;
+    double wetX = 0.0;
+    for (int32_t pass = 0; pass < 2; ++pass)
+    {
+        m3WorldDef wd = m3DefaultWorldDef();
+        wd.bodyCapacity = 8;
+        wd.shapeCapacity = 8;
+        m3WorldId world = m3CreateWorld(&wd);
+        m3BodyDef gd = m3DefaultBodyDef();
+        m3BodyId ground = m3CreateBody(world, &gd);
+        m3ShapeDef sd = m3DefaultShapeDef();
+        m3Plane floor = {{0.0f, 1.0f, 0.0f}, 0.0f};
+        m3CreatePlaneShape(ground, &sd, &floor);
+        if (pass == 1)
+        {
+            m3WaterVolumeDef wdf = m3DefaultWaterVolumeDef();
+            wdf.lo = (m3Pos3){-8.0, 0.0, -8.0};
+            wdf.hi = (m3Pos3){8.0, 4.0, 8.0};
+            wdf.density = 1500.0f;
+            wdf.flow = (m3Vec3){0.8f, 0.0f, 0.0f};
+            m3CreateWaterVolume(world, &wdf);
+        }
+        m3SoftBodyDef sb = m3DefaultSoftBodyDef();
+        sb.position = (m3Pos3){0.0, 3.0, 0.0};
+        sb.countX = 4;
+        sb.countY = 1;
+        sb.countZ = 4;
+        sb.spacing = 0.25f;
+        m3SoftBodyId cloth = m3CreateSoftBody(world, &sb);
+        CHECK(m3SoftBody_IsValid(cloth), "the cloth creates");
+        for (int32_t i = 0; i < 300; ++i)
+        {
+            m3World_Step(world, 1.0f / 60.0f, 4);
+        }
+        m3Pos3 c = m3SoftBody_GetParticlePosition(cloth, 5);
+        if (pass == 0)
+        {
+            dryY = c.y;
+        }
+        else
+        {
+            wetY = c.y;
+            wetX = c.x;
+        }
+        m3DestroyWorld(world);
+    }
+    CHECK(dryY < 0.5, "the dry cloth crumples to the floor");
+    CHECK(wetY > dryY + 0.8, "the wet cloth hangs high in the column");
+    CHECK(wetX > 1.0, "the current drags the wet cloth downstream");
+}
+
 int main(void)
 {
     TestFloatAndSink();
@@ -252,6 +311,7 @@ int main(void)
     TestTideWakesSleepers();
     TestWaterWalls();
     TestWaterTwinsReplayRollback();
+    TestSoftBuoyancy();
     if (s_failures == 0)
     {
         printf("test_water: all passed\n");
