@@ -174,7 +174,7 @@ static void TestTransmissionWalls(void)
     jd.ratio = 0.0f;
     CHECK(!m3Joint_IsValid(m3CreateJoint(&jd)), "a zero-ratio pulley refuses");
     jd.ratio = 1.0f;
-    jd.groundAnchorA = (m3Pos3){NAN, 4.0, 0.0};
+    jd.groundAnchorA = (m3Pos3){(double)NAN, 4.0, 0.0};
     CHECK(!m3Joint_IsValid(m3CreateJoint(&jd)), "a NaN world anchor refuses");
     jd.groundAnchorA = (m3Pos3){0.0, 2.0, 0.0}; // ON the body anchor
     CHECK(!m3Joint_IsValid(m3CreateJoint(&jd)), "a rope end on its pulley refuses");
