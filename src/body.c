@@ -649,7 +649,8 @@ void m3SetAllowFastRotationInternal(m3World* world, int32_t index, int32_t allow
     }
     else
     {
-        world->bodyLocks[index] &= (uint8_t)~M3_LOCKS_ALLOW_FAST_ROTATION;
+        world->bodyLocks[index] =
+            (uint8_t)(world->bodyLocks[index] & ~M3_LOCKS_ALLOW_FAST_ROTATION);
     }
 }
 
