@@ -257,7 +257,10 @@ typedef struct Scrub
     int32_t stepCount;
     int32_t* stepEnds; // byte offset just PAST step i's record
     uint8_t** keys;    // keyframe snapshots, one per interval mark
-    int32_t keyBytes;
+    int32_t* keySizes; // per-key bytes: snapshots are count-derived
+                       // (10-3 meshes, 17-1 hulls) so the size
+                       // GROWS with the world and is never one
+                       // number for a whole session
     int32_t keyCount;
     m3WorldId world;
 } Scrub;
@@ -299,15 +302,13 @@ static bool ScrubBuild(Scrub* s, const m3ReplayView* view)
     {
         return false;
     }
-    s->keyBytes = m3World_SnapshotSize(s->world);
     s->keyCount = s->stepCount / M3_SCRUB_INTERVAL + 1;
-    s->keys = (uint8_t**)malloc(sizeof(uint8_t*) * (size_t)s->keyCount);
-    for (int32_t k = 0; k < s->keyCount; ++k)
-    {
-        s->keys[k] = (uint8_t*)malloc((size_t)s->keyBytes);
-    }
+    s->keys = (uint8_t**)calloc((size_t)s->keyCount, sizeof(uint8_t*));
+    s->keySizes = (int32_t*)calloc((size_t)s->keyCount, sizeof(int32_t));
     // Key 0 is the pre-step world (creates land inside segment 0).
-    if (m3World_Snapshot(s->world, s->keys[0], s->keyBytes) != s->keyBytes)
+    s->keySizes[0] = m3World_SnapshotSize(s->world);
+    s->keys[0] = (uint8_t*)malloc((size_t)s->keySizes[0]);
+    if (m3World_Snapshot(s->world, s->keys[0], s->keySizes[0]) != s->keySizes[0])
     {
         return false;
     }
@@ -321,8 +322,10 @@ static bool ScrubBuild(Scrub* s, const m3ReplayView* view)
         }
         if ((i + 1) % M3_SCRUB_INTERVAL == 0 && (i + 1) / M3_SCRUB_INTERVAL < s->keyCount)
         {
-            if (m3World_Snapshot(s->world, s->keys[(i + 1) / M3_SCRUB_INTERVAL], s->keyBytes) !=
-                s->keyBytes)
+            int32_t k = (i + 1) / M3_SCRUB_INTERVAL;
+            s->keySizes[k] = m3World_SnapshotSize(s->world);
+            s->keys[k] = (uint8_t*)malloc((size_t)s->keySizes[k]);
+            if (m3World_Snapshot(s->world, s->keys[k], s->keySizes[k]) != s->keySizes[k])
             {
                 return false;
             }
@@ -344,7 +347,7 @@ static bool ScrubSeek(Scrub* s, int32_t stepN)
     {
         key = s->keyCount - 1;
     }
-    if (!m3World_Restore(s->world, s->keys[key], s->keyBytes))
+    if (!m3World_Restore(s->world, s->keys[key], s->keySizes[key]))
     {
         return false;
     }
@@ -387,6 +390,7 @@ static void ScrubFree(Scrub* s)
         free(s->keys[k]);
     }
     free(s->keys);
+    free(s->keySizes);
     free(s->stepEnds);
     m3DestroyWorld(s->world);
 }

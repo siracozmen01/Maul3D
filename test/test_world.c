@@ -448,12 +448,55 @@ static void TestTreeReferee(void)
     m3DestroyWorld(world);
 }
 
+static void TestHullSnapshotShrink(void)
+{
+    // 17-1: hull content is count-derived in the snapshot. A world
+    // paying 5808 bytes per EMPTY hull slot was paying more for
+    // nothing than for all its joints; now an empty slot costs 16
+    // bytes and a box hull only its used prefix.
+    m3WorldDef def = m3DefaultWorldDef();
+    def.bodyCapacity = 16;
+    def.shapeCapacity = 16;
+    m3WorldId bare = m3CreateWorld(&def);
+    int32_t bareBytes = m3World_SnapshotSize(bare);
+    m3WorldDef def2 = def;
+    m3WorldId boxed = m3CreateWorld(&def2);
+    m3BodyDef bd = m3DefaultBodyDef();
+    bd.type = m3_dynamicBody;
+    bd.position = (m3Pos3){0.0, 2.0, 0.0};
+    m3BodyId body = m3CreateBody(boxed, &bd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    m3CreateBoxShape(body, &sd, (m3Vec3){0.4f, 0.4f, 0.4f});
+    int32_t boxedBytes = m3World_SnapshotSize(boxed);
+    CHECK(boxedBytes - bareBytes < (int32_t)sizeof(m3HullData),
+          "one box hull travels lighter than one fixed slab");
+
+    // The round trip still lands on the same bits.
+    static uint8_t snap[2097152];
+    int32_t bytes = m3World_Snapshot(boxed, snap, (int32_t)sizeof(snap));
+    CHECK(bytes == boxedBytes, "the measured size is the written size");
+    for (int32_t i = 0; i < 60; ++i)
+    {
+        m3World_Step(boxed, 1.0f / 60.0f, 4);
+    }
+    uint64_t after = m3World_Hash(boxed);
+    CHECK(m3World_Restore(boxed, snap, bytes), "the hull snapshot restores");
+    for (int32_t i = 0; i < 60; ++i)
+    {
+        m3World_Step(boxed, 1.0f / 60.0f, 4);
+    }
+    CHECK(m3World_Hash(boxed) == after, "the refought hull world lands on the same bits");
+    m3DestroyWorld(bare);
+    m3DestroyWorld(boxed);
+}
+
 int main(void)
 {
     TestWorldLifecycle();
     TestBodies();
     TestTwoWorldsIsolation();
     TestSnapshot();
+    TestHullSnapshotShrink();
     TestShapes();
     TestPairs();
     TestTreeReferee();

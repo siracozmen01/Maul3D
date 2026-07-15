@@ -22,7 +22,9 @@
 #endif
 
 #define M3_SNAPSHOT_MAGIC   0x4D33534Eu // 'M3SN'
-#define M3_SNAPSHOT_VERSION 45u
+#define M3_SNAPSHOT_VERSION 46u
+// v46: count-derived hull content (17-1): the 5808-byte fixed
+//      slabs leave the fixed prefix; an empty slot costs 16 bytes.
 // v45: pulley world anchors (16-6).
 // v44: drivetrain differentials and wheel contact speeds (16-4);
 //      body debug names and soft explosion kicks rode v43's bump
@@ -236,7 +238,9 @@ static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3Wal
     M3_BLOCK(world->proxyIds, shapeCap * (int32_t)sizeof(int32_t));
     M3_BLOCK(world->tree.nodes, world->tree.capacity * (int32_t)sizeof(m3TreeNode));
     M3_BLOCK(world->shapeHullIndex, shapeCap * (int32_t)sizeof(int32_t));
-    M3_BLOCK(world->hullData, shapeCap * (int32_t)sizeof(m3HullData));
+    // Hull CONTENT moved to the count-derived tail (17-1): the
+    // 5808-byte fixed slabs cost more snapshot than every joint
+    // in the world combined, per EMPTY slot.
     M3_BLOCK(world->hullRefCounts, shapeCap * (int32_t)sizeof(int32_t));
     M3_BLOCK(world->hullPool.generations, shapeCap * (int32_t)sizeof(uint16_t));
     M3_BLOCK(world->hullPool.alive, shapeCap * (int32_t)sizeof(uint8_t));
@@ -443,6 +447,56 @@ static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3Wal
                 M3_BLOCK(mesh->edgeFlags, mesh->triangleCount);
             }
         }
+        // Hull content, count-derived (17-1): counts land first,
+        // the read pass validates them against the compile-time
+        // caps and zeroes the slab so the unused tail is canonical
+        // (a released slot already zeroes itself; this guards the
+        // restore-over-a-lived-in-world path). Only the used
+        // prefixes of each array travel; an empty slot costs 16
+        // bytes instead of 5808.
+        for (int32_t hIdx = 0; hIdx < world->shapeCapacity; ++hIdx)
+        {
+            m3HullData* hull = &world->hullData[hIdx];
+            M3_BLOCK(&hull->vertexCount, 4);
+            M3_BLOCK(&hull->faceCount, 4);
+            M3_BLOCK(&hull->indexCount, 4);
+            M3_BLOCK(&hull->edgeCount, 4);
+            if (mode == m3_walkRead)
+            {
+                if (hull->vertexCount < 0 || hull->vertexCount > M3_HULL_MAX_VERTS ||
+                    hull->faceCount < 0 || hull->faceCount > M3_HULL_MAX_FACES ||
+                    hull->indexCount < 0 || hull->indexCount > M3_HULL_MAX_FACE_INDICES ||
+                    hull->edgeCount < 0 || hull->edgeCount > M3_HULL_MAX_HALF_EDGES ||
+                    (hull->vertexCount == 0 &&
+                     (hull->faceCount | hull->indexCount | hull->edgeCount) != 0))
+                {
+                    return -1; // corrupt counts: refuse
+                }
+                int32_t vc = hull->vertexCount;
+                int32_t fc = hull->faceCount;
+                int32_t ic = hull->indexCount;
+                int32_t ec = hull->edgeCount;
+                memset(hull, 0, sizeof(*hull));
+                hull->vertexCount = vc;
+                hull->faceCount = fc;
+                hull->indexCount = ic;
+                hull->edgeCount = ec;
+            }
+            if (hull->vertexCount > 0)
+            {
+                M3_BLOCK(&hull->unitMass, 4);
+                M3_BLOCK(&hull->unitCom, (int32_t)sizeof(m3Vec3));
+                M3_BLOCK(&hull->unitInertiaCom, (int32_t)sizeof(m3Mat3));
+                M3_BLOCK(&hull->center, (int32_t)sizeof(m3Vec3));
+                M3_BLOCK(hull->vertices, hull->vertexCount * (int32_t)sizeof(m3Vec3));
+                M3_BLOCK(hull->faceNormals, hull->faceCount * (int32_t)sizeof(m3Vec3));
+                M3_BLOCK(hull->faceOffsets, hull->faceCount * (int32_t)sizeof(m3real));
+                M3_BLOCK(hull->faceVertCounts, hull->faceCount);
+                M3_BLOCK(hull->faceVertStart, hull->faceCount * (int32_t)sizeof(uint16_t));
+                M3_BLOCK(hull->faceIndices, hull->indexCount);
+                M3_BLOCK(hull->edges, hull->edgeCount * (int32_t)sizeof(m3HullHalfEdge));
+            }
+        }
     }
 
 #undef M3_BLOCK
@@ -574,6 +628,42 @@ bool m3World_Restore(m3WorldId worldId, const void* data, int32_t size)
         if (tc > 0)
         {
             int64_t content = (int64_t)vc * (int64_t)sizeof(m3Vec3) + 6LL * tc + (int64_t)tc;
+            if ((int64_t)size - cursor < content)
+            {
+                return false;
+            }
+            cursor += (int32_t)content;
+        }
+    }
+    // The hull tail (17-1): same pre-validation, four counts per
+    // slot, content only where vertices exist.
+    for (int32_t hIdx = 0; hIdx < world->shapeCapacity; ++hIdx)
+    {
+        if (size - cursor < 16)
+        {
+            return false;
+        }
+        int32_t vc;
+        int32_t fc;
+        int32_t ic;
+        int32_t ec;
+        memcpy(&vc, raw + cursor, 4);
+        memcpy(&fc, raw + cursor + 4, 4);
+        memcpy(&ic, raw + cursor + 8, 4);
+        memcpy(&ec, raw + cursor + 12, 4);
+        cursor += 16;
+        if (vc < 0 || vc > M3_HULL_MAX_VERTS || fc < 0 || fc > M3_HULL_MAX_FACES || ic < 0 ||
+            ic > M3_HULL_MAX_FACE_INDICES || ec < 0 || ec > M3_HULL_MAX_HALF_EDGES ||
+            (vc == 0 && (fc | ic | ec) != 0))
+        {
+            return false; // corrupt counts refuse before any write
+        }
+        if (vc > 0)
+        {
+            int64_t content = 4 + 2LL * (int64_t)sizeof(m3Vec3) + (int64_t)sizeof(m3Mat3) +
+                              (int64_t)vc * (int64_t)sizeof(m3Vec3) +
+                              (int64_t)fc * ((int64_t)sizeof(m3Vec3) + 4 + 1 + 2) + (int64_t)ic +
+                              (int64_t)ec * (int64_t)sizeof(m3HullHalfEdge);
             if ((int64_t)size - cursor < content)
             {
                 return false;
