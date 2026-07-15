@@ -319,6 +319,8 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     M3_ALLOC(world->softTetC, def->softBodyCapacity * M3_SOFTBODY_MAX_TETS, uint16_t);
     M3_ALLOC(world->softTetD, def->softBodyCapacity * M3_SOFTBODY_MAX_TETS, uint16_t);
     M3_ALLOC(world->softTetRestV6, def->softBodyCapacity * M3_SOFTBODY_MAX_TETS, m3real);
+    M3_ALLOC(world->softBindPos, def->softBodyCapacity * M3_SOFTBODY_MAX_PARTICLES, m3Pos3);
+    M3_ALLOC(world->softMaxDeviation, def->softBodyCapacity, m3real);
     M3_ALLOC(world->softRadius, def->softBodyCapacity, m3real);
     M3_ALLOC(world->softGravityScale, def->softBodyCapacity, m3real);
     M3_ALLOC(world->softUserData, def->softBodyCapacity, uint64_t);
@@ -598,6 +600,8 @@ void m3DestroyWorld(m3WorldId worldId)
     m3Free(world->softTetC);
     m3Free(world->softTetD);
     m3Free(world->softTetRestV6);
+    m3Free(world->softBindPos);
+    m3Free(world->softMaxDeviation);
     m3Free(world->softRadius);
     m3Free(world->softGravityScale);
     m3Free(world->softUserData);

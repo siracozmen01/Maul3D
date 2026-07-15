@@ -33,6 +33,7 @@ m3SoftBodyDef m3DefaultSoftBodyDef(void)
     def.gravityScale = 1.0f;
     def.bendCompliance = 0.0f;
     def.pressure = 0.0f;
+    def.maxDeviation = 0.0f;
     def.internalValue = M3_SOFTBODY_COOKIE;
     return def;
 }
@@ -77,7 +78,8 @@ int32_t m3CreateSoftBodyInternal(m3World* world, const m3SoftBodyDef* def)
         !m3FiniteF(def->compliance) || def->compliance < 0.0f || !m3FiniteF(def->radius) ||
         !(def->radius > 0.0f) || !m3FiniteF(def->gravityScale) || !m3FiniteF(def->bendCompliance) ||
         def->bendCompliance < 0.0f || !m3FiniteF(def->pressure) || def->pressure < 0.0f ||
-        (def->pressure > 0.0f && (def->countX < 2 || def->countY < 2 || def->countZ < 2)))
+        (def->pressure > 0.0f && (def->countX < 2 || def->countY < 2 || def->countZ < 2)) ||
+        !m3FiniteF(def->maxDeviation) || def->maxDeviation < 0.0f)
     {
         return -1;
     }
@@ -109,6 +111,7 @@ int32_t m3CreateSoftBodyInternal(m3World* world, const m3SoftBodyDef* def)
                                   (m3real)(def->countZ - 1) * def->spacing * def->spacing *
                                   def->spacing;
     world->softTetCount[slot] = 0;
+    world->softMaxDeviation[slot] = def->maxDeviation;
 
     m3real invMass = 1.0f / def->particleMass;
     for (int32_t z = 0; z < nz; ++z)
@@ -124,6 +127,7 @@ int32_t m3CreateSoftBodyInternal(m3World* world, const m3SoftBodyDef* def)
                             def->position.z + (double)((m3real)z * def->spacing)};
                 world->softPos[k] = p;
                 world->softPrev[k] = p;
+                world->softBindPos[k] = p;
                 world->softInvMass[k] = invMass;
                 world->softKick[k] = (m3Vec3){0.0f, 0.0f, 0.0f};
             }
@@ -266,6 +270,12 @@ void m3DestroySoftBodyInternal(m3World* world, int32_t slot)
         world->softTetRestV6[k] = 0.0f;
     }
     world->softTetCount[slot] = 0;
+    int32_t bcount = M3_SOFTBODY_MAX_PARTICLES;
+    for (int32_t i = 0; i < bcount; ++i)
+    {
+        world->softBindPos[slot * M3_SOFTBODY_MAX_PARTICLES + i] = (m3Pos3){0.0, 0.0, 0.0};
+    }
+    world->softMaxDeviation[slot] = 0.0f;
     m3IdPoolFree(&world->softPool, slot);
 }
 
@@ -295,7 +305,7 @@ int32_t m3CreateSoftBodyTetInternal(m3World* world, const m3SoftBodyDef* def, co
         !m3FiniteF(def->particleMass) || !(def->particleMass > 0.0f) ||
         !m3FiniteF(def->compliance) || def->compliance < 0.0f || !m3FiniteF(def->radius) ||
         !(def->radius > 0.0f) || !m3FiniteF(def->gravityScale) || def->bendCompliance != 0.0f ||
-        def->pressure != 0.0f)
+        def->pressure != 0.0f || !m3FiniteF(def->maxDeviation) || def->maxDeviation < 0.0f)
     {
         return -1;
     }
@@ -349,6 +359,7 @@ int32_t m3CreateSoftBodyTetInternal(m3World* world, const m3SoftBodyDef* def, co
     world->softDimZ[slot] = 0;
     world->softRestVolume[slot] = 0.0f;
     world->softPressure[slot] = 0.0f;
+    world->softMaxDeviation[slot] = def->maxDeviation;
     m3real invMass = 1.0f / def->particleMass;
     for (int32_t i = 0; i < pointCount; ++i)
     {
@@ -357,6 +368,7 @@ int32_t m3CreateSoftBodyTetInternal(m3World* world, const m3SoftBodyDef* def, co
                     def->position.z + (double)points[i].z};
         world->softPos[k] = p;
         world->softPrev[k] = p;
+        world->softBindPos[k] = p;
         world->softInvMass[k] = invMass;
         world->softKick[k] = (m3Vec3){0.0f, 0.0f, 0.0f};
     }
@@ -1004,6 +1016,33 @@ void m3SoftBodyPass(m3World* world, float dt, int32_t substeps)
                 world->softPos[kb].z -= (double)(wb * scale * diff.z);
             }
 
+            // The bind tether (20-4): a hard clamp to the create
+            // pose radius, BEFORE the volume rows so a crushed tet
+            // still restores its volume (the tether is a bound,
+            // the volumes are promises; documented order).
+            if (world->softMaxDeviation[slot] > 0.0f)
+            {
+                m3real maxDev = world->softMaxDeviation[slot];
+                for (int32_t i = 0; i < count; ++i)
+                {
+                    int32_t k2 = base + i;
+                    if (world->softInvMass[k2] == 0.0f)
+                    {
+                        continue;
+                    }
+                    m3Vec3 off = {(m3real)(world->softPos[k2].x - world->softBindPos[k2].x),
+                                  (m3real)(world->softPos[k2].y - world->softBindPos[k2].y),
+                                  (m3real)(world->softPos[k2].z - world->softBindPos[k2].z)};
+                    m3real len2 = m3Dot3(off, off);
+                    if (len2 > maxDev * maxDev)
+                    {
+                        m3real scale = maxDev / sqrtf(len2);
+                        world->softPos[k2].x = world->softBindPos[k2].x + (double)(off.x * scale);
+                        world->softPos[k2].y = world->softBindPos[k2].y + (double)(off.y * scale);
+                        world->softPos[k2].z = world->softBindPos[k2].z + (double)(off.z * scale);
+                    }
+                }
+            }
             // Tet volume rows (20-3): one rigid row per tet in
             // fixed order (6V against the rest, the pressure
             // gradients localized to four particles).

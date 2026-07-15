@@ -58,6 +58,11 @@ extern "C"
         /// volume, 2 inflates toward double. One global volume
         /// constraint over the surface, solved beside the edges.
         m3real pressure;
+        /// Bind-pose tether (20-4): every particle clamps to this
+        /// radius around its CREATE position each substep. Zero
+        /// (default) is off. The cheap skinned-vertex limit: cloth
+        /// on a character cannot explode past its bind pose.
+        m3real maxDeviation;
         int32_t internalValue;
     } m3SoftBodyDef;
 

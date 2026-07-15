@@ -22,7 +22,8 @@
 #endif
 
 #define M3_SNAPSHOT_MAGIC   0x4D33534Eu // 'M3SN'
-#define M3_SNAPSHOT_VERSION 52u
+#define M3_SNAPSHOT_VERSION 53u
+// v53: soft bind tethers (20-4).
 // v52: tet soft bodies (20-3).
 // v51: soft pressure (20-2).
 // v50: soft bend tethers (20-1).
@@ -372,6 +373,9 @@ static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3Wal
              world->softBodyCapacity * M3_SOFTBODY_MAX_TETS * (int32_t)sizeof(uint16_t));
     M3_BLOCK(world->softTetRestV6,
              world->softBodyCapacity * M3_SOFTBODY_MAX_TETS * (int32_t)sizeof(m3real));
+    M3_BLOCK(world->softBindPos,
+             world->softBodyCapacity * M3_SOFTBODY_MAX_PARTICLES * (int32_t)sizeof(m3Pos3));
+    M3_BLOCK(world->softMaxDeviation, world->softBodyCapacity * (int32_t)sizeof(m3real));
     M3_BLOCK(world->softRadius, world->softBodyCapacity * (int32_t)sizeof(m3real));
     M3_BLOCK(world->softGravityScale, world->softBodyCapacity * (int32_t)sizeof(m3real));
     M3_BLOCK(world->softUserData, world->softBodyCapacity * (int32_t)sizeof(uint64_t));
@@ -1103,6 +1107,14 @@ uint64_t m3World_Hash(m3WorldId worldId)
             h = m3Hash64(h, &world->softDimZ[i], 2);
             h = m3Hash64(h, &world->softRestVolume[i], 4);
             h = m3Hash64(h, &world->softPressure[i], 4);
+        }
+        if (world->softMaxDeviation[i] != 0.0f)
+        {
+            // The tether folds off-default (20-4), its own block;
+            // bind positions join only then (dead weight otherwise).
+            h = m3Hash64(h, &world->softMaxDeviation[i], 4);
+            h = m3Hash64(h, &world->softBindPos[i * M3_SOFTBODY_MAX_PARTICLES],
+                         world->softParticleCount[i] * (int32_t)sizeof(m3Pos3));
         }
         if (world->softTetCount[i] > 0)
         {

@@ -662,6 +662,49 @@ static void TestAnchorRedTeam(void)
     m3DestroyWorld(world);
 }
 
+static void TestBindTether(void)
+{
+    // 20-4: a tethered cloth dropped from height hangs within its
+    // deviation radius of the bind pose instead of falling; the
+    // untethered twin drops to the floor. Hostile radius refuses.
+    double y[2];
+    for (int32_t pass = 0; pass < 2; ++pass)
+    {
+        m3WorldDef wd = m3DefaultWorldDef();
+        wd.bodyCapacity = 4;
+        wd.shapeCapacity = 4;
+        m3WorldId world = m3CreateWorld(&wd);
+        m3BodyDef gd = m3DefaultBodyDef();
+        m3BodyId ground = m3CreateBody(world, &gd);
+        m3ShapeDef sd = m3DefaultShapeDef();
+        m3Plane floor = {{0.0f, 1.0f, 0.0f}, 0.0f};
+        m3CreatePlaneShape(ground, &sd, &floor);
+        m3SoftBodyDef sb = m3DefaultSoftBodyDef();
+        sb.position = (m3Pos3){0.0, 3.0, 0.0};
+        sb.countX = 4;
+        sb.countY = 1;
+        sb.countZ = 4;
+        sb.maxDeviation = pass == 0 ? 0.0f : 0.2f;
+        m3SoftBodyId cloth = m3CreateSoftBody(world, &sb);
+        CHECK(m3SoftBody_IsValid(cloth), "the cloth creates");
+        for (int32_t i = 0; i < 240; ++i)
+        {
+            m3World_Step(world, 1.0f / 60.0f, 4);
+        }
+        y[pass] = m3SoftBody_GetParticlePosition(cloth, 5).y;
+        m3DestroyWorld(world);
+    }
+    CHECK(y[0] < 0.5, "the untethered cloth falls to the floor");
+    CHECK(y[1] > 2.7, "the tethered cloth hangs at its bind pose");
+
+    m3WorldDef wd = m3DefaultWorldDef();
+    m3WorldId world = m3CreateWorld(&wd);
+    m3SoftBodyDef sb = m3DefaultSoftBodyDef();
+    sb.maxDeviation = -0.5f;
+    CHECK(!m3SoftBody_IsValid(m3CreateSoftBody(world, &sb)), "negative deviation refuses");
+    m3DestroyWorld(world);
+}
+
 static void TestTetBodies(void)
 {
     // 20-3: a five-tet cube drops, squashes on contact, and keeps
@@ -870,6 +913,7 @@ int main(void)
     TestBendRods();
     TestPressure();
     TestTetBodies();
+    TestBindTether();
     if (s_failures == 0)
     {
         printf("test_softbody: all green\n");

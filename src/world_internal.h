@@ -821,6 +821,11 @@ typedef struct m3World
     uint16_t* softTetC;
     uint16_t* softTetD;
     m3real* softTetRestV6;
+    // Bind-pose tether (20-4): the create positions and the clamp
+    // radius; radius 0 = off and the bind block stays canonical
+    // zeros.
+    m3Pos3* softBindPos;
+    m3real* softMaxDeviation;
     m3Vec3* softKick;    // pending explosion velocity kicks (13-3):
                          // integrated once next step, then zeroed,
                          // hashed only when nonzero (additive rule)
