@@ -94,15 +94,26 @@ static int32_t BuildRange(m3MeshBvh* bvh, BvhScratch* scratch, int32_t s, int32_
         chi.y = m3MaxF(chi.y, scratch->centroid[t].y);
         chi.z = m3MaxF(chi.z, scratch->centroid[t].z);
     }
-    node->lo = lo;
-    node->hi = hi;
+    // Quantize outward against the root frame (17-3): floor on the
+    // low corner, ceil on the high, clamped to the grid.
+    for (int32_t k = 0; k < 3; ++k)
+    {
+        m3real l = k == 0 ? lo.x : (k == 1 ? lo.y : lo.z);
+        m3real h = k == 0 ? hi.x : (k == 1 ? hi.y : hi.z);
+        m3real rl = k == 0 ? bvh->rootLo.x : (k == 1 ? bvh->rootLo.y : bvh->rootLo.z);
+        m3real sc = k == 0 ? bvh->quantScale.x : (k == 1 ? bvh->quantScale.y : bvh->quantScale.z);
+        m3real ql = floorf((l - rl) * sc);
+        m3real qh = ceilf((h - rl) * sc);
+        node->qlo[k] = (uint16_t)m3MaxF(0.0f, m3MinF(65535.0f, ql));
+        node->qhi[k] = (uint16_t)m3MaxF(0.0f, m3MinF(65535.0f, qh));
+    }
 
     int32_t count = e - s;
     if (count <= M3_MESH_BVH_LEAF)
     {
         node->right = -1;
-        node->start = s;
-        node->count = count;
+        node->start = (uint16_t)s;
+        node->count = (uint16_t)count;
         return nodeIndex;
     }
 
@@ -129,6 +140,31 @@ static int32_t BuildRange(m3MeshBvh* bvh, BvhScratch* scratch, int32_t s, int32_
     bvh->nodes[nodeIndex].start = 0;
     bvh->nodes[nodeIndex].count = 0;
     return nodeIndex;
+}
+
+// The root quantization frame (17-3): the whole tree's bounds and
+// the grid scale, computed BEFORE the recursive build writes nodes.
+static void SetQuantFrame(m3MeshBvh* bvh, const m3Vec3* los, const m3Vec3* his, int32_t count)
+{
+    m3Vec3 lo = los[0];
+    m3Vec3 hi = his[0];
+    for (int32_t t = 1; t < count; ++t)
+    {
+        lo.x = m3MinF(lo.x, los[t].x);
+        lo.y = m3MinF(lo.y, los[t].y);
+        lo.z = m3MinF(lo.z, los[t].z);
+        hi.x = m3MaxF(hi.x, his[t].x);
+        hi.y = m3MaxF(hi.y, his[t].y);
+        hi.z = m3MaxF(hi.z, his[t].z);
+    }
+    bvh->rootLo = lo;
+    bvh->rootHi = hi;
+    m3Vec3 extent = m3Sub3(hi, lo);
+    // A flat axis gets scale 0: every quantized range collapses to
+    // [0, 0] there and every query hits it, the safe superset.
+    bvh->quantScale.x = extent.x > 1.0e-9f ? 65535.0f / extent.x : 0.0f;
+    bvh->quantScale.y = extent.y > 1.0e-9f ? 65535.0f / extent.y : 0.0f;
+    bvh->quantScale.z = extent.z > 1.0e-9f ? 65535.0f / extent.z : 0.0f;
 }
 
 void m3MeshBvhFree(m3MeshBvh* bvh)
@@ -172,6 +208,7 @@ void m3MeshBvhBuildBounds(m3MeshBvh* bvh, const m3Vec3* los, const m3Vec3* his, 
             (m3Vec3){0.5f * (lo.x + hi.x), 0.5f * (lo.y + hi.y), 0.5f * (lo.z + hi.z)};
         bvh->order[t] = (uint16_t)t;
     }
+    SetQuantFrame(bvh, los, his, count);
     BuildRange(bvh, scratch, 0, count);
     m3Free(scratch);
 }
@@ -245,6 +282,26 @@ int32_t m3MeshBvhGather(const m3MeshBvh* bvh, m3Vec3 lo, m3Vec3 hi, uint16_t* ou
     {
         return 0;
     }
+    // Float early-out first (17-3): a query outside the whole tree
+    // is free; clamping it onto the grid edge would over-visit.
+    if (hi.x < bvh->rootLo.x || lo.x > bvh->rootHi.x || hi.y < bvh->rootLo.y ||
+        lo.y > bvh->rootHi.y || hi.z < bvh->rootLo.z || lo.z > bvh->rootHi.z)
+    {
+        return 0;
+    }
+    // Quantize the query outward too (17-3): the doubly-rounded
+    // pair can only ADD candidates, never drop one.
+    uint16_t qlo[3];
+    uint16_t qhi[3];
+    for (int32_t k = 0; k < 3; ++k)
+    {
+        m3real l = k == 0 ? lo.x : (k == 1 ? lo.y : lo.z);
+        m3real h = k == 0 ? hi.x : (k == 1 ? hi.y : hi.z);
+        m3real rl = k == 0 ? bvh->rootLo.x : (k == 1 ? bvh->rootLo.y : bvh->rootLo.z);
+        m3real sc = k == 0 ? bvh->quantScale.x : (k == 1 ? bvh->quantScale.y : bvh->quantScale.z);
+        qlo[k] = (uint16_t)m3MaxF(0.0f, m3MinF(65535.0f, floorf((l - rl) * sc)));
+        qhi[k] = (uint16_t)m3MaxF(0.0f, m3MinF(65535.0f, ceilf((h - rl) * sc)));
+    }
     int32_t stack[64]; // median split depth is ~log2(2048/4) + 1; 64
                        // is unreachable headroom
     int32_t top = 0;
@@ -254,8 +311,8 @@ int32_t m3MeshBvhGather(const m3MeshBvh* bvh, m3Vec3 lo, m3Vec3 hi, uint16_t* ou
     {
         int32_t index = stack[--top];
         const m3MeshBvhNode* node = &bvh->nodes[index];
-        if (hi.x < node->lo.x || lo.x > node->hi.x || hi.y < node->lo.y || lo.y > node->hi.y ||
-            hi.z < node->lo.z || lo.z > node->hi.z)
+        if (qhi[0] < node->qlo[0] || qlo[0] > node->qhi[0] || qhi[1] < node->qlo[1] ||
+            qlo[1] > node->qhi[1] || qhi[2] < node->qlo[2] || qlo[2] > node->qhi[2])
         {
             continue;
         }

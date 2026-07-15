@@ -277,13 +277,20 @@ void m3BakeMeshEdgeFlags(m3MeshData* mesh);
 #define M3_MESH_BVH_LEAF 4
 // Node budget per build: 2 * triCount (allocated exactly, 10-3).
 
+// Quantized node bounds (17-3): uint16 grid coordinates against
+// the root box, rounded OUTWARD at build and the query rounded
+// outward again at gather, so the visit set stays a superset of
+// the exact overlaps (visiting more is legal, missing one never).
+// Every consumer keeps its exact reject test, so results stay
+// bit-identical to the float tree this replaces; 20 bytes per node
+// instead of 36.
 typedef struct m3MeshBvhNode
 {
-    m3Vec3 lo;
-    m3Vec3 hi;
-    int32_t right; // internal: right child (left child = self + 1)
-    int32_t start; // leaf only: first slot in order[]
-    int32_t count; // leaf: triangle count; 0 marks an internal node
+    uint16_t qlo[3];
+    uint16_t qhi[3];
+    int32_t right;  // internal: right child (left child = self + 1)
+    uint16_t start; // leaf only: first slot in order[]
+    uint16_t count; // leaf: triangle count; 0 marks an internal node
 } m3MeshBvhNode;
 
 typedef struct m3MeshBvh
@@ -291,6 +298,10 @@ typedef struct m3MeshBvh
     int32_t nodeCount;
     m3MeshBvhNode* nodes; // derived data: built at create and after
     uint16_t* order;      // restore, sized 2 * triCount and triCount
+    m3Vec3 rootLo;        // the quantization frame (17-3)
+    m3Vec3 rootHi;        // float early-out: a query outside the root
+                          // is FREE, not clamped onto the grid edge
+    m3Vec3 quantScale;    // world-to-grid; 0 on a flat axis (always hits)
 } m3MeshBvh;
 
 void m3MeshBvhBuild(m3MeshBvh* bvh, const m3MeshData* mesh);
