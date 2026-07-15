@@ -558,6 +558,26 @@ balanced tree. It changes NO answer: pairs are canonical and the
 tree is never hashed, so a rebuilt world steps bit-identically to
 its unrebuilt twin (the suite proves it by hash equality).
 
+## Soft body depth
+
+Four knobs deepen the particle lattices (all default-off,
+bit-exact with earlier versions when unused). Bend
+(`bendCompliance`): second-neighbor tethers along each lattice
+axis stiffen ropes and sheets against folding; positions carry no
+frames, so twist stiffness is deliberately out. Pressure
+(`pressure`): closed lattices (every axis count at least 2) hold
+a target volume multiple through one global constraint over their
+surface; 2 inflates a cube toward double volume. Tet bodies
+(`m3CreateSoftBodyTet`): explicit points and tetrahedra, each tet
+holding its create volume rigidly (the incompressible jelly);
+edges come from tet edges; flat or inverted tets refuse. The bind
+tether (`maxDeviation`): every particle clamps to a radius around
+its create position each substep, the cheap skinned-vertex limit
+that keeps cloth from exploding; the clamp runs before the volume
+rows, so a crushed tet still restores its volume. Double-sided
+cloth needs no switch: particles are spheres and collide from
+both sides by construction.
+
 ## The native heightfield
 
 m3CreateHeightFieldGridShape stores an nx-by-nz grid (2..255 per

@@ -4,7 +4,33 @@ All notable changes to Maul3D. Versions are tags on green CI SHAs;
 every entry's determinism gates were verified across all CI cells at
 tag time.
 
-## Unreleased (v1.16 in tree)
+## Unreleased (v1.17 in tree)
+
+Soft body depth: spines, breath, jelly, and a leash.
+
+- Bend tethers (snapshot v50): bendCompliance adds second-neighbor
+  tethers along each lattice axis; a clamped stiff rope reaches
+  forward where a floppy one crumples. Cosserat twist declined on
+  the record: positions carry no frames.
+- Internal pressure (v51): closed lattices hold a target volume
+  multiple through one global surface constraint; a pressurized
+  cube inflates over its twin.
+- Tet soft bodies (op 77, v52): m3CreateSoftBodyTet with per-tet
+  rigid volumes, first-touch edge dedup, and full walls (flat or
+  inverted tets refuse). The real jelly: drops, squashes, keeps
+  its volume, replays to the bit.
+- The bind-pose tether (v53): maxDeviation clamps every particle
+  to a radius around its create position; tethered cloth hangs at
+  its bind pose instead of falling.
+- A fuzz-earned cure: the general mutation storm finally hit the
+  snapshot header's pool cursors; restore now walls every pool's
+  maxIndex/freeHead/freeCount/retiredCount before a byte lands
+  (previously a flipped bit could drive an out-of-bounds island
+  walk).
+- The phase 20 mutation storm (300 flips over a jelly + rope +
+  pressure + tether session).
+
+## v1.16 (2026-07-15)
 
 Terrain that travels light.
 

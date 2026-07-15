@@ -1022,6 +1022,104 @@ static void TestFuzzPhase19Ops(void)
     free(snap);
 }
 
+static void TestFuzzPhase20Ops(void)
+{
+    // The 20-5 red team: a session dense in op 77 (tet creates)
+    // beside bend ropes, pressurized cubes, and tethered cloth
+    // (the whole phase-20 def surface), then 300 journal-aimed
+    // mutations under the 9-5 law.
+    m3WorldDef def = Def();
+    def.bodyCapacity = 16;
+    def.shapeCapacity = 16;
+    m3WorldId world = m3CreateWorld(&def);
+    int32_t snapBytes = m3World_SnapshotSize(world);
+    uint8_t* snap = (uint8_t*)malloc((size_t)snapBytes);
+    m3World_Snapshot(world, snap, snapBytes);
+    static uint8_t journal[131072];
+    m3World_JournalBegin(world, journal, (int32_t)sizeof(journal));
+
+    m3BodyDef gd = m3DefaultBodyDef();
+    m3BodyId ground = m3CreateBody(world, &gd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    m3Plane fl = {{0.0f, 1.0f, 0.0f}, 0.0f};
+    m3CreatePlaneShape(ground, &sd, &fl);
+
+    static const m3Vec3 pts[8] = {{0.0f, 0.0f, 0.0f}, {0.5f, 0.0f, 0.0f}, {0.5f, 0.5f, 0.0f},
+                                  {0.0f, 0.5f, 0.0f}, {0.0f, 0.0f, 0.5f}, {0.5f, 0.0f, 0.5f},
+                                  {0.5f, 0.5f, 0.5f}, {0.0f, 0.5f, 0.5f}};
+    static const uint16_t tets[20] = {0, 1, 2, 5, 0, 2, 3, 7, 0, 5, 2, 7, 0, 5, 7, 4, 2, 5, 6, 7};
+    m3SoftBodyDef sb = m3DefaultSoftBodyDef();
+    sb.position = (m3Pos3){-2.0, 1.5, 0.0};
+    sb.compliance = 1.0e-4f;
+    m3CreateSoftBodyTet(world, &sb, pts, 8, tets, 5); // op 77
+
+    sb = m3DefaultSoftBodyDef();
+    sb.position = (m3Pos3){2.0, 2.0, 0.0};
+    sb.countX = 3;
+    sb.countY = 3;
+    sb.countZ = 3;
+    sb.pressure = 1.5f;
+    sb.compliance = 1.0e-4f;
+    m3CreateSoftBody(world, &sb);
+
+    sb = m3DefaultSoftBodyDef();
+    sb.position = (m3Pos3){0.0, 2.5, 2.0};
+    sb.countX = 8;
+    sb.countY = 1;
+    sb.countZ = 1;
+    sb.bendCompliance = 1.0e-6f;
+    sb.maxDeviation = 0.6f;
+    m3CreateSoftBody(world, &sb);
+
+    for (int32_t i = 0; i < 120; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+    }
+    int32_t journalBytes = m3World_JournalEnd(world);
+    uint64_t final = m3World_Hash(world);
+    int32_t need = m3ReplayEncodeSize(snapBytes, journalBytes);
+    uint8_t* blob = (uint8_t*)malloc((size_t)need);
+    CHECK(m3ReplayEncode(snap, snapBytes, journal, journalBytes, final, blob, need) == need,
+          "the phase 20 session encodes");
+    m3DestroyWorld(world);
+
+    m3ReplayView valid;
+    CHECK(m3ReplayDecode(blob, need, &valid), "the phase 20 session decodes");
+    int32_t journalStart = (int32_t)((const uint8_t*)valid.journal - blob);
+    uint8_t* mutant = (uint8_t*)malloc((size_t)need);
+    uint32_t rng = 246813579u;
+    int32_t refused = 0;
+    int32_t survived = 0;
+    for (int32_t t = 0; t < 300; ++t)
+    {
+        memcpy(mutant, blob, (size_t)need);
+        rng = rng * 1664525u + 1013904223u;
+        int32_t where = journalStart + (int32_t)(rng % (uint32_t)(need - journalStart));
+        rng = rng * 1664525u + 1013904223u;
+        mutant[where] ^= (uint8_t)(1u << (rng % 8));
+        m3ReplayView view;
+        if (!m3ReplayDecode(mutant, need, &view))
+        {
+            refused += 1;
+            continue;
+        }
+        m3WorldDef fresh = Def();
+        fresh.bodyCapacity = 16;
+        fresh.shapeCapacity = 16;
+        m3WorldId probe = m3CreateWorld(&fresh);
+        if (m3World_Restore(probe, view.snapshot, view.snapshotBytes))
+        {
+            m3World_JournalReplay(probe, view.journal, view.journalBytes);
+        }
+        m3DestroyWorld(probe);
+        survived += 1;
+    }
+    CHECK(refused + survived == 300, "every phase 20 mutant either refused or survived");
+    free(mutant);
+    free(blob);
+    free(snap);
+}
+
 int main(void)
 {
     TestRoundTrip();
@@ -1035,6 +1133,7 @@ int main(void)
     TestFuzzPhase17Ops();
     TestFuzzPhase18Ops();
     TestFuzzPhase19Ops();
+    TestFuzzPhase20Ops();
     if (s_failures == 0)
     {
         printf("test_replayfile: all green\n");
