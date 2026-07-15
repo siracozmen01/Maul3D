@@ -427,6 +427,65 @@ bool m3VoxelSetFillInternal(m3World* world, int32_t shape, int32_t x, int32_t y,
     return true;
 }
 
+int32_t m3VoxelCarveSphereInternal(m3World* world, int32_t shape, m3Vec3 center, m3real radius)
+{
+    // The explosion bite (13-3): clear every cell whose center lies
+    // inside the sphere (center in the CHUNK frame), then ONE
+    // surface rebuild and ONE fracture sweep for the whole bite,
+    // the ClearBox economy. Cell (x,y,z) spans [x, x+1) * cellSize.
+    int32_t slot = world->shapeVoxelIndex[shape];
+    m3VoxelChunkData* chunk = &world->voxelData[slot];
+    m3real cell = chunk->cellSize;
+    int32_t lo[3];
+    int32_t hi[3];
+    m3real c[3] = {center.x, center.y, center.z};
+    for (int32_t a = 0; a < 3; ++a)
+    {
+        m3real f0 = (c[a] - radius) / cell;
+        m3real f1 = (c[a] + radius) / cell;
+        int32_t i0 = (int32_t)floorf(f0);
+        int32_t i1 = (int32_t)floorf(f1);
+        lo[a] = i0 < 0 ? 0 : (i0 > M3_VOXEL_DIM - 1 ? M3_VOXEL_DIM - 1 : i0);
+        hi[a] = i1 < 0 ? 0 : (i1 > M3_VOXEL_DIM - 1 ? M3_VOXEL_DIM - 1 : i1);
+    }
+    int32_t cleared = 0;
+    m3real r2 = radius * radius;
+    for (int32_t z = lo[2]; z <= hi[2]; ++z)
+    {
+        for (int32_t y = lo[1]; y <= hi[1]; ++y)
+        {
+            for (int32_t x = lo[0]; x <= hi[0]; ++x)
+            {
+                if (!m3VoxelGet(chunk, x, y, z))
+                {
+                    continue;
+                }
+                m3real dx = ((m3real)x + 0.5f) * cell - center.x;
+                m3real dy = ((m3real)y + 0.5f) * cell - center.y;
+                m3real dz = ((m3real)z + 0.5f) * cell - center.z;
+                if (dx * dx + dy * dy + dz * dz > r2)
+                {
+                    continue;
+                }
+                int32_t v = x + M3_VOXEL_DIM * (y + M3_VOXEL_DIM * z);
+                chunk->occupancy[v >> 3] &= (uint8_t)~(1u << (v & 7));
+                chunk->payload[v] = 0;
+                chunk->fill[v] = 0;
+                cleared += 1;
+            }
+        }
+    }
+    if (cleared > 0)
+    {
+        chunk->filledCount -= cleared;
+        m3VoxelSurfaceBuild(&world->voxelSurface[slot], chunk);
+        m3VoxelFractureSweep(world, shape);
+        m3VoxelCoverageRefreshAround(world, slot);
+    }
+    VoxelWakeRegion(world, shape, lo, hi);
+    return cleared;
+}
+
 // Public entries: validate, journal, apply (the command pattern).
 static m3World* ResolveVoxelShape(m3ShapeId shapeId, int32_t* shapeOut)
 {

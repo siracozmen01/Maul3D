@@ -298,6 +298,69 @@ static tbScene SceneKeep(void)
     return scene;
 }
 
+// Scene 1b: the blastyard. One call does the whole demolition
+// (13-2/13-3): crates and barrels ring a voxel wall, X detonates at
+// the reticle, the blast shoves every body by its facing area,
+// carves the wall, and the freed islands fly out as kicked
+// fragments. R rewinds the explosion, which is the whole point.
+static tbScene SceneBlastyard(void)
+{
+    tbScene scene;
+    memset(&scene, 0, sizeof(scene));
+    scene.name = "blastyard";
+    scene.blurb = "X detonates at the crosshair; carve, shove, and rewind it all";
+    m3WorldDef def = SceneDef();
+    scene.def = def;
+    scene.world = m3CreateWorld(&def);
+    AddFloor(scene.world);
+    static uint8_t voxels[16 * 16 * 16];
+    memset(voxels, 0, sizeof(voxels));
+    for (int32_t y = 0; y < 10; ++y)
+    {
+        for (int32_t x = 1; x <= 14; ++x)
+        {
+            voxels[x + 16 * (y + 16 * 7)] = 1;
+            voxels[x + 16 * (y + 16 * 8)] = 1;
+        }
+    }
+    m3BodyDef wd = m3DefaultBodyDef();
+    wd.position = (m3Pos3){-8.0, 0.0, -8.0};
+    m3BodyId wall = m3CreateBody(scene.world, &wd);
+    m3ShapeDef vd = m3DefaultShapeDef();
+    vd.friction = 0.6f;
+    scene.chunk = m3CreateVoxelChunkShape(wall, &vd, voxels, NULL, 1.0f);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    sd.friction = 0.5f;
+    for (int32_t i = 0; i < 10; ++i)
+    {
+        m3BodyDef bd = m3DefaultBodyDef();
+        bd.type = m3_dynamicBody;
+        double a = 0.628318530718 * (double)i;
+        bd.position = (m3Pos3){5.5 * cos(a), 0.55, 4.0 + 4.5 * sin(a)};
+        m3BodyId crate = m3CreateBody(scene.world, &bd);
+        m3CreateBoxShape(crate, &sd, (m3Vec3){0.45f, 0.45f, 0.45f});
+    }
+    for (int32_t i = 0; i < 4; ++i)
+    {
+        m3BodyDef bd = m3DefaultBodyDef();
+        bd.type = m3_dynamicBody;
+        bd.position = (m3Pos3){-3.0 + 2.0 * (double)i, 0.5, 2.5};
+        m3BodyId barrel = m3CreateBody(scene.world, &bd);
+        m3Capsule keg = {{0.0f, -0.22f, 0.0f}, {0.0f, 0.22f, 0.0f}, 0.28f};
+        m3CreateCapsuleShape(barrel, &sd, &keg);
+    }
+    for (int32_t i = 0; i < 3; ++i)
+    {
+        m3BodyDef bd = m3DefaultBodyDef();
+        bd.type = m3_dynamicBody;
+        bd.position = (m3Pos3){-2.0 + 2.0 * (double)i, 0.4, 6.5};
+        m3BodyId ball = m3CreateBody(scene.world, &bd);
+        m3Sphere orb = {{0.0f, 0.0f, 0.0f}, 0.4f};
+        m3CreateSphereShape(ball, &sd, &orb);
+    }
+    return scene;
+}
+
 // Scene 2: the rain. A sphere pyramid takes a mixed-body rain.
 static tbScene SceneRain(void)
 {
@@ -1025,7 +1088,8 @@ typedef struct tbSceneEntry
 
 static const tbSceneEntry s_scenes[] = {
     {ScenePyramid, "Benchmark"},  {SceneTower, "Contacts"},    {SceneRain, "Contacts"},
-    {SceneKeep, "Destruction"},   {SceneJelly, "Destruction"}, {SceneMachines, "Joints"},
+    {SceneKeep, "Destruction"},   {SceneBlastyard, "Destruction"},
+    {SceneJelly, "Destruction"},  {SceneMachines, "Joints"},
     {SceneJointCart, "Vehicles"}, {SceneCircuit, "Vehicles"},  {SceneHill, "Vehicles"},
     {SceneWalker, "Characters"},  {SceneTunnel, "Characters"}, {SceneClothWind, "Soft"},
     {SceneMeadow, "Geometry"},
@@ -1036,6 +1100,11 @@ static const tbSceneEntry s_scenes[] = {
 // The fragment recipe from the voxfort bench, verbatim in spirit:
 // small islands become hulls of their voxel corner clouds, large
 // ones become bounds boxes with density matched to the event mass.
+// When a detonation armed the shove, newborn fragments inherit a
+// radial kick from the blast center (13-3 demo dressing).
+static bool s_blastArmed = false;
+static m3Pos3 s_blastAt;
+
 static void SpawnFragments(m3WorldId world)
 {
     int32_t count = 0;
@@ -1048,6 +1117,18 @@ static void SpawnFragments(m3WorldId world)
         m3BodyDef bd = m3DefaultBodyDef();
         bd.type = m3_dynamicBody;
         bd.position = ev->comWorld;
+        if (s_blastArmed)
+        {
+            m3real dx = (m3real)(ev->comWorld.x - s_blastAt.x);
+            m3real dy = (m3real)(ev->comWorld.y - s_blastAt.y);
+            m3real dz = (m3real)(ev->comWorld.z - s_blastAt.z);
+            m3real d = sqrtf(dx * dx + dy * dy + dz * dz);
+            m3real inv = d > 1e-4f ? 1.0f / d : 0.0f;
+            m3real speed = 7.0f / (1.0f + 0.3f * d);
+            bd.linearVelocity =
+                (m3Vec3){dx * inv * speed, dy * inv * speed + 2.0f, dz * inv * speed};
+            bd.angularVelocity = (m3Vec3){dz * inv * 2.0f, 1.0f, -dx * inv * 2.0f};
+        }
         m3BodyId body = m3CreateBody(world, &bd);
         m3Vec3 half = {0.5f * (m3real)(ev->boundsHi[0] - ev->boundsLo[0] + 1),
                        0.5f * (m3real)(ev->boundsHi[1] - ev->boundsLo[1] + 1),
@@ -1473,6 +1554,23 @@ int main(void)
                 SpawnFragments(scene.world);
             }
         }
+        if (IsKeyPressed(KEY_X) && look.hit && !mouseInPanel)
+        {
+            // One call does the demolition (13-2/13-3): shove every
+            // convex body by facing area, carve any chunk in range,
+            // then dress the freed islands with the radial kick.
+            m3ExplosionDef boom = m3DefaultExplosionDef();
+            boom.position = look.point;
+            boom.radius = 3.5f;
+            boom.falloff = 2.5f;
+            boom.impulsePerArea = 8.0f;
+            boom.voxelCarve = 2.5f;
+            m3World_Explode(scene.world, &boom);
+            s_blastArmed = true;
+            s_blastAt = look.point;
+            SpawnFragments(scene.world);
+            s_blastArmed = false;
+        }
         if (IsKeyPressed(KEY_B) && look.hit && !mouseInPanel)
         {
             m3BodyDef bd = m3DefaultBodyDef();
@@ -1872,9 +1970,10 @@ int main(void)
         // ---- the browser overlay
         if (browser)
         {
-            static const char* names[] = {"pyramid",  "tower",     "rain",    "voxfort",   "jelly",
-                                          "machines", "jointcart", "circuit", "hillclimb", "walker",
-                                          "tunnel",   "clothwind", "meadow"};
+            static const char* names[] = {
+                "pyramid", "tower",     "rain",      "voxfort",   "blastyard",
+                "jelly",   "machines",  "jointcart", "circuit",   "hillclimb",
+                "walker",  "tunnel",    "clothwind", "meadow"};
             int bx = screenW / 2 - 220;
             int by = 80;
             DrawRectangle(bx - 14, by - 12, 470, 40 + SCENE_COUNT * 24, (Color){22, 24, 30, 242});

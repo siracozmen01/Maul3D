@@ -295,6 +295,7 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     M3_ALLOC(world->softPos, def->softBodyCapacity * M3_SOFTBODY_MAX_PARTICLES, m3Pos3);
     M3_ALLOC(world->softPrev, def->softBodyCapacity * M3_SOFTBODY_MAX_PARTICLES, m3Pos3);
     M3_ALLOC(world->softInvMass, def->softBodyCapacity * M3_SOFTBODY_MAX_PARTICLES, m3real);
+    M3_ALLOC(world->softKick, def->softBodyCapacity * M3_SOFTBODY_MAX_PARTICLES, m3Vec3);
     M3_ALLOC(world->softEdgeA, def->softBodyCapacity * M3_SOFTBODY_MAX_EDGES, uint16_t);
     M3_ALLOC(world->softEdgeB, def->softBodyCapacity * M3_SOFTBODY_MAX_EDGES, uint16_t);
     M3_ALLOC(world->softEdgeRest, def->softBodyCapacity * M3_SOFTBODY_MAX_EDGES, m3real);
@@ -544,6 +545,7 @@ void m3DestroyWorld(m3WorldId worldId)
     m3Free(world->softPos);
     m3Free(world->softPrev);
     m3Free(world->softInvMass);
+    m3Free(world->softKick);
     m3Free(world->softEdgeA);
     m3Free(world->softEdgeB);
     m3Free(world->softEdgeRest);

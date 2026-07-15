@@ -338,6 +338,8 @@ static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3Wal
              world->softBodyCapacity * M3_SOFTBODY_MAX_PARTICLES * (int32_t)sizeof(m3Pos3));
     M3_BLOCK(world->softInvMass,
              world->softBodyCapacity * M3_SOFTBODY_MAX_PARTICLES * (int32_t)sizeof(m3real));
+    M3_BLOCK(world->softKick, // v43: pending explosion kicks (13-3)
+             world->softBodyCapacity * M3_SOFTBODY_MAX_PARTICLES * (int32_t)sizeof(m3Vec3));
     M3_BLOCK(world->softEdgeA,
              world->softBodyCapacity * M3_SOFTBODY_MAX_EDGES * (int32_t)sizeof(uint16_t));
     M3_BLOCK(world->softEdgeB,
@@ -855,6 +857,14 @@ uint64_t m3World_Hash(m3WorldId worldId)
             h = m3Hash64(h, &world->softPos[k], (int32_t)sizeof(m3Pos3));
             h = m3Hash64(h, &world->softPrev[k], (int32_t)sizeof(m3Pos3));
             h = m3Hash64(h, &world->softInvMass[k], 4);
+            if (world->softKick[k].x != 0.0f || world->softKick[k].y != 0.0f ||
+                world->softKick[k].z != 0.0f)
+            {
+                // Pending kicks fold only while they exist (13-3):
+                // the window between a blast and its next step is
+                // real rollback state, everything else is silence.
+                h = m3Hash64(h, &world->softKick[k], (int32_t)sizeof(m3Vec3));
+            }
         }
         int32_t ec = world->softEdgeCount[i];
         for (int32_t e = 0; e < ec; ++e)

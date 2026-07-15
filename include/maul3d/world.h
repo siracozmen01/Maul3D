@@ -374,11 +374,14 @@ extern "C"
         float radius;         // full-impulse radius, >= 0
         float falloff;        // fade band past the radius, >= 0
         float impulsePerArea; // impulse per m^2 of facing area
+        float voxelCarve;     // carve radius into voxel chunks, 0 = off
+        float softPush;       // soft particle push scale, default 1
         int32_t internalValue;
     } m3ExplosionDef;
 
     /// Returns a def with pinned defaults (10 m radius, 5 m falloff,
-    /// zero impulse, open filter) and a valid cookie.
+    /// zero impulse, no carve, soft push 1, open filter) and a valid
+    /// cookie.
     M3_API m3ExplosionDef m3DefaultExplosionDef(void);
 
     /// Apply the explosion now. Journaled; hostile defs apply

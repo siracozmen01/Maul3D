@@ -1108,10 +1108,26 @@ static bool ExplodeCallback(int32_t shape, void* userContext)
     m3World* world = ctx->world;
     const m3ExplosionDef* def = ctx->def;
     uint8_t type = world->shapeType[shape];
+    if (type == (uint8_t)m3_voxelShape)
+    {
+        // The carve couples the blast to destruction (13-3): one
+        // call bites the chunk, the fracture sweep frees islands,
+        // and the fragment events carry the rest to the host.
+        if (def->voxelCarve > 0.0f)
+        {
+            m3Transform vxf = m3ShapeWorldTransform(world, shape);
+            m3Vec3 vlocal = m3InvRotateVec3(
+                vxf.q,
+                (m3Vec3){(m3real)(def->position.x - vxf.p.x), (m3real)(def->position.y - vxf.p.y),
+                         (m3real)(def->position.z - vxf.p.z)});
+            m3VoxelCarveSphereInternal(world, shape, vlocal, def->voxelCarve);
+        }
+        return true;
+    }
     if (type != (uint8_t)m3_sphereShape && type != (uint8_t)m3_capsuleShape &&
         type != (uint8_t)m3_hullShape)
     {
-        return true; // voxel charges couple in 13-3; the rest is static
+        return true; // meshes and planes are static scenery
     }
     int32_t body = world->shapeBody[shape];
     if (world->types[body] != (uint8_t)m3_dynamicBody || world->bodyEnabled[body] == 0 ||
@@ -1190,15 +1206,63 @@ static bool ExplodeCallback(int32_t shape, void* userContext)
 bool m3WorldExplodeInternal(m3World* world, const m3ExplosionDef* def)
 {
     if (!m3FinitePos3(def->position) || !m3FiniteF(def->radius) || def->radius < 0.0f ||
-        !m3FiniteF(def->falloff) || def->falloff < 0.0f || !m3FiniteF(def->impulsePerArea))
+        !m3FiniteF(def->falloff) || def->falloff < 0.0f || !m3FiniteF(def->impulsePerArea) ||
+        !m3FiniteF(def->voxelCarve) || def->voxelCarve < 0.0f || !m3FiniteF(def->softPush))
     {
         return false;
     }
-    double extent = (double)def->radius + (double)def->falloff;
+    double reach = (double)def->radius + (double)def->falloff;
+    double extent = reach > (double)def->voxelCarve ? reach : (double)def->voxelCarve;
     double lo[3] = {def->position.x - extent, def->position.y - extent, def->position.z - extent};
     double hi[3] = {def->position.x + extent, def->position.y + extent, def->position.z + extent};
     m3ExplodeContext ctx = {world, def};
     m3TreeQuery(&world->tree, lo, hi, ExplodeCallback, &ctx);
+    // Soft particles: a canonical linear pass over the pool. Verlet
+    // has no velocity to poke, so the push lands as a pending kick
+    // the next step integrates exactly once (13-3).
+    if (def->softPush != 0.0f && def->impulsePerArea != 0.0f)
+    {
+        int32_t maxSoft = world->softPool.maxIndex;
+        for (int32_t slot = 0; slot < maxSoft; ++slot)
+        {
+            if (world->softPool.alive[slot] == 0)
+            {
+                continue;
+            }
+            int32_t count = world->softParticleCount[slot];
+            int32_t base = slot * M3_SOFTBODY_MAX_PARTICLES;
+            m3real pr = world->softRadius[slot];
+            m3real area = M3_PI * pr * pr;
+            for (int32_t i = 0; i < count; ++i)
+            {
+                int32_t k = base + i;
+                if (world->softInvMass[k] == 0.0f)
+                {
+                    continue;
+                }
+                m3Vec3 d = {(m3real)(world->softPos[k].x - def->position.x),
+                            (m3real)(world->softPos[k].y - def->position.y),
+                            (m3real)(world->softPos[k].z - def->position.z)};
+                m3real dist = m3Length3(d);
+                m3real surface = dist - pr;
+                if (surface > def->radius + def->falloff)
+                {
+                    continue;
+                }
+                m3Vec3 direction =
+                    dist > 1e-6f ? m3MulSV3(1.0f / dist, d) : (m3Vec3){1.0f, 0.0f, 0.0f};
+                m3real scale = 1.0f;
+                if (surface > def->radius && def->falloff > 0.0f)
+                {
+                    scale = (def->radius + def->falloff - surface) / def->falloff;
+                    scale = scale < 0.0f ? 0.0f : (scale > 1.0f ? 1.0f : scale);
+                }
+                m3real magnitude = def->impulsePerArea * def->softPush * area * scale;
+                world->softKick[k] = m3Add3(
+                    world->softKick[k], m3MulSV3(magnitude * world->softInvMass[k], direction));
+            }
+        }
+    }
     return true;
 }
 
@@ -1210,6 +1274,8 @@ m3ExplosionDef m3DefaultExplosionDef(void)
     def.radius = 10.0f;
     def.falloff = 5.0f;
     def.impulsePerArea = 0.0f;
+    def.voxelCarve = 0.0f;
+    def.softPush = 1.0f;
     def.internalValue = M3_EXPLOSION_COOKIE;
     return def;
 }

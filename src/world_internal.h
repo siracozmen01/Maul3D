@@ -651,6 +651,9 @@ typedef struct m3World
     m3Pos3* softPos;     // cap * M3_SOFTBODY_MAX_PARTICLES
     m3Pos3* softPrev;    // cap * M3_SOFTBODY_MAX_PARTICLES
     m3real* softInvMass; // cap * M3_SOFTBODY_MAX_PARTICLES
+    m3Vec3* softKick;    // pending explosion velocity kicks (13-3):
+                         // integrated once next step, then zeroed,
+                         // hashed only when nonzero (additive rule)
     uint16_t* softEdgeA; // cap * M3_SOFTBODY_MAX_EDGES
     uint16_t* softEdgeB;
     m3real* softEdgeRest;
@@ -835,6 +838,7 @@ void m3SetMaximumLinearSpeedInternal(m3World* world, float value);
 void m3SetMaximumAngularSpeedInternal(m3World* world, float value);
 void m3SetAllowFastRotationInternal(m3World* world, int32_t index, int32_t allow);
 bool m3WorldExplodeInternal(m3World* world, const m3ExplosionDef* def);
+int32_t m3VoxelCarveSphereInternal(m3World* world, int32_t shape, m3Vec3 center, m3real radius);
 void m3EnableSleepingInternal(m3World* world, int32_t on);
 void m3EnableContinuousInternal(m3World* world, int32_t on);
 #define M3_SLEEP_VELOCITY_DEFAULT 0.05f

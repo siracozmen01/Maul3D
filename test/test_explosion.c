@@ -11,6 +11,7 @@
 
 #include "maul3d/body.h"
 #include "maul3d/shape.h"
+#include "maul3d/softbody.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -285,6 +286,125 @@ static void TestHostileTape(void)
     m3DestroyWorld(twin);
 }
 
+static void TestVoxelCarveCoupling(void)
+{
+    // A 16-tall single-voxel column: the blast bites out its waist
+    // (y 7..9 at carve radius 1.2), the anchored base survives, the
+    // freed top emits exactly one fragment island of six cells.
+    uint64_t hashes[2];
+    for (int32_t run = 0; run < 2; ++run)
+    {
+        m3WorldId world = BlastWorld();
+        m3BodyDef gd = m3DefaultBodyDef();
+        m3BodyId ground = m3CreateBody(world, &gd);
+        m3ShapeDef sd = m3DefaultShapeDef();
+        static uint8_t voxels[16 * 16 * 16];
+        memset(voxels, 0, sizeof(voxels));
+        for (int32_t y = 0; y < 16; ++y)
+        {
+            voxels[8 + 16 * (y + 16 * 8)] = 1;
+        }
+        m3ShapeId column = m3CreateVoxelChunkShape(ground, &sd, voxels, NULL, 1.0f);
+        CHECK(m3Shape_IsValid(column), "the column creates");
+        m3ExplosionDef def = m3DefaultExplosionDef();
+        def.position = (m3Pos3){8.5, 8.5, 8.5};
+        def.radius = 2.0f;
+        def.falloff = 1.0f;
+        def.impulsePerArea = 0.0f; // a pure carve: the bite is the test
+        def.voxelCarve = 1.2f;
+        m3World_Explode(world, &def);
+        int32_t eventCount = 0;
+        const m3FragmentEvent* events = m3World_FragmentEvents(world, &eventCount);
+        CHECK(eventCount == 1, "the freed top is exactly one island");
+        if (eventCount == 1)
+        {
+            CHECK(events[0].voxelCount == 6, "the island is the six cells above the bite");
+            CHECK(events[0].boundsLo[1] == 10 && events[0].boundsHi[1] == 15,
+                  "the island spans y 10 through 15");
+        }
+        hashes[run] = m3World_Hash(world);
+        m3DestroyWorld(world);
+    }
+    CHECK(hashes[0] == hashes[1], "twin carves are bit-identical");
+
+    // The same column untouched hashes differently: the carve is
+    // real state, not an event-only side effect.
+    m3WorldId control = BlastWorld();
+    m3BodyDef gd = m3DefaultBodyDef();
+    m3BodyId ground = m3CreateBody(control, &gd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    static uint8_t voxels[16 * 16 * 16];
+    memset(voxels, 0, sizeof(voxels));
+    for (int32_t y = 0; y < 16; ++y)
+    {
+        voxels[8 + 16 * (y + 16 * 8)] = 1;
+    }
+    m3CreateVoxelChunkShape(ground, &sd, voxels, NULL, 1.0f);
+    CHECK(m3World_Hash(control) != hashes[0], "the carve changed the chunk's bits");
+    m3DestroyWorld(control);
+}
+
+static void TestSoftPushAndKickWindow(void)
+{
+    // The blast pushes a lattice through a pending kick that the
+    // next step integrates exactly once, and the kick window is
+    // real rollback state: a snapshot taken between the blast and
+    // the step must re-run onto identical bits.
+    static uint8_t snap[2097152];
+    m3WorldDef wd = m3DefaultWorldDef();
+    wd.gravity = (m3Vec3){0.0f, 0.0f, 0.0f};
+    wd.bodyCapacity = 16;
+    wd.shapeCapacity = 16;
+    wd.softBodyCapacity = 4;
+    m3WorldId world = m3CreateWorld(&wd);
+    m3SoftBodyDef sd = m3DefaultSoftBodyDef();
+    sd.position = (m3Pos3){3.0, -0.5, -0.5};
+    sd.countX = 2;
+    sd.countY = 2;
+    sd.countZ = 2;
+    sd.spacing = 1.0f;
+    m3SoftBodyId jelly = m3CreateSoftBody(world, &sd);
+    CHECK(m3SoftBody_IsValid(jelly), "the lattice creates");
+    double beforeX = m3SoftBody_GetParticlePosition(jelly, 0).x;
+    m3ExplosionDef def = m3DefaultExplosionDef();
+    def.position = (m3Pos3){0.0, 0.0, 0.0};
+    def.radius = 8.0f;
+    def.falloff = 2.0f;
+    // Particle facing area is tiny (pi r squared), so the test
+    // blast is strong to make the push visible over half a second.
+    def.impulsePerArea = 50.0f;
+    m3World_Explode(world, &def);
+    int32_t snapBytes = m3World_Snapshot(world, snap, (int32_t)sizeof(snap));
+    CHECK(snapBytes > 0, "the kick-window snapshot fits");
+    for (int32_t i = 0; i < 30; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+    }
+    uint64_t after = m3World_Hash(world);
+    CHECK(m3SoftBody_GetParticlePosition(jelly, 0).x > beforeX + 0.1,
+          "the pushed lattice flies away from the blast");
+    CHECK(m3World_Restore(world, snap, snapBytes), "the kick-window restore lands");
+    for (int32_t i = 0; i < 30; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+    }
+    CHECK(m3World_Hash(world) == after, "the re-run kick lands on the same bits");
+    m3DestroyWorld(world);
+
+    // softPush zero stands the lattice down: nothing moves at all.
+    m3WorldId still = m3CreateWorld(&wd);
+    m3SoftBodyId calm = m3CreateSoftBody(still, &sd);
+    def.softPush = 0.0f;
+    m3World_Explode(still, &def);
+    for (int32_t i = 0; i < 30; ++i)
+    {
+        m3World_Step(still, 1.0f / 60.0f, 4);
+    }
+    double calmX = m3SoftBody_GetParticlePosition(calm, 0).x;
+    CHECK(calmX > 2.9 && calmX < 3.1, "softPush zero leaves the lattice in place");
+    m3DestroyWorld(still);
+}
+
 int main(void)
 {
     TestRingAndFalloff();
@@ -293,6 +413,8 @@ int main(void)
     TestHostileDefWall();
     TestTwinsReplayRollback();
     TestHostileTape();
+    TestVoxelCarveCoupling();
+    TestSoftPushAndKickWindow();
     if (s_failures == 0)
     {
         printf("test_explosion: all passed\n");

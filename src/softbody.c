@@ -95,6 +95,7 @@ int32_t m3CreateSoftBodyInternal(m3World* world, const m3SoftBodyDef* def)
                 world->softPos[k] = p;
                 world->softPrev[k] = p;
                 world->softInvMass[k] = invMass;
+                world->softKick[k] = (m3Vec3){0.0f, 0.0f, 0.0f};
             }
         }
     }
@@ -152,6 +153,7 @@ void m3DestroySoftBodyInternal(m3World* world, int32_t slot)
         world->softPos[k] = (m3Pos3){0.0, 0.0, 0.0};
         world->softPrev[k] = (m3Pos3){0.0, 0.0, 0.0};
         world->softInvMass[k] = 0.0f;
+        world->softKick[k] = (m3Vec3){0.0f, 0.0f, 0.0f};
     }
     int32_t edges = world->softEdgeCount[slot];
     for (int32_t e = 0; e < edges; ++e)
@@ -526,12 +528,23 @@ void m3SoftBodyPass(m3World* world, float dt, int32_t substeps)
                     (anchored[i >> 3] & (uint8_t)(1u << (i & 7))) != 0)
                 {
                     world->softPrev[k] = world->softPos[k];
+                    // A blast kick on a pinned particle evaporates:
+                    // it must not linger in the hash forever (13-3).
+                    world->softKick[k] = (m3Vec3){0.0f, 0.0f, 0.0f};
                     continue;
                 }
                 m3Vec3 v = {(m3real)(world->softPos[k].x - world->softPrev[k].x) * invH,
                             (m3real)(world->softPos[k].y - world->softPrev[k].y) * invH,
                             (m3real)(world->softPos[k].z - world->softPrev[k].z) * invH};
                 v = m3Add3(v, m3MulSV3(h, g));
+                m3Vec3 kick = world->softKick[k];
+                if (kick.x != 0.0f || kick.y != 0.0f || kick.z != 0.0f)
+                {
+                    // The pending explosion kick lands exactly once,
+                    // on the first substep that integrates it (13-3).
+                    v = m3Add3(v, kick);
+                    world->softKick[k] = (m3Vec3){0.0f, 0.0f, 0.0f};
+                }
                 if (windDrag > 0.0f)
                 {
                     v = m3Add3(v, m3MulSV3(h * windDrag, m3Sub3(windVel, v)));
