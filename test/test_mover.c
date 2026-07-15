@@ -24,6 +24,78 @@ static int s_failures = 0;
         }                                                                                          \
     } while (0)
 
+static void TestRigidWalkerRecipe(void)
+{
+    // 22-2: the rigid character RECIPE on the public API alone: a
+    // dynamic capsule with angular locks, steered by forces toward
+    // a target speed, grounded by a ray. It crosses the yard
+    // upright and stops when told; the manual documents exactly
+    // this loop.
+    m3WorldDef wd = m3DefaultWorldDef();
+    wd.bodyCapacity = 8;
+    wd.shapeCapacity = 8;
+    m3WorldId world = m3CreateWorld(&wd);
+    m3BodyDef gd = m3DefaultBodyDef();
+    m3BodyId ground = m3CreateBody(world, &gd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    m3Plane floor = {{0.0f, 1.0f, 0.0f}, 0.0f};
+    m3CreatePlaneShape(ground, &sd, &floor);
+    m3BodyDef bd = m3DefaultBodyDef();
+    bd.type = m3_dynamicBody;
+    bd.position = (m3Pos3){0.0, 1.0, 0.0};
+    m3BodyId hero = m3CreateBody(world, &bd);
+    m3ShapeDef hs = m3DefaultShapeDef();
+    hs.density = 985.0f;
+    // Frictionless BY RECIPE: an externally-forced capsule loses a
+    // tug of war against static friction (0.42 mix here holds 2290
+    // N against a 2000 N drive and the walker stands still); the
+    // drive does the braking too, the classic controller contract.
+    hs.friction = 0.0f;
+    m3Capsule cap = {{0.0f, -0.5f, 0.0f}, {0.0f, 0.5f, 0.0f}, 0.35f};
+    m3CreateCapsuleShape(hero, &hs, &cap);
+    m3Body_SetMotionLocks(hero, 0x38); // angular x, y, z: upright
+    float mass = 556.0f;               // the capsule at density 985
+
+    for (int32_t i = 0; i < 300; ++i)
+    {
+        m3Vec3 v = m3Body_GetLinearVelocity(hero);
+        float want = i < 180 ? 3.0f : 0.0f; // walk, then halt
+        // Grounding via the mover toolkit itself: collect the
+        // contact planes around the body's own capsule and look
+        // for an upward-facing one that is NOT our own shape (a
+        // ray would first find our own hull; the plane list makes
+        // the self-filter one comparison).
+        m3MoverPlane gp[8];
+        int32_t gn =
+            m3World_CollideMover(world, m3Body_GetPosition(hero), 0.5f, 0.36f, 0.05f, gp, 8);
+        int onGround = 0;
+        for (int32_t g = 0; g < gn; ++g)
+        {
+            if (gp[g].normal.y > 0.7f && m3Shape_GetBody(gp[g].shape).index1 != hero.index1)
+            {
+                onGround = 1;
+            }
+        }
+        if (onGround)
+        {
+            // The capsule weighs ~556 kg at this density: budget
+            // the drive like a real actuator, not a wish.
+            float fx = mass * (want - v.x) * 10.0f;
+            fx = fx > 2000.0f ? 2000.0f : (fx < -2000.0f ? -2000.0f : fx);
+            m3Body_ApplyForce(hero, (m3Vec3){fx, 0.0f, 0.0f});
+        }
+        m3World_Step(world, 1.0f / 60.0f, 4);
+    }
+    m3Pos3 p = m3Body_GetPosition(hero);
+    m3Vec3 v = m3Body_GetLinearVelocity(hero);
+    CHECK(p.x > 4.0, "the walker crosses the yard");
+    CHECK(fabsf(v.x) < 0.3f, "the walker halts when told");
+    CHECK(p.y > 0.7 && p.y < 1.1, "the walker stays upright on its locks");
+    m3Quat q = m3Body_GetRotation(hero);
+    CHECK(fabsf(q.x) + fabsf(q.y) + fabsf(q.z) < 0.01f, "no tumble ever leaked in");
+    m3DestroyWorld(world);
+}
+
 int main(void)
 {
     m3WorldDef wd = m3DefaultWorldDef();
@@ -98,6 +170,7 @@ int main(void)
 
     CHECK(m3World_Hash(world) == before, "the toolkit moved no bits");
     m3DestroyWorld(world);
+    TestRigidWalkerRecipe();
     if (s_failures == 0)
     {
         printf("test_mover: all passed\n");

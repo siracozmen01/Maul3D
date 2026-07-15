@@ -558,6 +558,22 @@ balanced tree. It changes NO answer: pairs are canonical and the
 tree is never hashed, so a rebuilt world steps bit-identically to
 its unrebuilt twin (the suite proves it by hash equality).
 
+## The rigid character recipe
+
+The kinematic controller is the engine path; when you want a
+character with real mass that trades momentum honestly, build the
+rigid variant ON the public API (the suite ships this exact loop
+as its proof): a dynamic capsule with angular locks (bits 3..5)
+so it never tumbles; FRICTIONLESS by recipe, because an
+externally-forced capsule loses the tug of war against static
+friction and stands still while you push; grounding read from
+m3World_CollideMover's plane list, skipping your own shape via
+m3Shape_GetBody (a downward ray finds your own hull first); drive
+and brake with one force toward the target velocity, clamped to
+an actuator budget. The mover toolkit (m3World_CastMover,
+m3World_CollideMover, m3SolvePlanes) covers the rest of a custom
+mover's needs as pure queries.
+
 ## Soft body depth
 
 Four knobs deepen the particle lattices (all default-off,

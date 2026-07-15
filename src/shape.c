@@ -1343,6 +1343,20 @@ bool m3Shape_IsValid(m3ShapeId shapeId)
     return world != NULL && m3ShapeSlot(world, shapeId) >= 0;
 }
 
+m3BodyId m3Shape_GetBody(m3ShapeId shapeId)
+{
+    m3BodyId null = {0, 0, 0};
+    m3World* world = m3WorldFromIndex0(shapeId.world0);
+    int32_t slot = world != NULL ? m3ShapeSlot(world, shapeId) : -1;
+    if (slot < 0)
+    {
+        return null;
+    }
+    int32_t body = world->shapeBody[slot];
+    m3BodyId id = {body + 1, world->worldIndex0, world->bodyPool.generations[body]};
+    return id;
+}
+
 void m3DestroyShape(m3ShapeId shapeId)
 {
     m3World* world = m3WorldFromIndex0(shapeId.world0);

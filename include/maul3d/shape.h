@@ -264,6 +264,10 @@ extern "C"
                                      uint8_t fill);
 
     M3_API bool m3Shape_IsValid(m3ShapeId shapeId);
+
+    /// The owning body (22-2: the mover recipe needs to tell its
+    /// own shape from the world's). Null id for stale shapes.
+    M3_API m3BodyId m3Shape_GetBody(m3ShapeId shapeId);
     /// Who touches this shape now (14-3): fills up to capacity
     /// entries and returns the count written. See m3ContactData.
     M3_API int32_t m3Shape_GetContactData(m3ShapeId shapeId, m3ContactData* out, int32_t capacity);
