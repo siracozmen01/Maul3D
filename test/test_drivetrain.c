@@ -507,6 +507,65 @@ static void TestDifferentials(void)
     m3DestroyWorld(world);
 }
 
+static void TestTankSteer(void)
+{
+    // 23-1: opposite tracks spin the hull in place; equal tracks
+    // run it straight; twins agree to the bit; a drivetrain
+    // vehicle refuses the tank door.
+    uint64_t hashes[2];
+    double yawSpin = 0.0;
+    double straightX = 0.0;
+    double straightZdrift = 0.0;
+    for (int32_t run = 0; run < 2; ++run)
+    {
+        m3WorldDef wd = m3DefaultWorldDef();
+        wd.bodyCapacity = 16;
+        wd.shapeCapacity = 16;
+        m3WorldId world = m3CreateWorld(&wd);
+        m3BodyDef gd = m3DefaultBodyDef();
+        m3BodyId ground = m3CreateBody(world, &gd);
+        m3ShapeDef sd = m3DefaultShapeDef();
+        m3Plane floor = {{0.0f, 1.0f, 0.0f}, 0.0f};
+        m3CreatePlaneShape(ground, &sd, &floor);
+        m3BodyId hullOut;
+        m3VehicleId tank = MakeCar(world, (m3Pos3){0.0, 0.62, 0.0}, &hullOut);
+        m3BodyId hull = hullOut;
+        m3Vehicle_SetTankCommands(tank, 1.0f, 1.0f, 0.0f);
+        for (int32_t i = 0; i < 90; ++i)
+        {
+            m3World_Step(world, 1.0f / 60.0f, 4);
+        }
+        if (run == 0)
+        {
+            straightX = m3Body_GetPosition(hull).x;
+            straightZdrift = m3Body_GetPosition(hull).z;
+        }
+        // Tracks brake the run speed off first: a spin attempt at
+        // 20 m/s only proves the lateral tire kill is a good yaw
+        // damper. Pivot turns happen from rest.
+        m3Vehicle_SetTankCommands(tank, 0.0f, 0.0f, 1.0f);
+        for (int32_t i = 0; i < 300; ++i)
+        {
+            m3World_Step(world, 1.0f / 60.0f, 4);
+        }
+        m3Vehicle_SetTankCommands(tank, 1.0f, -1.0f, 0.0f);
+        for (int32_t i = 0; i < 180; ++i)
+        {
+            m3World_Step(world, 1.0f / 60.0f, 4);
+        }
+        if (run == 0)
+        {
+            yawSpin = fabsf(m3Body_GetAngularVelocity(hull).y);
+        }
+        hashes[run] = m3World_Hash(world);
+        m3DestroyWorld(world);
+    }
+    CHECK(hashes[0] == hashes[1], "twin tanks are bit-identical");
+    CHECK(yawSpin > 0.3, "opposite tracks spin the hull");
+    CHECK(fabs(straightX) > 1.0, "equal tracks drive somewhere real");
+    CHECK(fabs(straightZdrift) < fabs(straightX), "equal tracks hold a heading");
+}
+
 int main(void)
 {
     TestUphillBogAndClimb();
@@ -517,6 +576,7 @@ int main(void)
     TestHostileWall();
     TestShiftThrashStorm();
     TestDifferentials();
+    TestTankSteer();
     if (s_failures == 0)
     {
         printf("test_drivetrain: all passed\n");

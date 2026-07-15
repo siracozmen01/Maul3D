@@ -170,6 +170,7 @@ typedef enum m3Op
     m3_opDestroyWaterVolume = 75,     // the tide goes out (18-1)
     m3_opCreateHeightFieldGrid = 76,  // native terrain chunk (19-1)
     m3_opCreateSoftBodyTet = 77,      // the incompressible jelly (20-3)
+    m3_opVehicleTankCommands = 78,    // skid steer (23-1)
 } m3Op;
 
 // Debug names (14-3): journaled and snapshot like userData, NEVER
@@ -751,6 +752,11 @@ typedef struct m3World
     m3real* vehWheelRadius;
     uint8_t* vehWheelFlags; // bit0 steerable, bit1 driven
     m3real* vehWheelBrake;
+    // Tank mode (23-1): per-side throttles; mode 0 = the normal
+    // single-throttle path, bit-exact with pre-23.
+    uint8_t* vehTrackMode;
+    m3real* vehTrackLeft;
+    m3real* vehTrackRight;
     m3real* vehWheelCompression; // last step's suspension state
     uint8_t* vehWheelContact;
     m3real* vehTireGrip; // friction circle scale (5-2)
@@ -1369,6 +1375,8 @@ void m3DestroyVehicleInternal(m3World* world, int32_t slot);
 void m3VehicleApplySuspension(m3World* world, float dt);
 void m3VehicleCommandsInternal(m3World* world, int32_t slot, m3real throttle, m3real steer,
                                m3real brake);
+void m3VehicleTankCommandsInternal(m3World* world, int32_t slot, m3real left, m3real right,
+                                   m3real brake);
 bool m3VehicleDrivetrainInternal(m3World* world, int32_t slot, const m3DrivetrainDef* def);
 bool m3VehicleGearInternal(m3World* world, int32_t slot, int32_t gear);
 int32_t m3SoftBodySlot(const m3World* world, m3SoftBodyId softId);

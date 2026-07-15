@@ -129,6 +129,9 @@ int32_t m3CreateVehicleInternal(m3World* world, const m3VehicleDef* def)
     world->vehBrakeForce[slot] = def->brakeForce;
     world->vehTireGrip[slot] = def->tireGrip;
     world->vehThrottle[slot] = 0.0f;
+    world->vehTrackMode[slot] = 0;
+    world->vehTrackLeft[slot] = 0.0f;
+    world->vehTrackRight[slot] = 0.0f;
     world->vehSteer[slot] = 0.0f;
     world->vehBrake[slot] = 0.0f;
     world->vehUserData[slot] = def->userData;
@@ -180,6 +183,9 @@ void m3DestroyVehicleInternal(m3World* world, int32_t slot)
     world->vehBrakeForce[slot] = 0.0f;
     world->vehTireGrip[slot] = 0.0f;
     world->vehThrottle[slot] = 0.0f;
+    world->vehTrackMode[slot] = 0;
+    world->vehTrackLeft[slot] = 0.0f;
+    world->vehTrackRight[slot] = 0.0f;
     world->vehSteer[slot] = 0.0f;
     world->vehBrake[slot] = 0.0f;
     world->vehUserData[slot] = 0;
@@ -522,6 +528,16 @@ void m3VehicleApplySuspension(m3World* world, float dt)
                         }
                         lon += driveForce * dt;
                     }
+                    else if (world->vehTrackMode[slot] != 0)
+                    {
+                        // Skid steer (23-1): the side picks its own
+                        // throttle by the anchor's chassis-local z
+                        // (+z right by convention).
+                        m3real trackThr = world->vehWheelAnchor[k].z >= 0.0f
+                                              ? world->vehTrackRight[slot]
+                                              : world->vehTrackLeft[slot];
+                        lon += trackThr * world->vehDriveForce[slot] * dt;
+                    }
                     else
                     {
                         lon += world->vehThrottle[slot] * world->vehDriveForce[slot] * dt;
@@ -585,9 +601,26 @@ void m3VehicleApplySuspension(m3World* world, float dt)
     }
 }
 
+void m3VehicleTankCommandsInternal(m3World* world, int32_t slot, m3real left, m3real right,
+                                   m3real brake)
+{
+    world->vehTrackMode[slot] = 1;
+    world->vehTrackLeft[slot] = left < -1.0f ? -1.0f : (left > 1.0f ? 1.0f : left);
+    world->vehTrackRight[slot] = right < -1.0f ? -1.0f : (right > 1.0f ? 1.0f : right);
+    world->vehBrake[slot] = brake < 0.0f ? 0.0f : (brake > 1.0f ? 1.0f : brake);
+    world->vehThrottle[slot] = 0.0f;
+    world->vehSteer[slot] = 0.0f;
+    int32_t chassis = world->vehChassis[slot];
+    if (world->types[chassis] == (uint8_t)m3_dynamicBody)
+    {
+        m3SetAwakeInternal(world, chassis, 1);
+    }
+}
+
 void m3VehicleCommandsInternal(m3World* world, int32_t slot, m3real throttle, m3real steer,
                                m3real brake)
 {
+    world->vehTrackMode[slot] = 0; // normal commands disengage the tracks
     world->vehThrottle[slot] = throttle < -1.0f ? -1.0f : (throttle > 1.0f ? 1.0f : throttle);
     world->vehSteer[slot] = steer < -1.0f ? -1.0f : (steer > 1.0f ? 1.0f : steer);
     world->vehBrake[slot] = brake < 0.0f ? 0.0f : (brake > 1.0f ? 1.0f : brake);
@@ -685,6 +718,34 @@ void m3Vehicle_SetCommands(m3VehicleId vehicleId, m3real throttle, m3real steer,
         m3JournalRecord(world, m3_opVehicleCommands, &record, (int32_t)sizeof(record));
     }
     m3VehicleCommandsInternal(world, slot, throttle, steer, brake);
+}
+
+void m3Vehicle_SetTankCommands(m3VehicleId vehicleId, m3real left, m3real right, m3real brake)
+{
+    m3World* world = m3WorldFromIndex0(vehicleId.world0);
+    int32_t slot = world != NULL ? m3VehicleSlot(world, vehicleId) : -1;
+    if (slot < 0 || !m3FiniteF(left) || !m3FiniteF(right) || !m3FiniteF(brake) ||
+        world->vehDtActive[slot] != 0)
+    {
+        return; // a gearbox and a skid steer are different machines
+    }
+    if (world->journalActive != 0)
+    {
+        struct
+        {
+            m3VehicleId id;
+            m3real left;
+            m3real right;
+            m3real brake;
+        } record;
+        memset(&record, 0, sizeof(record));
+        record.id = vehicleId;
+        record.left = left;
+        record.right = right;
+        record.brake = brake;
+        m3JournalRecord(world, m3_opVehicleTankCommands, &record, (int32_t)sizeof(record));
+    }
+    m3VehicleTankCommandsInternal(world, slot, left, right, brake);
 }
 
 m3real m3Vehicle_GetWheelSpin(m3VehicleId vehicleId, int32_t wheel)

@@ -277,6 +277,9 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     M3_ALLOC(world->vehWheelRadius, def->vehicleCapacity * M3_VEHICLE_MAX_WHEELS, m3real);
     M3_ALLOC(world->vehWheelFlags, def->vehicleCapacity * M3_VEHICLE_MAX_WHEELS, uint8_t);
     M3_ALLOC(world->vehWheelBrake, def->vehicleCapacity * M3_VEHICLE_MAX_WHEELS, m3real);
+    M3_ALLOC(world->vehTrackMode, def->vehicleCapacity, uint8_t);
+    M3_ALLOC(world->vehTrackLeft, def->vehicleCapacity, m3real);
+    M3_ALLOC(world->vehTrackRight, def->vehicleCapacity, m3real);
     M3_ALLOC(world->vehWheelCompression, def->vehicleCapacity * M3_VEHICLE_MAX_WHEELS, m3real);
     M3_ALLOC(world->vehWheelContact, def->vehicleCapacity * M3_VEHICLE_MAX_WHEELS, uint8_t);
     M3_ALLOC(world->vehTireGrip, def->vehicleCapacity, m3real);
@@ -558,6 +561,9 @@ void m3DestroyWorld(m3WorldId worldId)
     m3Free(world->vehWheelRadius);
     m3Free(world->vehWheelFlags);
     m3Free(world->vehWheelBrake);
+    m3Free(world->vehTrackMode);
+    m3Free(world->vehTrackLeft);
+    m3Free(world->vehTrackRight);
     m3Free(world->vehWheelCompression);
     m3Free(world->vehWheelContact);
     m3Free(world->vehTireGrip);
@@ -1980,6 +1986,30 @@ static bool JournalReplayApply(m3World* world, const void* data, int32_t size)
                 return false;
             }
             m3DestroyVehicleInternal(world, slot);
+            break;
+        }
+        case m3_opVehicleTankCommands:
+        {
+            struct
+            {
+                m3VehicleId id;
+                m3real left;
+                m3real right;
+                m3real brake;
+            } record;
+            if (bytes != (int32_t)sizeof(record))
+            {
+                return false;
+            }
+            memcpy(&record, payload, sizeof(record));
+            record.id.world0 = world->worldIndex0;
+            int32_t slot = m3VehicleSlot(world, record.id);
+            if (slot < 0 || !m3FiniteF(record.left) || !m3FiniteF(record.right) ||
+                !m3FiniteF(record.brake))
+            {
+                return false; // hostile bytes fail loudly
+            }
+            m3VehicleTankCommandsInternal(world, slot, record.left, record.right, record.brake);
             break;
         }
         case m3_opVehicleCommands:

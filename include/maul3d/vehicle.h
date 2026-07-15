@@ -89,6 +89,16 @@ extern "C"
     /// chassis-local +x axis is the vehicle's forward by
     /// convention; steer rotates each steerable wheel's frame
     /// about its suspension axis by steer * maxSteerAngle.
+    /// Tank commands (23-1): per-side throttle for skid steering.
+    /// Driven wheels split by the sign of their chassis-local
+    /// anchor z (+z right); each side takes its own throttle in
+    /// [-1, 1], the brake rides all wheels. Engaging tank mode
+    /// suspends the normal throttle until m3Vehicle_SetCommands is
+    /// called again (which disengages it). Drivetrain vehicles
+    /// refuse: a gearbox and a skid steer are different machines.
+    M3_API void m3Vehicle_SetTankCommands(m3VehicleId vehicleId, m3real left, m3real right,
+                                          m3real brake);
+
     M3_API void m3Vehicle_SetCommands(m3VehicleId vehicleId, m3real throttle, m3real steer,
                                       m3real brake);
 

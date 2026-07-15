@@ -22,7 +22,8 @@
 #endif
 
 #define M3_SNAPSHOT_MAGIC   0x4D33534Eu // 'M3SN'
-#define M3_SNAPSHOT_VERSION 53u
+#define M3_SNAPSHOT_VERSION 54u
+// v54: tank commands (23-1).
 // v53: soft bind tethers (20-4).
 // v52: tet soft bodies (20-3).
 // v51: soft pressure (20-2).
@@ -317,6 +318,9 @@ static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3Wal
              world->vehicleCapacity * M3_VEHICLE_MAX_WHEELS * (int32_t)sizeof(uint8_t));
     M3_BLOCK(world->vehWheelBrake,
              world->vehicleCapacity * M3_VEHICLE_MAX_WHEELS * (int32_t)sizeof(m3real));
+    M3_BLOCK(world->vehTrackMode, world->vehicleCapacity * (int32_t)sizeof(uint8_t));
+    M3_BLOCK(world->vehTrackLeft, world->vehicleCapacity * (int32_t)sizeof(m3real));
+    M3_BLOCK(world->vehTrackRight, world->vehicleCapacity * (int32_t)sizeof(m3real));
     M3_BLOCK(world->vehWheelCompression,
              world->vehicleCapacity * M3_VEHICLE_MAX_WHEELS * (int32_t)sizeof(m3real));
     M3_BLOCK(world->vehWheelContact,
@@ -1187,6 +1191,13 @@ uint64_t m3World_Hash(m3WorldId worldId)
         h = m3Hash64(h, &world->vehBrakeForce[i], 4);
         h = m3Hash64(h, &world->vehTireGrip[i], 4);
         h = m3Hash64(h, &world->vehThrottle[i], 4);
+        if (world->vehTrackMode[i] != 0)
+        {
+            // Tank mode folds off-default (23-1), its own block.
+            h = m3Hash64(h, &world->vehTrackMode[i], 1);
+            h = m3Hash64(h, &world->vehTrackLeft[i], 4);
+            h = m3Hash64(h, &world->vehTrackRight[i], 4);
+        }
         h = m3Hash64(h, &world->vehSteer[i], 4);
         h = m3Hash64(h, &world->vehBrake[i], 4);
         for (int32_t w = 0; w < world->vehWheelCount[i]; ++w)
