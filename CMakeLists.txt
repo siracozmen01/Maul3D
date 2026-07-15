@@ -390,6 +390,11 @@ target_link_libraries(test_heightfield PRIVATE maul3d)
 maul3d_apply_flags(test_heightfield)
 add_test(NAME heightfield COMMAND test_heightfield)
 
+add_executable(test_mover test/test_mover.c)
+target_link_libraries(test_mover PRIVATE maul3d)
+maul3d_apply_flags(test_mover)
+add_test(NAME mover COMMAND test_mover)
+
 add_executable(test_fuzz test/test_fuzz.c)
 target_link_libraries(test_fuzz PRIVATE maul3d)
 maul3d_apply_flags(test_fuzz)

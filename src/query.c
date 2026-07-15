@@ -1758,3 +1758,197 @@ int32_t m3World_OverlapBox(m3WorldId worldId, m3Pos3 center, m3Vec3 halfExtents,
     return m3World_OverlapBoxEx(worldId, center, halfExtents, rotation, shapes, capacity,
                                 m3DefaultQueryFilter());
 }
+
+// --- The mover toolkit (22-1) -----------------------------------------------
+//
+// Pure queries plus a pure solver: nothing here journals, mutates,
+// or hashes. Hosts compose them into their own movers; the engine
+// keeps its kinematic controller as the built-in path.
+
+m3RayHit m3World_CastMover(m3WorldId worldId, m3Pos3 center, m3real halfHeight, m3real radius,
+                           m3Vec3 translation)
+{
+    m3RayHit miss;
+    memset(&miss, 0, sizeof(miss));
+    miss.fraction = 1.0f;
+    m3World* world = m3WorldFromId(worldId);
+    if (world == NULL || !m3FinitePos3(center) || !m3FiniteF(halfHeight) || halfHeight < 0.0f ||
+        !m3FiniteF(radius) || !(radius > 0.0f) || !m3FiniteV3(translation))
+    {
+        return miss;
+    }
+    m3Vec3 points[2] = {{0.0f, halfHeight, 0.0f}, {0.0f, -halfHeight, 0.0f}};
+    return m3CastConvexClosestEx(world, center, points, 2, radius, translation, -1);
+}
+
+typedef struct m3MoverCollideCtx
+{
+    m3World* world;
+    m3Pos3 center;
+    m3real halfHeight;
+    m3real radius;
+    m3real skin;
+    m3MoverPlane* planes;
+    int32_t capacity;
+    int32_t count;
+    int32_t shapes[256];
+    int32_t shapeCount;
+} m3MoverCollideCtx;
+
+static bool MoverGatherCallback(int32_t shape, void* userContext)
+{
+    m3MoverCollideCtx* ctx = (m3MoverCollideCtx*)userContext;
+    if (ctx->shapeCount < 256)
+    {
+        ctx->shapes[ctx->shapeCount++] = shape;
+    }
+    return true;
+}
+
+int32_t m3World_CollideMover(m3WorldId worldId, m3Pos3 center, m3real halfHeight, m3real radius,
+                             m3real skin, m3MoverPlane* planes, int32_t capacity)
+{
+    m3World* world = m3WorldFromId(worldId);
+    if (world == NULL || planes == NULL || capacity <= 0 || !m3FinitePos3(center) ||
+        !m3FiniteF(halfHeight) || halfHeight < 0.0f || !m3FiniteF(radius) || !(radius > 0.0f) ||
+        !m3FiniteF(skin) || skin < 0.0f)
+    {
+        return 0;
+    }
+    m3MoverCollideCtx ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.world = world;
+    ctx.center = center;
+    ctx.halfHeight = halfHeight;
+    ctx.radius = radius;
+    ctx.skin = skin;
+    ctx.planes = planes;
+    ctx.capacity = capacity;
+    double reach = (double)(halfHeight + radius + skin);
+    double lo[3] = {center.x - reach, center.y - reach, center.z - reach};
+    double hi[3] = {center.x + reach, center.y + reach, center.z + reach};
+    m3TreeQuery(&world->tree, lo, hi, MoverGatherCallback, &ctx);
+    // Ascending shape order keeps the plane list canonical.
+    for (int32_t a = 0; a < ctx.shapeCount; ++a)
+    {
+        for (int32_t b = a + 1; b < ctx.shapeCount; ++b)
+        {
+            if (ctx.shapes[b] < ctx.shapes[a])
+            {
+                int32_t tmp = ctx.shapes[a];
+                ctx.shapes[a] = ctx.shapes[b];
+                ctx.shapes[b] = tmp;
+            }
+        }
+    }
+    for (int32_t k = 0; k < ctx.shapeCount && ctx.count < capacity; ++k)
+    {
+        int32_t shape = ctx.shapes[k];
+        if (world->shapeSensor[shape] != 0 || world->bodyEnabled[world->shapeBody[shape]] == 0)
+        {
+            continue; // sensors and disabled bodies are invisible
+        }
+        m3Transform xfS = m3ShapeWorldTransform(world, shape);
+        m3Vec3 local = m3InvRotateVec3(xfS.q, (m3Vec3){(m3real)(center.x - xfS.p.x),
+                                                       (m3real)(center.y - xfS.p.y),
+                                                       (m3real)(center.z - xfS.p.z)});
+        m3Vec3 axis = m3InvRotateVec3(xfS.q, (m3Vec3){0.0f, 1.0f, 0.0f});
+        m3Vec3 caps[2] = {m3Add3(local, m3MulSV3(halfHeight, axis)),
+                          m3Sub3(local, m3MulSV3(halfHeight, axis))};
+        m3Vec3 scratch[2];
+        m3DistanceInput input;
+        memset(&input, 0, sizeof(input));
+        input.proxyA = m3MakeShapeProxy(world, shape, scratch);
+        input.proxyB.points = caps;
+        input.proxyB.count = 2;
+        input.proxyB.radius = 0.0f;
+        input.q = m3MakeIdentityQuat();
+        input.p = (m3Vec3){0.0f, 0.0f, 0.0f};
+        input.useRadii = false;
+        m3SimplexCache cache;
+        cache.count = 0;
+        cache.metric = 0.0f;
+        m3DistanceOutput out = m3ShapeDistance(&input, &cache);
+        m3real gap = out.distance - input.proxyA.radius - radius;
+        if (gap > skin)
+        {
+            continue;
+        }
+        m3Vec3 n;
+        if (out.distance > 1.0e-6f)
+        {
+            n = m3RotateVec3(xfS.q, out.normal); // shape toward mover
+        }
+        else
+        {
+            // Deep overlap: GJK gives no direction; push up (the
+            // deterministic fallback a grounded mover wants).
+            n = (m3Vec3){0.0f, 1.0f, 0.0f};
+        }
+        ctx.planes[ctx.count].normal = n;
+        ctx.planes[ctx.count].separation = gap;
+        ctx.planes[ctx.count].shape =
+            (m3ShapeId){shape + 1, world->worldIndex0, world->shapePool.generations[shape]};
+        ctx.count += 1;
+    }
+    // The infinite planes never enter the tree: test them directly.
+    int32_t maxShape = world->shapePool.maxIndex;
+    for (int32_t s = 0; s < maxShape && ctx.count < capacity; ++s)
+    {
+        if (world->shapePool.alive[s] == 0 || world->shapeType[s] != (uint8_t)m3_planeShape ||
+            world->shapeSensor[s] != 0 || world->bodyEnabled[world->shapeBody[s]] == 0)
+        {
+            continue;
+        }
+        m3Vec3 n = world->shapeGeom[s].v;
+        m3real off = world->shapeGeom[s].s;
+        // Closest capsule feature to the half-space.
+        m3real dCenter =
+            (m3real)((double)n.x * center.x + (double)n.y * center.y + (double)n.z * center.z) -
+            off;
+        m3real dMin = dCenter - halfHeight * (n.y > 0.0f ? n.y : -n.y) - radius;
+        m3real gap = dMin;
+        if (gap > skin)
+        {
+            continue;
+        }
+        ctx.planes[ctx.count].normal = n;
+        ctx.planes[ctx.count].separation = gap;
+        ctx.planes[ctx.count].shape =
+            (m3ShapeId){s + 1, world->worldIndex0, world->shapePool.generations[s]};
+        ctx.count += 1;
+    }
+    return ctx.count;
+}
+
+m3Vec3 m3SolvePlanes(m3Vec3 translation, const m3MoverPlane* planes, int32_t count,
+                     int32_t iterations)
+{
+    if (planes == NULL || count <= 0 || iterations <= 0 || !m3FiniteV3(translation))
+    {
+        return translation;
+    }
+    // The reference accumulator: per-plane nonnegative pushes,
+    // Gauss-Seidel over a fixed order.
+    m3real push[64];
+    int32_t n = count < 64 ? count : 64;
+    for (int32_t i = 0; i < n; ++i)
+    {
+        push[i] = 0.0f;
+    }
+    m3Vec3 d = translation;
+    for (int32_t it = 0; it < iterations; ++it)
+    {
+        for (int32_t i = 0; i < n; ++i)
+        {
+            m3real violation = planes[i].separation + m3Dot3(planes[i].normal, d);
+            m3real want = -violation;
+            m3real old = push[i];
+            m3real next = old + want > 0.0f ? old + want : 0.0f;
+            m3real applied = next - old;
+            push[i] = next;
+            d = m3Add3(d, m3MulSV3(applied, planes[i].normal));
+        }
+    }
+    return d;
+}

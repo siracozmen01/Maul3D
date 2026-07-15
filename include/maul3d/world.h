@@ -93,7 +93,6 @@ extern "C"
     /// Deterministic and journaled: the rebuilt shape is a pure
     /// function of the live shapes, so twins and replays agree.
     M3_API void m3World_RebuildBroadphase(m3WorldId worldId);
-
     /// A water volume (18-1): a world-anchored axis-aligned box of
     /// still or flowing water. The surface is the box top; there is
     /// no fluid simulation BY LAW. Rigid bodies inside get buoyancy
@@ -334,6 +333,37 @@ extern "C"
     /// The closest front-face hit along origin + t * translation for
     /// t in [0, 1]. Rays MISS shapes they start inside or exactly on
     /// (front faces only); ask m3World_PointInside for containment.
+    /// The mover toolkit (22-1): pure queries and a pure plane
+    /// solver for hosts that roll their own character movers (the
+    /// engine's kinematic controller remains the built-in path).
+    /// A mover is a vertical capsule: center, half height between
+    /// the cap centers, radius.
+    typedef struct m3MoverPlane
+    {
+        m3Vec3 normal;     // pushes the mover OUT of the shape
+        m3real separation; // negative = penetration depth
+        m3ShapeId shape;
+    } m3MoverPlane;
+
+    /// Cast the mover capsule along a translation; the closest
+    /// blocking hit (sensors are invisible to movers).
+    M3_API m3RayHit m3World_CastMover(m3WorldId worldId, m3Pos3 center, m3real halfHeight,
+                                      m3real radius, m3Vec3 translation);
+
+    /// Collect contact planes for the mover at rest: every shape
+    /// within `skin` of the capsule contributes one plane. Returns
+    /// the count written (ascending shape order, deterministic).
+    M3_API int32_t m3World_CollideMover(m3WorldId worldId, m3Pos3 center, m3real halfHeight,
+                                        m3real radius, m3real skin, m3MoverPlane* planes,
+                                        int32_t capacity);
+
+    /// Clamp a desired translation against contact planes (the
+    /// reference's iterative accumulator): each iteration pushes
+    /// the translation out of every violated plane, push impulses
+    /// stay nonnegative per plane. Pure function, world-free.
+    M3_API m3Vec3 m3SolvePlanes(m3Vec3 translation, const m3MoverPlane* planes, int32_t count,
+                                int32_t iterations);
+
     M3_API m3RayHit m3World_CastRayClosest(m3WorldId worldId, m3Pos3 origin, m3Vec3 translation);
     /// Filtered variants (8-1): the query carries an m3QueryFilter
     /// (defined in shape.h) and behaves like a shape with those
