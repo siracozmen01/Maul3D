@@ -558,6 +558,18 @@ balanced tree. It changes NO answer: pairs are canonical and the
 tree is never hashed, so a rebuilt world steps bit-identically to
 its unrebuilt twin (the suite proves it by hash equality).
 
+## The destruction cinematic
+
+Record a storm, replay it as a cutscene: arm the testbed's
+Record button (or m3World_JournalBegin in your host), detonate
+the blastyard, Save to .m3j, and play it back with the m3replay
+studio (verify replays to the recorded hash; seek scrubs to any
+step through keyframes). A cutscene in Maul3D is not a video: it
+is the same simulation, bit for bit, every time. The lockstep
+proof (tools/m3lockstep, a CI gate since 9-4) is the two-machine
+version of the same law: an online peer that predicts and rolls
+back lands on the offline peer's exact timeline.
+
 ## The rigid character recipe
 
 The kinematic controller is the engine path; when you want a

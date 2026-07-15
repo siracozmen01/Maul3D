@@ -4,7 +4,29 @@ All notable changes to Maul3D. Versions are tags on green CI SHAs;
 every entry's determinism gates were verified across all CI cells at
 tag time.
 
-## Unreleased (v1.18 in tree)
+## Unreleased (v1.19 in tree)
+
+Proof and reach.
+
+- The wasm cell: CI's determinism matrix grew a seventh cell,
+  the library compiled to wasm32 by emscripten and executed
+  under node; the four hash gates must land bit-identical with
+  every native ISA.
+- The mover toolkit: m3World_CastMover, m3World_CollideMover
+  (contact planes in canonical order, sensors invisible), and
+  the pure m3SolvePlanes accumulator, for hosts that roll their
+  own character movers. Plus m3Shape_GetBody (the self-filter a
+  mover needs).
+- The rigid character recipe, proven in the suite and written
+  into the manual: angular locks, frictionless by design (an
+  externally forced capsule loses to static friction), grounding
+  from the mover plane list, one budgeted drive force.
+- The destruction cinematic chapter: record, save, scrub; the
+  same simulation bit for bit is the cutscene. The lockstep tool
+  remains the two-machine proof it has been since 9-4.
+- Suite 52 (mover + the rigid walker recipe).
+
+## v1.18 (2026-07-15)
 
 The performance arc opens: measured, memoized, bit-identical.
 
