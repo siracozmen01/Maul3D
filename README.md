@@ -135,6 +135,9 @@ single library version and refuse loudly across versions.
 - [The changelog](docs/changelog.md): every release with its
   determinism ledger, including the convictions the road collected
   and what they cost.
+- [bindings/](bindings/): starter kits for C# (single-file
+  P/Invoke) and Godot (a GDExtension skeleton), seeds meant to be
+  copied into your project and grown.
 - [CONTRIBUTING.md](CONTRIBUTING.md) for contributions.
 - [THIRD_PARTY.md](THIRD_PARTY.md) for adapted-code licenses.
 - [Maul2D](https://github.com/siracozmen01/Maul2D): the 2D sibling,
