@@ -446,7 +446,34 @@ static void SoftCollideParticle(m3World* world, int32_t slot, int32_t k, int32_t
         }
         return;
     }
-    if (stype == (uint8_t)m3_meshShape) // heightfields intern as meshes
+    if (stype == (uint8_t)m3_heightFieldShape)
+    {
+        // Native terrain (19-3): the mesh recipe over the cell
+        // gather, particle-sized window.
+        const m3HeightFieldData* hf = &world->hfData[world->shapeHfIndex[shape]];
+        m3Vec3 hfTris[32][3];
+        int32_t nt =
+            m3HeightFieldGather(hf, (m3Vec3){lp.x - radius, lp.y - radius, lp.z - radius},
+                                (m3Vec3){lp.x + radius, lp.y + radius, lp.z + radius}, hfTris, 32);
+        for (int32_t t = 0; t < nt; ++t)
+        {
+            m3Vec3 cp = ClosestOnTriangle(lp, hfTris[t][0], hfTris[t][1], hfTris[t][2]);
+            m3Vec3 d = m3Sub3(lp, cp);
+            m3real len2 = m3Dot3(d, d);
+            if (len2 > 1.0e-12f && len2 < radius * radius)
+            {
+                m3real len = sqrtf(len2);
+                m3Vec3 n = m3RotateVec3(xf->q, m3MulSV3(1.0f / len, d));
+                SoftProject(world, k, n, radius - len, mu, body, invH);
+                m3Vec3 rel2 = {(m3real)(world->softPos[k].x - xf->p.x),
+                               (m3real)(world->softPos[k].y - xf->p.y),
+                               (m3real)(world->softPos[k].z - xf->p.z)};
+                lp = m3InvRotateVec3(xf->q, rel2);
+            }
+        }
+        return;
+    }
+    if (stype == (uint8_t)m3_meshShape) // mesh-backed terrain interns here
     {
         const m3MeshData* mesh = &world->meshData[world->shapeMeshIndex[shape]];
         const m3MeshBvh* bvh = &world->meshBvh[world->shapeMeshIndex[shape]];

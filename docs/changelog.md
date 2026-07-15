@@ -4,7 +4,25 @@ All notable changes to Maul3D. Versions are tags on green CI SHAs;
 every entry's determinism gates were verified across all CI cells at
 tag time.
 
-## Unreleased (v1.15 in tree)
+## Unreleased (v1.16 in tree)
+
+Terrain that travels light.
+
+- The native heightfield (type 6, op 76, snapshot v49):
+  m3CreateHeightFieldGridShape keeps an nx-by-nz grid (2..255) as
+  raw four-byte samples, roughly a sixth of the same terrain as a
+  mesh. Contacts reuse the welded mesh triangle pipeline through
+  a 16-cell window with a halo (the window mesh); rays scan the
+  segment's cell span; overlaps, soft particles, and the debug
+  draw all see terrain through one shared cell generator.
+- The broadphase rebuild, the pair walls, and id determinism all
+  extend to the new type; hostile grids refuse in both doors.
+- Suite 51 (heightfield: walls, byte-identical snapshot round
+  trip, replay, rest/slide/roll contacts, bumpy twins, rays and
+  overlaps) and the phase 19 storm (300 journal-aimed bit flips
+  over a terrain-floored crate rain).
+
+## v1.15 (2026-07-15)
 
 Water: the flood, the current, and the tide law.
 

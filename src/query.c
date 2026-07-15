@@ -829,6 +829,35 @@ static int SphereReachesShape(m3World* world, int32_t shape, m3Pos3 center, m3re
         }
         return 0;
     }
+    if (type == (uint8_t)m3_heightFieldShape)
+    {
+        // Distance to any terrain triangle within reach (19-3): the
+        // mesh recipe over the cell gather.
+        m3Transform xfS6 = m3ShapeWorldTransform(world, shape);
+        const m3Transform* xfH = &xfS6;
+        m3Vec3 localH = m3InvRotateVec3(xfH->q, (m3Vec3){(m3real)(center.x - xfH->p.x),
+                                                         (m3real)(center.y - xfH->p.y),
+                                                         (m3real)(center.z - xfH->p.z)});
+        const m3HeightFieldData* hf = &world->hfData[world->shapeHfIndex[shape]];
+        m3Vec3 hfTris[512][3];
+        int32_t hfCount = m3HeightFieldGather(
+            hf, (m3Vec3){localH.x - radius, localH.y - radius, localH.z - radius},
+            (m3Vec3){localH.x + radius, localH.y + radius, localH.z + radius}, hfTris, 512);
+        for (int32_t t = 0; t < hfCount; ++t)
+        {
+            // The mesh recipe verbatim: the conservative
+            // vertex-distance check suffices here.
+            m3Vec3 d0 = m3Sub3(localH, hfTris[t][0]);
+            m3Vec3 d1 = m3Sub3(localH, hfTris[t][1]);
+            m3Vec3 d2 = m3Sub3(localH, hfTris[t][2]);
+            m3real r2 = radius * radius;
+            if (m3Dot3(d0, d0) <= r2 || m3Dot3(d1, d1) <= r2 || m3Dot3(d2, d2) <= r2)
+            {
+                return 1;
+            }
+        }
+        return 0;
+    }
     if (type == (uint8_t)m3_meshShape)
     {
         // Distance to any triangle within reach (bounded scan).
@@ -1493,6 +1522,35 @@ static int ProxyReachesShape(const m3ProxyOverlapContext* ctx, int32_t shape)
                                       (c & 4) != 0 ? hi.z : lo.z};
             }
             if (ProxyCloudReach(local, ctx->pointCount, ctx->radius, corners, 8, 0.0f))
+            {
+                return 1;
+            }
+        }
+        return 0;
+    }
+    if (type == (uint8_t)m3_heightFieldShape)
+    {
+        // The overlap family sees terrain (19-3): cloud box, cell
+        // gather, the same reach test per triangle.
+        const m3HeightFieldData* hf = &world->hfData[world->shapeHfIndex[shape]];
+        m3Vec3 hlo = local[0];
+        m3Vec3 hhi = local[0];
+        for (int32_t k = 1; k < ctx->pointCount; ++k)
+        {
+            hlo.x = local[k].x < hlo.x ? local[k].x : hlo.x;
+            hlo.y = local[k].y < hlo.y ? local[k].y : hlo.y;
+            hlo.z = local[k].z < hlo.z ? local[k].z : hlo.z;
+            hhi.x = local[k].x > hhi.x ? local[k].x : hhi.x;
+            hhi.y = local[k].y > hhi.y ? local[k].y : hhi.y;
+            hhi.z = local[k].z > hhi.z ? local[k].z : hhi.z;
+        }
+        hlo = (m3Vec3){hlo.x - ctx->radius, hlo.y - ctx->radius, hlo.z - ctx->radius};
+        hhi = (m3Vec3){hhi.x + ctx->radius, hhi.y + ctx->radius, hhi.z + ctx->radius};
+        m3Vec3 hfTris[512][3];
+        int32_t hfCount = m3HeightFieldGather(hf, hlo, hhi, hfTris, 512);
+        for (int32_t t = 0; t < hfCount; ++t)
+        {
+            if (ProxyCloudReach(local, ctx->pointCount, ctx->radius, hfTris[t], 3, 0.0f))
             {
                 return 1;
             }

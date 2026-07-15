@@ -368,6 +368,41 @@ void m3HeightFieldDataFree(m3HeightFieldData* hf)
     memset(hf, 0, sizeof(*hf));
 }
 
+int32_t m3HeightFieldGather(const m3HeightFieldData* hf, m3Vec3 lo, m3Vec3 hi, m3Vec3 (*tris)[3],
+                            int32_t cap)
+{
+    m3real inv = 1.0f / hf->cellSize;
+    int32_t cx0 = (int32_t)floorf(lo.x * inv);
+    int32_t cx1 = (int32_t)floorf(hi.x * inv);
+    int32_t cz0 = (int32_t)floorf(lo.z * inv);
+    int32_t cz1 = (int32_t)floorf(hi.z * inv);
+    cx0 = cx0 < 0 ? 0 : cx0;
+    cz0 = cz0 < 0 ? 0 : cz0;
+    cx1 = cx1 > hf->nx - 2 ? hf->nx - 2 : cx1;
+    cz1 = cz1 > hf->nz - 2 ? hf->nz - 2 : cz1;
+    int32_t count = 0;
+    for (int32_t cz = cz0; cz <= cz1; ++cz)
+    {
+        for (int32_t cx = cx0; cx <= cx1; ++cx)
+        {
+            if (count + 2 > cap)
+            {
+                return count; // bounded by contract
+            }
+            m3Vec3 cell[2][3];
+            m3HeightFieldCellTris(hf, cx, cz, cell);
+            for (int32_t t = 0; t < 2; ++t)
+            {
+                tris[count][0] = cell[t][0];
+                tris[count][1] = cell[t][1];
+                tris[count][2] = cell[t][2];
+                count += 1;
+            }
+        }
+    }
+    return count;
+}
+
 int32_t m3CreateShapeInternal(m3World* world, int32_t bodyIndex, uint8_t type,
                               const m3ShapeGeom* geom, const m3ShapeDef* def,
                               const m3HullData* prebuilt, const m3MeshData* meshPrebuilt,

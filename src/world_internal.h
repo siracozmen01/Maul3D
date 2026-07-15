@@ -298,6 +298,44 @@ typedef struct m3HeightFieldData
 bool m3HeightFieldDataAlloc(m3HeightFieldData* hf);
 void m3HeightFieldDataFree(m3HeightFieldData* hf);
 
+// One cell's two triangles (19-2's parity split, THE one rule every
+// consumer shares: contacts, rays, queries, draw, soft particles).
+static inline void m3HeightFieldCellTris(const m3HeightFieldData* hf, int32_t cx, int32_t cz,
+                                         m3Vec3 out[2][3])
+{
+    m3real cs = hf->cellSize;
+    m3Vec3 a = {(m3real)cx * cs, hf->heights[cz * hf->nx + cx], (m3real)cz * cs};
+    m3Vec3 b = {(m3real)(cx + 1) * cs, hf->heights[cz * hf->nx + cx + 1], (m3real)cz * cs};
+    m3Vec3 c = {(m3real)(cx + 1) * cs, hf->heights[(cz + 1) * hf->nx + cx + 1],
+                (m3real)(cz + 1) * cs};
+    m3Vec3 d = {(m3real)cx * cs, hf->heights[(cz + 1) * hf->nx + cx], (m3real)(cz + 1) * cs};
+    if ((cx + cz) % 2 == 0)
+    {
+        out[0][0] = a;
+        out[0][1] = c;
+        out[0][2] = b;
+        out[1][0] = a;
+        out[1][1] = d;
+        out[1][2] = c;
+    }
+    else
+    {
+        out[0][0] = b;
+        out[0][1] = a;
+        out[0][2] = d;
+        out[1][0] = b;
+        out[1][1] = d;
+        out[1][2] = c;
+    }
+}
+
+// Bounded triangle gather from a local-frame box (19-3): fills up
+// to cap corner triples in ascending cell order and returns the
+// count. Consumers that must NEVER truncate (the raycast) walk
+// cells themselves.
+int32_t m3HeightFieldGather(const m3HeightFieldData* hf, m3Vec3 lo, m3Vec3 hi, m3Vec3 (*tris)[3],
+                            int32_t cap);
+
 // Static per-mesh BVH (2c-10): median split on the longest centroid
 // axis, ties broken by triangle index, leaves of up to four
 // triangles. Derived acceleration data: NEVER snapshotted, never

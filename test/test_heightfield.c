@@ -8,6 +8,7 @@
 
 #include "maul3d/body.h"
 #include "maul3d/shape.h"
+#include "maul3d/world.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -237,12 +238,59 @@ static void TestContactTwins(void)
     CHECK(hashes[0] == hashes[1], "twin terrain worlds are bit-identical");
 }
 
+static void TestRayAndOverlap(void)
+{
+    // 19-3: rays land on terrain triangles and the overlap family
+    // sees them.
+    m3WorldDef wd = m3DefaultWorldDef();
+    wd.bodyCapacity = 8;
+    wd.shapeCapacity = 8;
+    m3WorldId world = m3CreateWorld(&wd);
+    m3BodyDef gd = m3DefaultBodyDef();
+    gd.position = (m3Pos3){-4.0, 0.0, -4.0};
+    m3BodyId ground = m3CreateBody(world, &gd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    static float ramp[17 * 17];
+    for (int32_t z = 0; z < 17; ++z)
+    {
+        for (int32_t x = 0; x < 17; ++x)
+        {
+            ramp[z * 17 + x] = 0.2f * (float)x;
+        }
+    }
+    m3ShapeId terrain = m3CreateHeightFieldGridShape(ground, &sd, ramp, 17, 17, 0.5f);
+    CHECK(m3Shape_IsValid(terrain), "the ray ramp lands");
+
+    // Straight down INSIDE a cell (a ray exactly on a shared corner
+    // can lose the watertight edge test by one float ulp, the same
+    // contract as the mesh path): local x = 4.1 on the y = 0.4 x
+    // plane gives 1.64.
+    m3RayHit hit =
+        m3World_CastRayClosest(world, (m3Pos3){0.1, 5.0, 0.05}, (m3Vec3){0.0f, -10.0f, 0.0f});
+    CHECK(hit.hit, "the ray finds the terrain");
+    CHECK(fabs(hit.point.y - 1.64) < 0.02, "the ray lands on the sampled height");
+    CHECK(hit.normal.y > 0.9f, "the slope normal points mostly up");
+
+    // A miss beside the grid stays a miss.
+    m3RayHit miss =
+        m3World_CastRayClosest(world, (m3Pos3){40.0, 5.0, 0.0}, (m3Vec3){0.0f, -10.0f, 0.0f});
+    CHECK(!miss.hit, "a ray beside the grid misses");
+
+    m3ShapeId found[8];
+    int32_t n = m3World_OverlapSphere(world, (m3Pos3){0.0, 1.6, 0.0}, 0.5f, found, 8);
+    CHECK(n == 1 && found[0].index1 == terrain.index1, "the overlap family sees terrain");
+    n = m3World_OverlapSphere(world, (m3Pos3){0.0, 6.0, 0.0}, 0.5f, found, 8);
+    CHECK(n == 0, "a sphere above the ramp sees nothing");
+    m3DestroyWorld(world);
+}
+
 int main(void)
 {
     TestCreateAndWalls();
     TestSnapshotAndReplay();
     TestContacts();
     TestContactTwins();
+    TestRayAndOverlap();
     if (s_failures == 0)
     {
         printf("test_heightfield: all passed\n");

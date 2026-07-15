@@ -153,6 +153,25 @@ static void DrawShape(const m3DrawContext* ctx, int32_t shape)
         }
         return;
     }
+    if (type == (uint8_t)m3_heightFieldShape)
+    {
+        const m3HeightFieldData* hf = &world->hfData[world->shapeHfIndex[shape]];
+        for (int32_t cz = 0; cz + 1 < hf->nz; ++cz)
+        {
+            for (int32_t cx = 0; cx + 1 < hf->nx; ++cx)
+            {
+                m3Vec3 cell[2][3];
+                m3HeightFieldCellTris(hf, cx, cz, cell);
+                for (int32_t t = 0; t < 2; ++t)
+                {
+                    Segment(ctx, ToWorld(xf, cell[t][0]), ToWorld(xf, cell[t][1]), color);
+                    Segment(ctx, ToWorld(xf, cell[t][1]), ToWorld(xf, cell[t][2]), color);
+                    Segment(ctx, ToWorld(xf, cell[t][2]), ToWorld(xf, cell[t][0]), color);
+                }
+            }
+        }
+        return;
+    }
     if (type == (uint8_t)m3_voxelShape)
     {
         // Merged-box wireframe: what the collision actually sees.
@@ -492,6 +511,21 @@ static void DrawShapeSolid(const m3SolidContext* ctx, int32_t shape)
             SolidTri(ctx, xf, mesh->vertices[mesh->indices[3 * t + 0]],
                      mesh->vertices[mesh->indices[3 * t + 1]],
                      mesh->vertices[mesh->indices[3 * t + 2]], color);
+        }
+        return;
+    }
+    if (type == (uint8_t)m3_heightFieldShape)
+    {
+        const m3HeightFieldData* hf = &world->hfData[world->shapeHfIndex[shape]];
+        for (int32_t cz = 0; cz + 1 < hf->nz; ++cz)
+        {
+            for (int32_t cx = 0; cx + 1 < hf->nx; ++cx)
+            {
+                m3Vec3 cell[2][3];
+                m3HeightFieldCellTris(hf, cx, cz, cell);
+                SolidTri(ctx, xf, cell[0][0], cell[0][1], cell[0][2], color);
+                SolidTri(ctx, xf, cell[1][0], cell[1][1], cell[1][2], color);
+            }
         }
         return;
     }

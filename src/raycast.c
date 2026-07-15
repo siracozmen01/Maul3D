@@ -296,6 +296,72 @@ static m3RayLocalHit RayMesh(m3Vec3 o, m3Vec3 d, const m3MeshData* mesh, const m
     return best;
 }
 
+static m3RayLocalHit RayHeightField(m3Vec3 o, m3Vec3 d, const m3HeightFieldData* hf)
+{
+    // Cell-span scan (19-3): the segment's XZ box picks the cells;
+    // each contributes its two parity triangles to the same
+    // front-face test the mesh path runs. A long diagonal ray
+    // scans its whole span box: honest, deterministic, and the DDA
+    // walk stays on the ledger for a profiling day.
+    m3RayLocalHit best = {0.0f, {0.0f, 0.0f, 0.0f}, 0};
+    m3Vec3 end = m3Add3(o, d);
+    m3real inv = 1.0f / hf->cellSize;
+    int32_t cx0 = (int32_t)floorf(m3MinF(o.x, end.x) * inv);
+    int32_t cx1 = (int32_t)floorf(m3MaxF(o.x, end.x) * inv);
+    int32_t cz0 = (int32_t)floorf(m3MinF(o.z, end.z) * inv);
+    int32_t cz1 = (int32_t)floorf(m3MaxF(o.z, end.z) * inv);
+    cx0 = cx0 < 0 ? 0 : cx0;
+    cz0 = cz0 < 0 ? 0 : cz0;
+    cx1 = cx1 > hf->nx - 2 ? hf->nx - 2 : cx1;
+    cz1 = cz1 > hf->nz - 2 ? hf->nz - 2 : cz1;
+    for (int32_t cz = cz0; cz <= cz1; ++cz)
+    {
+        for (int32_t cx = cx0; cx <= cx1; ++cx)
+        {
+            m3Vec3 cell[2][3];
+            m3HeightFieldCellTris(hf, cx, cz, cell);
+            for (int32_t t = 0; t < 2; ++t)
+            {
+                m3Vec3 a = cell[t][0];
+                m3Vec3 b = cell[t][1];
+                m3Vec3 c = cell[t][2];
+                m3Vec3 e1 = m3Sub3(b, a);
+                m3Vec3 e2 = m3Sub3(c, a);
+                m3Vec3 n = m3Cross3(e1, e2);
+                m3real denom = m3Dot3(n, d);
+                if (denom >= 0.0f)
+                {
+                    continue;
+                }
+                m3real dist = m3Dot3(n, m3Sub3(o, a));
+                m3real tHit = dist / -denom;
+                if (tHit < 0.0f || tHit > 1.0f)
+                {
+                    continue;
+                }
+                if (best.hit && tHit >= best.fraction)
+                {
+                    continue;
+                }
+                m3Vec3 pnt = m3Add3(o, m3MulSV3(tHit, d));
+                m3Vec3 ap = m3Sub3(pnt, a);
+                m3Vec3 bp = m3Sub3(pnt, b);
+                m3Vec3 cp = m3Sub3(pnt, c);
+                if (m3Dot3(m3Cross3(e1, ap), n) < 0.0f ||
+                    m3Dot3(m3Cross3(m3Sub3(c, b), bp), n) < 0.0f ||
+                    m3Dot3(m3Cross3(m3Sub3(a, c), cp), n) < 0.0f)
+                {
+                    continue;
+                }
+                best.fraction = tHit;
+                best.normal = m3Normalize3(n);
+                best.hit = 1;
+            }
+        }
+    }
+    return best;
+}
+
 typedef struct m3RayCastContext
 {
     m3World* world;
@@ -353,6 +419,10 @@ static void RayTestShape(m3RayCastContext* ctx, int32_t shape)
     {
         local = RayMesh(o, d, &world->meshData[world->shapeMeshIndex[shape]],
                         &world->meshBvh[world->shapeMeshIndex[shape]]);
+    }
+    else if (type == (uint8_t)m3_heightFieldShape)
+    {
+        local = RayHeightField(o, d, &world->hfData[world->shapeHfIndex[shape]]);
     }
     else if (type == (uint8_t)m3_voxelShape)
     {

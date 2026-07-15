@@ -558,6 +558,23 @@ balanced tree. It changes NO answer: pairs are canonical and the
 tree is never hashed, so a rebuilt world steps bit-identically to
 its unrebuilt twin (the suite proves it by hash equality).
 
+## The native heightfield
+
+m3CreateHeightFieldGridShape stores an nx-by-nz grid (2..255 per
+axis) as raw samples, four bytes each: the low-memory terrain path
+beside meshes (the mesh-backed m3CreateHeightFieldShape remains
+for small chunks). Cells split into two triangles on coordinate
+parity; contacts run the same welded triangle pipeline as meshes
+over a 16-cell contact window with a halo (bodies wider than the
+window contact within it; window warm-starts reset when it shifts
+a cell; both deterministic and documented). Rays scan the
+segment's cell span; the overlap family and soft particles see
+terrain through the same cell gather. A ray exactly along a
+shared triangle corner can miss by one float ulp, the same
+contract as the mesh path. Static bodies only; journaled (op 76),
+snapshotted count-derived (v49), never world-hashed (content is
+create-derived, like meshes and hulls).
+
 ## Water volumes
 
 m3CreateWaterVolume fills a world-anchored axis-aligned box with
