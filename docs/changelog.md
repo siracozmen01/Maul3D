@@ -4,7 +4,10 @@ All notable changes to Maul3D. Versions are tags on green CI SHAs;
 every entry's determinism gates were verified across all CI cells at
 tag time.
 
-## Unreleased
+## v1.22 (2026-07-17)
+
+The integration release: the Rawframe audit answered, plus the
+hardening tail and the sleeper skip.
 
 - The soft-particle escape governor: a particle handed the middle
   of a thick voxel wall used to walk out in ONE substep, and XPBD
@@ -18,8 +21,6 @@ tag time.
   unused tails canonical); an empty slab is already canonical, so
   only lived-in slots pay now. 5k-body rollback restore: 17.2 to
   6.9 ms, bit-identical output, every pin exact.
-
-## Unreleased
 
 - The sleeping world stops paying rent (scale arc S-3a/b): pair
   discovery is scoped to awake shapes, and cold pairs (sleeping,
