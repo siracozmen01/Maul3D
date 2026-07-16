@@ -6,8 +6,8 @@ tag time.
 
 ## v1.22 (2026-07-17)
 
-The integration release: the Rawframe audit answered, plus the
-hardening tail and the sleeper skip.
+The integration release: a host-engine integration audit
+answered in full, plus the hardening tail and the sleeper skip.
 
 - The soft-particle escape governor: a particle handed the middle
   of a thick voxel wall used to walk out in ONE substep, and XPBD
