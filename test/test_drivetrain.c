@@ -555,7 +555,7 @@ static void TestTankSteer(void)
         }
         if (run == 0)
         {
-            yawSpin = fabsf(m3Body_GetAngularVelocity(hull).y);
+            yawSpin = (double)fabsf(m3Body_GetAngularVelocity(hull).y);
         }
         hashes[run] = m3World_Hash(world);
         m3DestroyWorld(world);
