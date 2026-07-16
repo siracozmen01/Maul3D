@@ -940,8 +940,30 @@ static int32_t PrepareJoints(m3World* world, m3JointConstraint* joints, m3real h
             c->motorImpulse = world->jointPerpImpulse[j].z;
             m3real phiA = m3GearSpin(xfA->q, world->jointFrameQA[j]);
             m3real phiB = m3GearSpin(xfB->q, world->jointFrameQB[j]);
-            c->targetScalar = m3WrapPi(phiA - world->jointMotor[j].x) +
-                              ratio * m3WrapPi(phiB - world->jointMotor[j].y);
+            // Each side's spin is only measurable mod its wrap, so
+            // the raw sum jumps by 2*pi (or ratio times it) every
+            // time a gear crosses the seam, and the drift correction
+            // hammered the mesh backwards a quarter turn (the tak
+            // tak tak the testbed's user heard). The true drift is
+            // tiny (the velocity row holds it), so snap the sum to
+            // the nearest point of the wrap lattice and correct only
+            // the residual. Candidates keep the exact float when no
+            // wrap happened: the golden does not move.
+            m3real s = m3WrapPi(phiA - world->jointMotor[j].x) +
+                       ratio * m3WrapPi(phiB - world->jointMotor[j].y);
+            m3real best = s;
+            for (int32_t wi = -1; wi <= 1; ++wi)
+            {
+                for (int32_t wj = -1; wj <= 1; ++wj)
+                {
+                    m3real cand = s + 2.0f * M3_PI * (m3real)wi + 2.0f * M3_PI * ratio * (m3real)wj;
+                    if (fabsf(cand) < fabsf(best))
+                    {
+                        best = cand;
+                    }
+                }
+            }
+            c->targetScalar = best;
         }
         else if (c->type == (uint8_t)m3_pulleyJoint)
         {

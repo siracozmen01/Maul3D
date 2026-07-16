@@ -16,6 +16,12 @@ tag time.
   contact) goes through one park-and-clamp helper. A poisoned
   query box used to be a silent INT_MIN on x86 and a TRAP on
   wasm; now it is an empty range. Legitimate values unchanged.
+- The gear joint survives the seam: each side's spin is only
+  measurable mod its wrap, and the drift correction used to read
+  a 2*pi jump as real error, hammering the mesh a quarter turn
+  backwards every time the fast gear crossed 180 degrees. The
+  correction now snaps to the wrap lattice and chases only the
+  residual; an unwrapped gear is bit-identical.
 - A zero or NaN capsule segment (reachable only through a mutated
   snapshot; the create walls refuse it) no longer mints an inf
   inertia axis; it falls to the exact sphere inertia instead.

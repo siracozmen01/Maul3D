@@ -756,6 +756,8 @@ static tbScene SceneCircuit(void)
     // Crates around the yard for the bumper.
     m3ShapeDef cs = m3DefaultShapeDef();
     cs.friction = 0.4f;
+    cs.density = 150.0f; // a half-kilo crate pops at 28 m/s when the
+                         // 300-density car pinches it on the wall
     for (int32_t k = 0; k < 6; ++k)
     {
         m3BodyDef bd = m3DefaultBodyDef();
@@ -837,7 +839,10 @@ static tbScene SceneJelly(void)
     sb.countZ = 7;
     sb.spacing = 0.22f;
     sb.compliance = 2.0e-4f;
-    sb.radius = 0.1f;
+    // 0.1 left 0.02 m of self-collision clearance and the lattice
+    // boiled on the rampart forever (the probe measured 16 m/s
+    // particle peaks at rest); 0.08 settles below 2 m/s.
+    sb.radius = 0.08f;
     sb.particleMass = 0.08f;
     scene.jelly = m3CreateSoftBody(scene.world, &sb);
     return scene;
@@ -1036,7 +1041,7 @@ static tbScene SceneJointCart(void)
         // never snaps an axle (the first tuning had them inverted
         // and the cart shed wheels pulling away); rubble impacts
         // spike the collinearity torque past it honestly.
-        m3Joint_SetBreakThresholds(scene.axles[w], 0.0f, 170.0f);
+        m3Joint_SetBreakThresholds(scene.axles[w], 0.0f, 240.0f);
     }
     return scene;
 }
@@ -1089,7 +1094,7 @@ static tbScene SceneClothWind(void)
     sb.countZ = 9;
     sb.spacing = 0.24f;
     sb.compliance = 4.0e-4f;
-    sb.radius = 0.07f;
+    sb.radius = 0.09f; // 0.07 left 0.10 m holes; shots slipped through
     sb.particleMass = 0.05f;
     scene.cloth = m3CreateSoftBody(scene.world, &sb);
     // Pin the west edge: a hanging line, free to billow east.
@@ -1109,6 +1114,7 @@ static tbScene SceneClothWind(void)
     m3Shape_SetSurfaceVelocity(beltTop, (m3Vec3){1.6f, 0.0f, 0.0f});
     m3ShapeDef crateShape = m3DefaultShapeDef();
     crateShape.friction = 0.5f;
+    crateShape.density = 80.0f;
     for (int32_t k = 0; k < 5; ++k)
     {
         m3BodyDef bd = m3DefaultBodyDef();
@@ -1900,7 +1906,10 @@ int main(void)
         ClearBackground((Color){164, 170, 184, 255});
         DrawSky(screenW, screenH);
         BeginMode3D(camera);
-        DrawGround();
+        if (strcmp(scene.name, "meadow") != 0)
+        {
+            DrawGround();
+        }
 
         m3SolidDraw solid;
         memset(&solid, 0, sizeof(solid));
@@ -1940,11 +1949,36 @@ int main(void)
                 continue;
             }
             Color tone = soft == 0 ? (Color){120, 205, 130, 255} : (Color){225, 215, 170, 255};
-            int32_t pc = m3SoftBody_GetParticleCount(body);
-            for (int32_t p = 0; p < pc; ++p)
+            if (soft == 1)
             {
-                m3Pos3 q = m3SoftBody_GetParticlePosition(body, p);
-                DrawCubeV(FromPos(q), (Vector3){0.13f, 0.13f, 0.13f}, tone);
+                // The laundry line is a 13 x 9 sheet: draw the
+                // surface, not the particles, or the eye reads
+                // beads on strings instead of cloth.
+                for (int32_t z = 0; z < 8; ++z)
+                {
+                    for (int32_t x = 0; x < 12; ++x)
+                    {
+                        Vector3 p00 = FromPos(m3SoftBody_GetParticlePosition(body, x + 13 * z));
+                        Vector3 p10 = FromPos(m3SoftBody_GetParticlePosition(body, x + 1 + 13 * z));
+                        Vector3 p01 =
+                            FromPos(m3SoftBody_GetParticlePosition(body, x + 13 * (z + 1)));
+                        Vector3 p11 =
+                            FromPos(m3SoftBody_GetParticlePosition(body, x + 1 + 13 * (z + 1)));
+                        DrawTriangle3D(p00, p10, p11, tone);
+                        DrawTriangle3D(p00, p11, p01, tone);
+                        DrawTriangle3D(p00, p11, p10, tone);
+                        DrawTriangle3D(p00, p01, p11, tone);
+                    }
+                }
+            }
+            else
+            {
+                int32_t pc = m3SoftBody_GetParticleCount(body);
+                for (int32_t p = 0; p < pc; ++p)
+                {
+                    m3Pos3 q = m3SoftBody_GetParticlePosition(body, p);
+                    DrawCubeV(FromPos(q), (Vector3){0.13f, 0.13f, 0.13f}, tone);
+                }
             }
         }
         if (driveScene)
