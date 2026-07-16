@@ -536,6 +536,23 @@ extern "C"
 
     M3_API m3Counters m3World_GetCounters(m3WorldId worldId);
 
+    /// Per-world memory accounting (integration audit D1), computed
+    /// on demand so it cannot drift: persistentBytes is the fixed
+    /// array footprint decided at create (pools, tree, and every
+    /// snapshot-walked array), contentBytes is the live
+    /// count-derived payload (mesh vertices/indices/flags, mesh BVH
+    /// nodes, heightfield samples), and the scratch numbers are the
+    /// step arena's capacity and last high-water mark. The step
+    /// itself allocates nothing else.
+    typedef struct m3MemoryUsage
+    {
+        int64_t persistentBytes;
+        int64_t contentBytes;
+        int32_t scratchCapacity;
+        int32_t scratchPeak;
+    } m3MemoryUsage;
+    M3_API m3MemoryUsage m3World_MemoryUsage(m3WorldId worldId);
+
     /// Wall-clock milliseconds per phase of the LAST COMPLETED step
     /// (14-1): honest observer timing from a monotonic clock. Never
     /// deterministic, never hashed, never serialized; zero before

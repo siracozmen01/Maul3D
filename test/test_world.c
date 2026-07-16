@@ -506,9 +506,100 @@ static void TestGeometryCeilingConstants(void)
     CHECK(M3_SOFTBODY_MAX_TETS == 1024, "soft tet ceiling is the documented 1024");
 }
 
+static int64_t s_hookLive = 0;
+static int64_t s_hookCalls = 0;
+
+static void* HookAlloc(int32_t bytes, void* context)
+{
+    (void)bytes;
+    (void)context;
+    s_hookLive += 1;
+    s_hookCalls += 1;
+    return malloc((size_t)bytes);
+}
+
+static void HookFree(void* memory, void* context)
+{
+    (void)context;
+    if (memory != NULL)
+    {
+        s_hookLive -= 1;
+    }
+    free(memory);
+}
+
+// R5-3 (audit A3): a world born under a host allocator routes every
+// persistent allocation and free through it, and dies in balance.
+static void TestAllocatorHook(void)
+{
+    m3SetAllocator(HookAlloc, HookFree, NULL);
+    s_hookLive = 0;
+    s_hookCalls = 0;
+    m3WorldDef def = m3DefaultWorldDef();
+    def.bodyCapacity = 64;
+    def.shapeCapacity = 64;
+    m3WorldId world = m3CreateWorld(&def);
+    CHECK(s_hookCalls > 0, "the hook saw the world's allocations");
+    m3BodyDef bd = m3DefaultBodyDef();
+    bd.type = m3_dynamicBody;
+    bd.position = (m3Pos3){0.0, 2.0, 0.0};
+    m3BodyId b = m3CreateBody(world, &bd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    m3Sphere ball = {{0.0f, 0.0f, 0.0f}, 0.5f};
+    m3CreateSphereShape(b, &sd, &ball);
+    for (int32_t i = 0; i < 10; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+    }
+    m3DestroyWorld(world);
+    CHECK(s_hookLive == 0, "every hooked allocation was freed through the hook");
+    m3SetAllocator(NULL, NULL, NULL);
+}
+
+// R5-3 (audit D1): the ledger is computed, not accumulated, so it
+// cannot drift; content grows it and steps do not.
+static void TestMemoryUsage(void)
+{
+    m3WorldDef def = m3DefaultWorldDef();
+    def.bodyCapacity = 128;
+    def.shapeCapacity = 128;
+    def.meshCapacity = 2;
+    m3WorldId world = m3CreateWorld(&def);
+    m3MemoryUsage before = m3World_MemoryUsage(world);
+    CHECK(before.persistentBytes > 0, "a world weighs something");
+    CHECK(before.contentBytes == 0, "no content yet");
+    m3BodyDef gd = m3DefaultBodyDef();
+    m3BodyId ground = m3CreateBody(world, &gd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    m3Vec3 verts[4] = {
+        {-5.0f, 0.0f, -5.0f}, {5.0f, 0.0f, -5.0f}, {5.0f, 0.0f, 5.0f}, {-5.0f, 0.0f, 5.0f}};
+    uint16_t tris[6] = {0, 1, 2, 0, 2, 3};
+    m3CreateMeshShape(ground, &sd, verts, 4, tris, 2);
+    m3MemoryUsage after = m3World_MemoryUsage(world);
+    CHECK(after.contentBytes > 0, "mesh content is on the ledger");
+    CHECK(after.persistentBytes == before.persistentBytes,
+          "the fixed footprint does not move after create");
+    m3BodyDef bd = m3DefaultBodyDef();
+    bd.type = m3_dynamicBody;
+    bd.position = (m3Pos3){0.0, 2.0, 0.0};
+    m3BodyId b = m3CreateBody(world, &bd);
+    m3Sphere ball = {{0.0f, 0.0f, 0.0f}, 0.5f};
+    m3CreateSphereShape(b, &sd, &ball);
+    for (int32_t i = 0; i < 30; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+    }
+    m3MemoryUsage stepped = m3World_MemoryUsage(world);
+    CHECK(stepped.scratchPeak > 0, "the step scratch reports its high water");
+    CHECK(stepped.persistentBytes == before.persistentBytes, "steps allocate nothing persistent");
+    m3DestroyWorld(world);
+}
+
 int main(void)
 {
     TestGeometryCeilingConstants();
+    TestAllocatorHook();
+    TestMemoryUsage();
     TestWorldLifecycle();
     TestBodies();
     TestTwoWorldsIsolation();

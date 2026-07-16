@@ -726,6 +726,10 @@ typedef struct m3World
     int32_t sleepingPairCount;
     uint8_t pairsFullQuery;
     uint8_t frozenDirty;
+    // D1: persistent bytes this world holds (arrays at create plus
+    // count-derived content while it lives) and the step scratch
+    // capacity; the scratch PEAK already rides m3Counters.
+    int64_t memoryBytes;
     m3Manifold* manifolds;
     int32_t pairCount;
     int32_t pairCapacity;

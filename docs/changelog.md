@@ -31,6 +31,18 @@ tag time.
   are bit-identical, because the buffer is a pure function of
   the sleeping state, proven equal to the brute-force referee.
 
+- The host owns the memory (integration audit A3/D1): a
+  process-global allocator hook (m3SetAllocator, install before
+  the first world) routes every persistent allocation, and
+  m3World_MemoryUsage reports each world's fixed footprint, live
+  count-derived content, and step-scratch capacity and high
+  water, computed on demand so the ledger cannot drift. The
+  fully per-world allocator stays on the wishlist, argued: the
+  three-lifetime allocator is globally routed through 280 call
+  sites across geometry modules with no world in scope; the
+  global hook plus per-world metering gives hosts budget
+  enforcement today without that refactor.
+
 ## v1.21 (2026-07-16)
 
 The hardening arc opens: fuzz-found cures and a field-tested stage.

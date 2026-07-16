@@ -27,6 +27,27 @@ void m3DebugAllocCounts(int64_t* allocs, int64_t* frees)
     }
 }
 
+// The host hook (integration audit A3): set before the first
+// world, constant while worlds live. Hooked memory arrives
+// uninitialized, so the zeroing happens here either way.
+static m3AllocFn* s_hookAlloc = NULL;
+static m3FreeFn* s_hookFree = NULL;
+static void* s_hookContext = NULL;
+
+void m3SetAllocator(m3AllocFn* allocFn, m3FreeFn* freeFn, void* context)
+{
+    // Both or neither: a mismatched pair would free with the wrong
+    // authority.
+    if ((allocFn == NULL) != (freeFn == NULL))
+    {
+        M3_ASSERT(false);
+        return;
+    }
+    s_hookAlloc = allocFn;
+    s_hookFree = freeFn;
+    s_hookContext = context;
+}
+
 void* m3AllocZeroed(int32_t bytes)
 {
     if (bytes <= 0)
@@ -34,7 +55,19 @@ void* m3AllocZeroed(int32_t bytes)
         M3_ASSERT(false);
         return NULL;
     }
-    void* memory = calloc(1, (size_t)bytes);
+    void* memory;
+    if (s_hookAlloc != NULL)
+    {
+        memory = s_hookAlloc(bytes, s_hookContext);
+        if (memory != NULL)
+        {
+            memset(memory, 0, (size_t)bytes);
+        }
+    }
+    else
+    {
+        memory = calloc(1, (size_t)bytes);
+    }
     M3_ASSERT(memory != NULL);
     if (memory != NULL)
     {
@@ -49,7 +82,14 @@ void m3Free(void* memory)
     {
         s_freeCalls += 1;
     }
-    free(memory);
+    if (s_hookFree != NULL)
+    {
+        s_hookFree(memory, s_hookContext);
+    }
+    else
+    {
+        free(memory);
+    }
 }
 
 m3Stack m3StackCreate(int32_t capacity)
