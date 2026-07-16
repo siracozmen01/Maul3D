@@ -317,9 +317,14 @@ extern "C"
     typedef bool m3PreSolveFn(m3ShapeId shapeA, m3ShapeId shapeB, m3Pos3 point, m3Vec3 normal,
                               void* context);
 
-    /// Register (or clear with NULL) the pre-solve callback. Host
-    /// wiring like the task hooks: never journaled, never snapshot
-    /// state; pair it with the contract above.
+    /// Register (or clear with NULL) the pre-solve callback. The
+    /// REGISTRATION is host wiring (never journaled, never snapshot
+    /// state), but the DECISIONS are not: every veto a step makes
+    /// is journaled as that step's annex (R5-4), so a bare replay
+    /// (m3replay verify included) applies the recorded vetoes with
+    /// no callback installed and lands on the recorded bits. During
+    /// such a step the recorded set wins and any installed callback
+    /// stays silent; do not expect callbacks to fire under replay.
     M3_API void m3World_SetPreSolveCallback(m3WorldId worldId, m3PreSolveFn* fn, void* context);
 
     /// Closest-hit ray cast: origin in world doubles, translation =

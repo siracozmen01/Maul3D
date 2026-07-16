@@ -43,6 +43,13 @@ tag time.
   global hook plus per-world metering gives hosts budget
   enforcement today without that refactor.
 
+- The pre-solve veto joins the tape (integration audit B3): each
+  step's vetoed pair keys are journaled as an annex op before the
+  step, so a bare replay applies them without the host's callback
+  and the M3J1 container stays self-sufficient; m3replay verify
+  no longer reports false divergence for veto sessions. Sessions
+  without a callback produce byte-identical journals to before.
+
 ## v1.21 (2026-07-16)
 
 The hardening arc opens: fuzz-found cures and a field-tested stage.

@@ -869,6 +869,8 @@ bool m3World_Restore(m3WorldId worldId, const void* data, int32_t size)
     world->sensorBeginEventCount = 0;
     world->sensorEndEventCount = 0;
     world->fragmentEventCount = 0;
+    world->stepVetoCount = 0;
+    world->replayVetoCount = 0;
     world->fragmentRecipeCount = 0;
     world->fragmentDropped = 0;
     world->hitEventCount = 0;

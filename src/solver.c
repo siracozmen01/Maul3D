@@ -181,8 +181,39 @@ static int32_t PrepareContacts(m3World* world, m3ContactConstraint* constraints,
         {
             continue; // sensors detect, they never respond
         }
-        if (world->preSolveFn != NULL &&
-            (world->shapePreSolve[shapeA] != 0 || world->shapePreSolve[shapeB] != 0))
+        if (world->replayVetoCount > 0)
+        {
+            // A recorded veto set owns this step: the keys are
+            // canonical ascending, the pairs arrive in the same
+            // order, and the callback (if any) stays silent so the
+            // tape's truth cannot be second-guessed.
+            int32_t lo = 0;
+            int32_t hi = world->replayVetoCount - 1;
+            int vetoed = 0;
+            while (lo <= hi)
+            {
+                int32_t mid = (lo + hi) / 2;
+                if (world->replayVetoKeys[mid] == key)
+                {
+                    vetoed = 1;
+                    break;
+                }
+                if (world->replayVetoKeys[mid] < key)
+                {
+                    lo = mid + 1;
+                }
+                else
+                {
+                    hi = mid - 1;
+                }
+            }
+            if (vetoed)
+            {
+                continue;
+            }
+        }
+        else if (world->preSolveFn != NULL &&
+                 (world->shapePreSolve[shapeA] != 0 || world->shapePreSolve[shapeB] != 0))
         {
             // The pre-solve veto (8-5): serial, canonical pair order.
             // The LOUD contract lives on the API: the callback must
@@ -207,7 +238,14 @@ static int32_t PrepareContacts(m3World* world, m3ContactConstraint* constraints,
             m3ShapeId idB = {shapeB + 1, world->worldIndex0, world->shapePool.generations[shapeB]};
             if (!world->preSolveFn(idA, idB, point, manifold->normal, world->preSolveContext))
             {
-                continue; // vetoed: no constraint this step
+                // Vetoed: no constraint this step. The key joins the
+                // journal annex (R5-4) so a bare replay repeats the
+                // decision; collection order = pair order = sorted.
+                if (world->journalActive != 0 && world->stepVetoCount < world->pairCapacity)
+                {
+                    world->stepVetoKeys[world->stepVetoCount++] = key;
+                }
+                continue;
             }
         }
 
@@ -360,6 +398,9 @@ static int32_t PrepareContacts(m3World* world, m3ContactConstraint* constraints,
         c->twistMass = twistK > 0.0f ? 1.0f / twistK : 0.0f;
         c->twistImpulse = manifold->twistImpulse;
     }
+    // The pending recorded vetoes applied to exactly this prepare;
+    // consume them so the next step decides for itself (R5-4).
+    world->replayVetoCount = 0;
     return count;
 }
 static m3Vec3 Solve3(const m3Mat3* J, m3Vec3 b); // defined with the gyroscopic block
@@ -4286,8 +4327,21 @@ void m3World_Step(m3WorldId worldId, float dt, int32_t substeps)
         M3_ASSERT(false);
         return;
     }
+    world->stepVetoCount = 0;
+    m3StepInternal(world, dt, substeps);
     if (world->journalActive != 0)
     {
+        // Recording moved BEHIND the execution (R5-4): nothing can
+        // journal during a step, so callback-less streams are
+        // byte-identical to the old order, and a step that vetoed
+        // contacts writes those keys first. A bare replay (no
+        // callback installed) then applies the recorded vetoes and
+        // lands on the recorded bits: the tape is self-sufficient.
+        if (world->stepVetoCount > 0)
+        {
+            m3JournalRecord(world, m3_opStepVetoes, world->stepVetoKeys,
+                            world->stepVetoCount * (int32_t)sizeof(uint64_t));
+        }
         struct
         {
             float dt;
@@ -4298,5 +4352,4 @@ void m3World_Step(m3WorldId worldId, float dt, int32_t substeps)
         record.substeps = substeps;
         m3JournalRecord(world, m3_opStep, &record, (int32_t)sizeof(record));
     }
-    m3StepInternal(world, dt, substeps);
 }

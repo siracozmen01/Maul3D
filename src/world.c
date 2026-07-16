@@ -442,6 +442,8 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     world->endEventCount = 0;
     M3_ALLOC_W(world->pairKeys, world->pairCapacity, uint64_t);
     M3_ALLOC_W(world->sleepingPairKeys, world->pairCapacity, uint64_t);
+    M3_ALLOC_W(world->stepVetoKeys, world->pairCapacity, uint64_t);
+    M3_ALLOC_W(world->replayVetoKeys, world->pairCapacity, uint64_t);
     M3_ALLOC_W(world->manifolds, world->pairCapacity, m3Manifold);
     world->pairCount = 0;
 
@@ -712,6 +714,8 @@ void m3DestroyWorld(m3WorldId worldId)
     m3Free(world->proxyIds);
     m3Free(world->pairKeys);
     m3Free(world->sleepingPairKeys);
+    m3Free(world->stepVetoKeys);
+    m3Free(world->replayVetoKeys);
     m3Free(world->manifolds);
     m3StackDestroy(&world->scratch);
     m3Free(world);
@@ -1604,6 +1608,16 @@ static bool JournalReplayApply(m3World* world, const void* data, int32_t size)
                 return false; // hostile bytes fail loudly (16-7)
             }
             m3SetAngularVelocityInternal(world, index, record.v);
+            break;
+        }
+        case m3_opStepVetoes:
+        {
+            if (bytes <= 0 || (bytes % 8) != 0 || bytes / 8 > world->pairCapacity)
+            {
+                return false; // hostile veto list refuses loudly
+            }
+            memcpy(world->replayVetoKeys, payload, (size_t)bytes);
+            world->replayVetoCount = bytes / 8;
             break;
         }
         case m3_opStep:

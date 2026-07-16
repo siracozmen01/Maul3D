@@ -184,7 +184,12 @@ typedef enum m3Op
     m3_opDestroyWaterVolume = 75,     // the tide goes out (18-1)
     m3_opCreateHeightFieldGrid = 76,  // native terrain chunk (19-1)
     m3_opCreateSoftBodyTet = 77,      // the incompressible jelly (20-3)
-    m3_opVehicleTankCommands = 78,    // skid steer (23-1)
+    m3_opVehicleTankCommands = 78,
+    // R5-4 (audit B3): the pre-solve vetoes a step's callback made,
+    // recorded BEFORE that step's own op so a bare replay applies
+    // them without the host's callback. Payload: the vetoed pair
+    // keys, canonical ascending (count = bytes / 8).
+    m3_opStepVetoes = 79, // skid steer (23-1)
 } m3Op;
 
 // Debug names (14-3): journaled and snapshot like userData, NEVER
@@ -730,6 +735,14 @@ typedef struct m3World
     // count-derived content while it lives) and the step scratch
     // capacity; the scratch PEAK already rides m3Counters.
     int64_t memoryBytes;
+    // R5-4: veto bookkeeping. stepVeto* collects what the live
+    // callback vetoed this step (journal fodder); replayVeto* is
+    // the pending recorded set the NEXT step must apply, consumed
+    // by PrepareContacts and cleared by restore like events.
+    uint64_t* stepVetoKeys;
+    int32_t stepVetoCount;
+    uint64_t* replayVetoKeys;
+    int32_t replayVetoCount;
     m3Manifold* manifolds;
     int32_t pairCount;
     int32_t pairCapacity;

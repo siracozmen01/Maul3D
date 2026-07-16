@@ -1120,8 +1120,65 @@ static void TestFuzzPhase20Ops(void)
     free(snap);
 }
 
+// R5-4 (audit B3): a session recorded WITH a vetoing pre-solve
+// callback must replay to the same bits WITHOUT it: the veto
+// annex (op 79) makes the tape self-sufficient.
+static bool VetoAll(m3ShapeId a, m3ShapeId b, m3Pos3 point, m3Vec3 normal, void* context)
+{
+    (void)a;
+    (void)b;
+    (void)point;
+    (void)normal;
+    int* calls = (int*)context;
+    *calls += 1;
+    return false; // veto every flagged contact
+}
+
+static void TestPreSolveReplay(void)
+{
+    m3WorldDef def = Def();
+    m3WorldId world = m3CreateWorld(&def);
+    int32_t snapBytes = m3World_SnapshotSize(world);
+    uint8_t* snap = (uint8_t*)malloc((size_t)snapBytes);
+    m3World_Snapshot(world, snap, snapBytes);
+    static uint8_t journal[262144];
+    m3World_JournalBegin(world, journal, (int32_t)sizeof(journal));
+
+    m3BodyDef gd = m3DefaultBodyDef();
+    m3BodyId ground = m3CreateBody(world, &gd);
+    m3ShapeDef sd = m3DefaultShapeDef();
+    m3Plane fl = {{0.0f, 1.0f, 0.0f}, 0.0f};
+    m3ShapeId floor = m3CreatePlaneShape(ground, &sd, &fl);
+    m3BodyDef bd = m3DefaultBodyDef();
+    bd.type = m3_dynamicBody;
+    bd.position = (m3Pos3){0.0, 2.0, 0.0};
+    m3BodyId faller = m3CreateBody(world, &bd);
+    m3CreateBoxShape(faller, &sd, (m3Vec3){0.4f, 0.4f, 0.4f});
+    m3Shape_EnablePreSolve(floor, true);
+    int calls = 0;
+    m3World_SetPreSolveCallback(world, VetoAll, &calls);
+    for (int32_t i = 0; i < 120; ++i)
+    {
+        m3World_Step(world, 1.0f / 60.0f, 4);
+    }
+    int32_t journalBytes = m3World_JournalEnd(world);
+    uint64_t recorded = m3World_Hash(world);
+    CHECK(calls > 0, "the callback actually ran");
+    CHECK(m3Body_GetPosition(faller).y < -1.0, "the veto let the box fall through the floor");
+    m3DestroyWorld(world);
+
+    // The bare replay: no callback anywhere, the annex drives.
+    m3WorldId replay = m3CreateWorld(&def);
+    CHECK(m3World_Restore(replay, snap, snapBytes), "the base snapshot restores");
+    CHECK(m3World_JournalReplay(replay, journal, journalBytes), "the veto tape replays");
+    CHECK(m3World_Hash(replay) == recorded, "a bare replay lands on the recorded bits");
+    m3DestroyWorld(replay);
+    free(snap);
+}
+
 int main(void)
 {
+    TestPreSolveReplay();
     TestRoundTrip();
     TestRefusals();
     TestSmallCapacity();
