@@ -660,9 +660,9 @@ static void SoftCollideParticle(m3World* world, int32_t slot, int32_t k, int32_t
         int32_t vslot = world->shapeVoxelIndex[shape];
         const m3VoxelChunkData* chunk = &world->voxelData[vslot];
         m3real cell = chunk->cellSize;
-        int32_t cx = (int32_t)floorf(lp.x / cell);
-        int32_t cy = (int32_t)floorf(lp.y / cell);
-        int32_t cz = (int32_t)floorf(lp.z / cell);
+        int32_t cx = m3CellFromF(floorf(lp.x / cell), 2.0e9f);
+        int32_t cy = m3CellFromF(floorf(lp.y / cell), 2.0e9f);
+        int32_t cz = m3CellFromF(floorf(lp.z / cell), 2.0e9f);
         if (cx >= 0 && cx < 16 && cy >= 0 && cy < 16 && cz >= 0 && cz < 16 &&
             m3VoxelGet(chunk, cx, cy, cz))
         {

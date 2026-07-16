@@ -11,6 +11,14 @@ tag time.
   divided by a zero fill sum and minted a NaN center of mass.
   The carve now falls back to the equal-weight center; legitimate
   streams are bit-identical (occupied voxels always carry fill).
+- Grid-cell casts are UB-proof: every float-to-int cell index
+  (heightfield gather, ray walk, manifold halo, voxel carve, soft
+  contact) goes through one park-and-clamp helper. A poisoned
+  query box used to be a silent INT_MIN on x86 and a TRAP on
+  wasm; now it is an empty range. Legitimate values unchanged.
+- A zero or NaN capsule segment (reachable only through a mutated
+  snapshot; the create walls refuse it) no longer mints an inf
+  inertia axis; it falls to the exact sphere inertia instead.
 
 ## v1.20 (2026-07-16)
 

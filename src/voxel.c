@@ -443,8 +443,8 @@ int32_t m3VoxelCarveSphereInternal(m3World* world, int32_t shape, m3Vec3 center,
     {
         m3real f0 = (c[a] - radius) / cell;
         m3real f1 = (c[a] + radius) / cell;
-        int32_t i0 = (int32_t)floorf(f0);
-        int32_t i1 = (int32_t)floorf(f1);
+        int32_t i0 = m3CellFromF(floorf(f0), 2.0e9f);
+        int32_t i1 = m3CellFromF(floorf(f1), -2.0e9f);
         lo[a] = i0 < 0 ? 0 : (i0 > M3_VOXEL_DIM - 1 ? M3_VOXEL_DIM - 1 : i0);
         hi[a] = i1 < 0 ? 0 : (i1 > M3_VOXEL_DIM - 1 ? M3_VOXEL_DIM - 1 : i1);
     }

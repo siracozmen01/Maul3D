@@ -141,7 +141,12 @@ static int ShapeMassProps(const m3World* world, int32_t s, float* massOut, m3Vec
         float r = world->shapeGeom[s].s;
         m3Vec3 axis = m3Sub3(p2, p1);
         float length = sqrtf(m3Dot3(axis, axis));
-        m3Vec3 u = m3MulSV3(1.0f / length, axis); // length > 0 by contract
+        // The create walls demand length > 0, but a mutated snapshot
+        // writes the geometry slab directly and a zero or NaN segment
+        // must not mint an inf axis here. With length zero the d
+        // term below vanishes and the isotropic (sphere) inertia is
+        // exactly right, so any unit stand-in axis is honest.
+        m3Vec3 u = length > 0.0f ? m3MulSV3(1.0f / length, axis) : (m3Vec3){1.0f, 0.0f, 0.0f};
         float density = world->shapeDensity[s];
         float mCyl = density * M3_PI * r * r * length;
         float mSph = density * (4.0f / 3.0f) * M3_PI * r * r * r;
@@ -372,10 +377,10 @@ int32_t m3HeightFieldGather(const m3HeightFieldData* hf, m3Vec3 lo, m3Vec3 hi, m
                             int32_t cap)
 {
     m3real inv = 1.0f / hf->cellSize;
-    int32_t cx0 = (int32_t)floorf(lo.x * inv);
-    int32_t cx1 = (int32_t)floorf(hi.x * inv);
-    int32_t cz0 = (int32_t)floorf(lo.z * inv);
-    int32_t cz1 = (int32_t)floorf(hi.z * inv);
+    int32_t cx0 = m3CellFromF(floorf(lo.x * inv), 2.0e9f);
+    int32_t cx1 = m3CellFromF(floorf(hi.x * inv), -2.0e9f);
+    int32_t cz0 = m3CellFromF(floorf(lo.z * inv), 2.0e9f);
+    int32_t cz1 = m3CellFromF(floorf(hi.z * inv), -2.0e9f);
     cx0 = cx0 < 0 ? 0 : cx0;
     cz0 = cz0 < 0 ? 0 : cz0;
     cx1 = cx1 > hf->nx - 2 ? hf->nx - 2 : cx1;

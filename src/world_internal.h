@@ -20,6 +20,20 @@
 #include "maul3d/vehicle.h"
 #include "maul3d/world.h"
 
+// (int32_t) from a float is UB on NaN and outside the int range:
+// x86 shrugs INT_MIN, wasm TRAPS, and the wide fuzz walked a
+// mutated-snapshot NaN into a heightfield gather (shape.c). Every
+// grid-cell cast goes through this park-and-clamp. Legitimate
+// values are bit-identical: no real grid nears two billion cells.
+// nanPark picks which way a poisoned bound falls so lo/hi ranges
+// come out EMPTY, never huge.
+static inline int32_t m3CellFromF(m3real f, m3real nanPark)
+{
+    f = f != f ? nanPark : f;
+    f = f < -2.0e9f ? -2.0e9f : (f > 2.0e9f ? 2.0e9f : f);
+    return (int32_t)f;
+}
+
 #define M3_MAX_WORLDS 64
 
 // Bumped on ANY change that alters simulation behavior (solver math,

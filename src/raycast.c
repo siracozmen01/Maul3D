@@ -306,10 +306,10 @@ static m3RayLocalHit RayHeightField(m3Vec3 o, m3Vec3 d, const m3HeightFieldData*
     m3RayLocalHit best = {0.0f, {0.0f, 0.0f, 0.0f}, 0};
     m3Vec3 end = m3Add3(o, d);
     m3real inv = 1.0f / hf->cellSize;
-    int32_t cx0 = (int32_t)floorf(m3MinF(o.x, end.x) * inv);
-    int32_t cx1 = (int32_t)floorf(m3MaxF(o.x, end.x) * inv);
-    int32_t cz0 = (int32_t)floorf(m3MinF(o.z, end.z) * inv);
-    int32_t cz1 = (int32_t)floorf(m3MaxF(o.z, end.z) * inv);
+    int32_t cx0 = m3CellFromF(floorf(m3MinF(o.x, end.x) * inv), 2.0e9f);
+    int32_t cx1 = m3CellFromF(floorf(m3MaxF(o.x, end.x) * inv), -2.0e9f);
+    int32_t cz0 = m3CellFromF(floorf(m3MinF(o.z, end.z) * inv), 2.0e9f);
+    int32_t cz1 = m3CellFromF(floorf(m3MaxF(o.z, end.z) * inv), -2.0e9f);
     cx0 = cx0 < 0 ? 0 : cx0;
     cz0 = cz0 < 0 ? 0 : cz0;
     cx1 = cx1 > hf->nx - 2 ? hf->nx - 2 : cx1;

@@ -1976,10 +1976,10 @@ static void CollideHeightFieldConvex(m3World* world, m3Manifold* fresh, int32_t 
     m3real reach = radius + M3_SPECULATIVE_DISTANCE;
 
     m3real inv = 1.0f / hf->cellSize;
-    int32_t cx0 = (int32_t)floorf((boundLo.x - reach) * inv) - 1; // the halo cell
-    int32_t cx1 = (int32_t)floorf((boundHi.x + reach) * inv) + 1;
-    int32_t cz0 = (int32_t)floorf((boundLo.z - reach) * inv) - 1;
-    int32_t cz1 = (int32_t)floorf((boundHi.z + reach) * inv) + 1;
+    int32_t cx0 = m3CellFromF(floorf((boundLo.x - reach) * inv), 2.0e9f) - 1; // the halo cell
+    int32_t cx1 = m3CellFromF(floorf((boundHi.x + reach) * inv), -2.0e9f) + 1;
+    int32_t cz0 = m3CellFromF(floorf((boundLo.z - reach) * inv), 2.0e9f) - 1;
+    int32_t cz1 = m3CellFromF(floorf((boundHi.z + reach) * inv), -2.0e9f) + 1;
     cx0 = cx0 < 0 ? 0 : cx0;
     cz0 = cz0 < 0 ? 0 : cz0;
     cx1 = cx1 > hf->nx - 2 ? hf->nx - 2 : cx1;
