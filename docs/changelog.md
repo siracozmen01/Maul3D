@@ -4,7 +4,9 @@ All notable changes to Maul3D. Versions are tags on green CI SHAs;
 every entry's determinism gates were verified across all CI cells at
 tag time.
 
-## Unreleased
+## v1.21 (2026-07-16)
+
+The hardening arc opens: fuzz-found cures and a field-tested stage.
 
 - Hostile-snapshot hardening: a mutated snapshot could set voxel
   occupancy bits over zeroed fill bytes; the fragment carve then
