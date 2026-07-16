@@ -4,6 +4,15 @@ All notable changes to Maul3D. Versions are tags on green CI SHAs;
 every entry's determinism gates were verified across all CI cells at
 tag time.
 
+## Unreleased
+
+- The soft-particle escape governor: a particle handed the middle
+  of a thick voxel wall used to walk out in ONE substep, and XPBD
+  turned that teleport into real velocity (a measured 161 m/s
+  ejection). Escape now obeys contactPushMaxSpeed like every
+  rigid depenetration; the particle walks out over a few
+  substeps. No recorded scene changes by a bit (all pins exact).
+
 ## v1.21 (2026-07-16)
 
 The hardening arc opens: fuzz-found cures and a field-tested stage.

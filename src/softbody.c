@@ -674,6 +674,17 @@ static void SoftCollideParticle(m3World* world, int32_t slot, int32_t k, int32_t
                 m3real depth = plane - m3Dot3(ln, lp) + radius;
                 if (depth > 0.0f)
                 {
+                    // The escape depth is unbounded (a moving chunk
+                    // can hand a particle the middle of a thick
+                    // wall), and XPBD turns a one-substep teleport
+                    // into real velocity: the jelly probe watched a
+                    // particle leave the rampart at 161 m/s. The
+                    // rigid world already has the law: depenetration
+                    // is a SPEED, capped by contactPushMaxSpeed. The
+                    // particle obeys the same knob and walks out
+                    // over a few substeps instead of detonating.
+                    m3real maxPush = world->contactPushMaxSpeed / invH;
+                    depth = depth > maxPush ? maxPush : depth;
                     SoftProject(world, k, m3RotateVec3(xf->q, ln), depth, mu, body, invH);
                 }
             }
