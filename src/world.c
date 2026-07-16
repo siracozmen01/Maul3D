@@ -2567,9 +2567,18 @@ static bool JournalReplayApply(m3World* world, const void* data, int32_t size)
             {
                 return false;
             }
-            const m3Vec3* pts = (const m3Vec3*)((const uint8_t*)payload + sizeof(head));
-            const uint16_t* tets = (const uint16_t*)((const uint8_t*)payload + sizeof(head) +
-                                                     (size_t)head.pointCount * sizeof(m3Vec3));
+            // Journal records are byte-packed: typed pointers into the
+            // stream are misaligned UB (the replayfile fuzz caught the
+            // heightfield twin of this line). Aligned stack copies,
+            // bounded by the walls just checked.
+            m3Vec3 pts[M3_SOFTBODY_MAX_PARTICLES];
+            uint16_t tets[4 * M3_SOFTBODY_MAX_TETS];
+            memcpy(pts, (const uint8_t*)payload + sizeof(head),
+                   (size_t)head.pointCount * sizeof(m3Vec3));
+            memcpy(tets,
+                   (const uint8_t*)payload + sizeof(head) +
+                       (size_t)head.pointCount * sizeof(m3Vec3),
+                   (size_t)(4 * head.tetCount) * sizeof(uint16_t));
             int32_t slot = m3CreateSoftBodyTetInternal(world, &head.def, pts, head.pointCount, tets,
                                                        head.tetCount);
             if (slot < 0 || slot + 1 != head.expected.index1 ||
@@ -2598,17 +2607,21 @@ static bool JournalReplayApply(m3World* world, const void* data, int32_t size)
             {
                 return false; // hostile grid bytes fail loudly
             }
-            const float* samples = (const float*)((const uint8_t*)payload + sizeof(head));
-            float mn = samples[0];
-            float mx = samples[0];
+            // Same alignment law as the tet decode above: the stream
+            // is byte-packed, so every sample is read by memcpy.
+            const uint8_t* sampleBytes = (const uint8_t*)payload + sizeof(head);
+            float mn = 0.0f;
+            float mx = 0.0f;
             for (int32_t i = 0; i < head.nx * head.nz; ++i)
             {
-                if (!m3FiniteF(samples[i]))
+                float v;
+                memcpy(&v, sampleBytes + (size_t)i * sizeof(float), sizeof(float));
+                if (!m3FiniteF(v))
                 {
                     return false;
                 }
-                mn = samples[i] < mn ? samples[i] : mn;
-                mx = samples[i] > mx ? samples[i] : mx;
+                mn = i == 0 ? v : (v < mn ? v : mn);
+                mx = i == 0 ? v : (v > mx ? v : mx);
             }
             m3HeightFieldData hf;
             memset(&hf, 0, sizeof(hf));
@@ -2621,7 +2634,7 @@ static bool JournalReplayApply(m3World* world, const void* data, int32_t size)
             {
                 return false;
             }
-            memcpy(hf.heights, samples, (size_t)(head.nx * head.nz) * sizeof(float));
+            memcpy(hf.heights, sampleBytes, (size_t)(head.nx * head.nz) * sizeof(float));
             m3ShapeGeom geom;
             memset(&geom, 0, sizeof(geom));
             int32_t index = m3CreateShapeInternal(world, bodyIndex, (uint8_t)m3_heightFieldShape,

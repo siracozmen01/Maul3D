@@ -22,6 +22,11 @@ The finale: ecosystem and vehicles.
 - The docs site: tools/build_docs.py renders docs/ (manual,
   changelog, a new samples page) into a plain static site; the
   Pages workflow ships dispatch-only until Pages is enabled.
+- Alignment honesty in the replay decoder: the tet and
+  heightfield creates read their packed payloads through memcpy
+  now; the old typed pointers into the byte stream were
+  undefined behavior that the replayfile fuzz finally walked
+  into (latent since v1.16, unreachable on the shipped paths).
 - This closes the Roadmap 4 backlog: every actionable item from
   the 2026-07 gap report is shipped or argued on the record.
 
