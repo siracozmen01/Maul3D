@@ -119,7 +119,7 @@ mesh and hull rain fields, and the classic pyramid.
 
 ## Status and stability
 
-Current release: 1.19. The 1.x API surface is frozen: functions and
+Current release: 1.20. The 1.x API surface is frozen: functions and
 defs may be added in minor releases, but existing signatures,
 semantics and id layouts do not change until a 2.0. Defs are
 cookie-guarded, so a stale compiled caller fails loudly instead of

@@ -4,7 +4,7 @@ All notable changes to Maul3D. Versions are tags on green CI SHAs;
 every entry's determinism gates were verified across all CI cells at
 tag time.
 
-## Unreleased (v1.20 in tree)
+## v1.20 (2026-07-16)
 
 The finale: ecosystem and vehicles.
 
@@ -16,6 +16,14 @@ The finale: ecosystem and vehicles.
   (0 = off) holds a two-wheeler upright through the lean its turn
   demands, rolling about the hub line so the tires do not veto
   their own controller.
+- Bindings starter kits: bindings/csharp (single-file P/Invoke
+  with a layout self-check) and bindings/godot (a GDExtension
+  skeleton exposing step, snapshot, restore, and hash).
+- The docs site: tools/build_docs.py renders docs/ (manual,
+  changelog, a new samples page) into a plain static site; the
+  Pages workflow ships dispatch-only until Pages is enabled.
+- This closes the Roadmap 4 backlog: every actionable item from
+  the 2026-07 gap report is shipped or argued on the record.
 
 ## v1.19
 
