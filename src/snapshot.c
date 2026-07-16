@@ -515,6 +515,13 @@ static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3Wal
         for (int32_t hIdx = 0; hIdx < world->shapeCapacity; ++hIdx)
         {
             m3HullData* hull = &world->hullData[hIdx];
+            // The old count, read BEFORE the incoming counts land:
+            // an empty slab is already canonical zeros (create
+            // fills prefixes, release wipes), so only a lived-in
+            // slot pays the wipe below. The unconditional memset
+            // was 47 MB per restore at 8k shape slots and restore
+            // ran five times slower than snapshot because of it.
+            int32_t hadContent = hull->vertexCount;
             M3_BLOCK(&hull->vertexCount, 4);
             M3_BLOCK(&hull->faceCount, 4);
             M3_BLOCK(&hull->indexCount, 4);
@@ -530,15 +537,18 @@ static int32_t WalkBlocks(m3World* world, uint8_t* out, const uint8_t* in, m3Wal
                 {
                     return -1; // corrupt counts: refuse
                 }
-                int32_t vc = hull->vertexCount;
-                int32_t fc = hull->faceCount;
-                int32_t ic = hull->indexCount;
-                int32_t ec = hull->edgeCount;
-                memset(hull, 0, sizeof(*hull));
-                hull->vertexCount = vc;
-                hull->faceCount = fc;
-                hull->indexCount = ic;
-                hull->edgeCount = ec;
+                if (hadContent > 0)
+                {
+                    int32_t vc = hull->vertexCount;
+                    int32_t fc = hull->faceCount;
+                    int32_t ic = hull->indexCount;
+                    int32_t ec = hull->edgeCount;
+                    memset(hull, 0, sizeof(*hull));
+                    hull->vertexCount = vc;
+                    hull->faceCount = fc;
+                    hull->indexCount = ic;
+                    hull->edgeCount = ec;
+                }
             }
             if (hull->vertexCount > 0)
             {

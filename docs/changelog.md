@@ -13,6 +13,12 @@ tag time.
   rigid depenetration; the particle walks out over a few
   substeps. No recorded scene changes by a bit (all pins exact).
 
+- Restore is 2.6x faster at scale: the hull tail wiped every one
+  of the 8k shape slabs on every restore (47 MB of memset to keep
+  unused tails canonical); an empty slab is already canonical, so
+  only lived-in slots pay now. 5k-body rollback restore: 17.2 to
+  6.9 ms, bit-identical output, every pin exact.
+
 ## v1.21 (2026-07-16)
 
 The hardening arc opens: fuzz-found cures and a field-tested stage.
