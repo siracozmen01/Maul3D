@@ -395,6 +395,16 @@ target_link_libraries(test_mover PRIVATE maul3d)
 maul3d_apply_flags(test_mover)
 add_test(NAME mover COMMAND test_mover)
 
+if(NOT WIN32)
+    # POSIX-only suite (pthreads): the contract holds everywhere,
+    # the referee runs where the referee's tools live. The TSAN CI
+    # cell runs it to make any data race a red build.
+    add_executable(test_concurrency test/test_concurrency.c)
+    target_link_libraries(test_concurrency PRIVATE maul3d pthread)
+    maul3d_apply_flags(test_concurrency)
+    add_test(NAME concurrency COMMAND test_concurrency)
+endif()
+
 add_executable(test_fuzz test/test_fuzz.c)
 target_link_libraries(test_fuzz PRIVATE maul3d)
 maul3d_apply_flags(test_fuzz)

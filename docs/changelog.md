@@ -50,6 +50,16 @@ tag time.
   no longer reports false divergence for veto sessions. Sessions
   without a callback produce byte-identical journals to before.
 
+- The threading contract is written and refereed (integration
+  audit B2/D3): one writer per world, free concurrent readers
+  between steps, distinct worlds step on distinct host threads
+  bit-identically (suite 53 proves it, the new TSAN CI cell
+  polices it), create/destroy host-serialized by contract. The
+  process-global soak counters went atomic so concurrent worlds
+  share no racing state. The assert hook gained a contextful
+  variant (m3SetAssertHandlerCtx) for hosts that route
+  diagnostics without globals.
+
 ## v1.21 (2026-07-16)
 
 The hardening arc opens: fuzz-found cures and a field-tested stage.

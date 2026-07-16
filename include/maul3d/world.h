@@ -180,6 +180,18 @@ extern "C"
     /// with the given substep count (1..256; out of range refuses
     /// loudly). Deterministic: same inputs, same bits, on every
     /// platform and backend. Journaled.
+    /// THE THREADING CONTRACT (integration audit B2/D3). Per world:
+    /// one writer at a time; Step and every mutating call demand
+    /// exclusive access to that world. Between steps, any number of
+    /// concurrent READERS (queries, casts, getters, snapshot) may
+    /// run on the same world from any threads. DISTINCT worlds are
+    /// fully independent: stepping two worlds on two host threads
+    /// is supported and bit-identical to stepping them serially
+    /// (the concurrency suite proves it; the TSAN cell polices it).
+    /// m3CreateWorld and m3DestroyWorld touch a process-wide slot
+    /// registry and must be serialized BY THE HOST across threads;
+    /// the library adds no lock (zero-dependency law). Reading a
+    /// world WHILE it steps is undefined.
     M3_API void m3World_Step(m3WorldId worldId, float dt, int32_t substeps);
 
     /// Snapshot and rollback, first-class from day one. The format is

@@ -54,10 +54,18 @@ uint64_t m3Hash64(uint64_t h, const void* bytes, int32_t count)
 }
 
 static m3AssertFn s_assertHandler = NULL;
+static m3AssertCtxFn* s_assertHandlerCtx = NULL;
+static void* s_assertContext = NULL;
 
 void m3SetAssertHandler(m3AssertFn handler)
 {
     s_assertHandler = handler;
+}
+
+void m3SetAssertHandlerCtx(m3AssertCtxFn* handler, void* context)
+{
+    s_assertHandlerCtx = handler;
+    s_assertContext = context;
 }
 
 void m3AssertFail(const char* condition, const char* file, int line)
@@ -65,6 +73,11 @@ void m3AssertFail(const char* condition, const char* file, int line)
     // Debug-only diagnostic. Library code never aborts in release; the
     // guarded return paths carry the failure instead. A host handler
     // returning nonzero declares the failure handled (14-3).
+    if (s_assertHandlerCtx != NULL &&
+        s_assertHandlerCtx(condition, file, line, s_assertContext) != 0)
+    {
+        return; // handled by the contextful hook (A5)
+    }
     if (s_assertHandler != NULL && s_assertHandler(condition, file, line) != 0)
     {
         return;

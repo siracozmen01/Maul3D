@@ -111,7 +111,7 @@ Determinism here means pinned IEEE arithmetic (no fast math, no FP
 contraction), fixed tessellations and canonical ordering on every
 path, journaled defs treated as untrusted bytes on replay, and a
 golden world hash that has moved exactly twice in the engine's
-life, both times argued on the record. Every commit runs 52 test
+life, both times argued on the record. Every commit runs 53 test
 suites in three build flavors plus a shared-library cell, ASAN and
 UBSAN, cross-platform hash equality across all cells, and seven
 pinned benchmark hashes that must not move: a 5000-body city block

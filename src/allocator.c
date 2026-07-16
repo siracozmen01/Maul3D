@@ -12,18 +12,29 @@
 // LeakSanitizer cell together are the growth proof. Main-thread
 // only by the allocation map (create, restore, replay paths); task
 // workers never allocate.
-static int64_t s_allocCalls = 0;
-static int64_t s_freeCalls = 0;
+#if defined(_MSC_VER)
+#include <intrin.h>
+static volatile long long s_allocCalls = 0;
+static volatile long long s_freeCalls = 0;
+#define M3_COUNT_INC(c)  _InterlockedIncrement64(&(c))
+#define M3_COUNT_READ(c) _InterlockedCompareExchange64(&(c), 0, 0)
+#else
+#include <stdatomic.h>
+static _Atomic int64_t s_allocCalls = 0;
+static _Atomic int64_t s_freeCalls = 0;
+#define M3_COUNT_INC(c)  atomic_fetch_add_explicit(&(c), 1, memory_order_relaxed)
+#define M3_COUNT_READ(c) atomic_load_explicit(&(c), memory_order_relaxed)
+#endif
 
 void m3DebugAllocCounts(int64_t* allocs, int64_t* frees)
 {
     if (allocs != NULL)
     {
-        *allocs = s_allocCalls;
+        *allocs = (int64_t)M3_COUNT_READ(s_allocCalls);
     }
     if (frees != NULL)
     {
-        *frees = s_freeCalls;
+        *frees = (int64_t)M3_COUNT_READ(s_freeCalls);
     }
 }
 
@@ -71,7 +82,7 @@ void* m3AllocZeroed(int32_t bytes)
     M3_ASSERT(memory != NULL);
     if (memory != NULL)
     {
-        s_allocCalls += 1;
+        M3_COUNT_INC(s_allocCalls);
     }
     return memory;
 }
@@ -80,7 +91,7 @@ void m3Free(void* memory)
 {
     if (memory != NULL)
     {
-        s_freeCalls += 1;
+        M3_COUNT_INC(s_freeCalls);
     }
     if (s_hookFree != NULL)
     {

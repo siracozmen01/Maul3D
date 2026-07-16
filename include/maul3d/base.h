@@ -128,6 +128,14 @@ extern "C"
     /// only; never called for user input, never present in release.
     M3_API void m3AssertFail(const char* condition, const char* file, int line);
 
+    /// Contextful host assert hook (integration audit A5): same
+    /// contract as m3SetAssertHandler below, with the context the
+    /// embedding host needs to route the failure to its own
+    /// diagnostics without globals. When both handlers are set the
+    /// contextful one wins. Return nonzero to suppress the abort.
+    typedef int m3AssertCtxFn(const char* condition, const char* file, int line, void* context);
+    M3_API void m3SetAssertHandlerCtx(m3AssertCtxFn* handler, void* context);
+
     /// Host assert hook (14-3): installed globally, called before
     /// the abort. Return nonzero to declare the failure handled and
     /// skip the abort (test harnesses, crash reporters); return
