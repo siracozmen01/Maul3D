@@ -4,6 +4,14 @@ All notable changes to Maul3D. Versions are tags on green CI SHAs;
 every entry's determinism gates were verified across all CI cells at
 tag time.
 
+## Unreleased
+
+- Hostile-snapshot hardening: a mutated snapshot could set voxel
+  occupancy bits over zeroed fill bytes; the fragment carve then
+  divided by a zero fill sum and minted a NaN center of mass.
+  The carve now falls back to the equal-weight center; legitimate
+  streams are bit-identical (occupied voxels always carry fill).
+
 ## v1.20 (2026-07-16)
 
 The finale: ecosystem and vehicles.
