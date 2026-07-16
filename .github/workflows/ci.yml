@@ -96,7 +96,7 @@ jobs:
         run: |
           emcmake cmake -S . -B build-wasm -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_FLAGS="-pthread" \
-            -DCMAKE_EXE_LINKER_FLAGS="-pthread -sPTHREAD_POOL_SIZE=8 -sINITIAL_MEMORY=536870912 -sENVIRONMENT=node -sEXIT_RUNTIME=1"
+            -DCMAKE_EXE_LINKER_FLAGS="-pthread -sPTHREAD_POOL_SIZE=8 -sINITIAL_MEMORY=536870912 -sSTACK_SIZE=8388608 -sDEFAULT_PTHREAD_STACK_SIZE=8388608 -sENVIRONMENT=node -sEXIT_RUNTIME=1"
       - name: Build the hash gates
         shell: bash
         run: |
