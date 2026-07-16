@@ -429,6 +429,7 @@ m3WorldId m3CreateWorld(const m3WorldDef* def)
     world->beginEventCount = 0;
     world->endEventCount = 0;
     M3_ALLOC(world->pairKeys, world->pairCapacity, uint64_t);
+    M3_ALLOC(world->sleepingPairKeys, world->pairCapacity, uint64_t);
     M3_ALLOC(world->manifolds, world->pairCapacity, m3Manifold);
     world->pairCount = 0;
 
@@ -675,6 +676,7 @@ void m3DestroyWorld(m3WorldId worldId)
     m3TreeDestroy(&world->tree);
     m3Free(world->proxyIds);
     m3Free(world->pairKeys);
+    m3Free(world->sleepingPairKeys);
     m3Free(world->manifolds);
     m3StackDestroy(&world->scratch);
     m3Free(world);

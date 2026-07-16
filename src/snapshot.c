@@ -885,6 +885,11 @@ bool m3World_Restore(m3WorldId worldId, const void* data, int32_t size)
         return false; // the pre-parse above makes this unreachable,
                       // except for exhausted memory in the alloc gate
     }
+    // The frozen-pair buffer is derived from a pair list this
+    // restore just invalidated; the next update must requery the
+    // whole tree once and re-harvest (S-3b).
+    world->sleepingPairCount = 0;
+    world->pairsFullQuery = 1;
     // Derived data follows content: the per-mesh BVHs are rebuilt
     // from the restored triangle sets (a pure function, so the tree
     // a restore produces is byte-identical to the one the original

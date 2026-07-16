@@ -325,6 +325,10 @@ void m3SetAwakeInternal(m3World* world, int32_t index, int awake)
         world->awake[index] = 0;
         world->linearVelocities[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
         world->angularVelocities[index] = (m3Vec3){0.0f, 0.0f, 0.0f};
+        // S-3b: every freeze, API-forced ones included, records its
+        // cold pairs or the frozen buffer stops being a pure
+        // function of the sleeping state.
+        m3FreezeDiscoverPairs(world, index);
     }
 }
 

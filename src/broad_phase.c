@@ -11,6 +11,7 @@
 // both paths must produce the same list, and a test holds that gate.
 
 #include "world_internal.h"
+#include <string.h>
 
 #include <stdlib.h>
 
@@ -232,6 +233,25 @@ static int PairAllowed(const m3World* world, int32_t i, int32_t j)
     return 1;
 }
 
+// S-3b: a pair is HOT when either endpoint is an awake dynamic
+// body. Cold pairs (sleeping-sleeping, static-sleeping, plane-
+// sleeping) cannot change until something wakes, so they ride the
+// frozen buffer instead of being re-discovered every step.
+static int PairHot(const m3World* world, int32_t i, int32_t j)
+{
+    // Kinematic bodies (characters, platforms) move without ever
+    // sleeping: they are hot whenever awake, or a walker would glide
+    // through a sleeping crate it had never met (the first cut said
+    // "dynamic" here and five suites said otherwise).
+    int32_t bodyI = world->shapeBody[i];
+    int32_t bodyJ = world->shapeBody[j];
+    if (world->types[bodyI] != (uint8_t)m3_staticBody && world->awake[bodyI] != 0)
+    {
+        return 1;
+    }
+    return world->types[bodyJ] != (uint8_t)m3_staticBody && world->awake[bodyJ] != 0;
+}
+
 static int EmitPair(m3World* world, int32_t i, int32_t j)
 {
     if (world->pairCount == world->pairCapacity)
@@ -255,7 +275,8 @@ static int CompareKeys(const void* a, const void* b)
 typedef struct m3QueryCtx
 {
     m3World* world;
-    const m3Aabb3d* cache; // per-step fresh bounds (21-2)
+    m3Aabb3d* cache;     // per-step fresh bounds (21-2)
+    uint8_t* cacheValid; // S-3a: sleepers fill lazily on first hit
     m3Aabb3d selfBounds;
     int32_t self;
     int32_t overflow;
@@ -264,11 +285,32 @@ typedef struct m3QueryCtx
 static bool QueryHit(int32_t other, void* context)
 {
     m3QueryCtx* ctx = (m3QueryCtx*)context;
-    // Emit each pair once: only when the other leaf has the larger
-    // index (both directions get queried, one emits).
-    if (other <= ctx->self || !PairAllowed(ctx->world, ctx->self, other))
+    if (other == ctx->self)
     {
         return true;
+    }
+    // Emit each pair once. Both-awake pairs use the larger-index
+    // rule (both directions get queried, one emits). A sleeping
+    // shape never queries (S-3b), so its awake partner emits from
+    // EITHER side; the referee caught pair (sleeper, awake) with
+    // the sleeper on the smaller index silently vanishing.
+    if (other < ctx->self)
+    {
+        int32_t otherBody = ctx->world->shapeBody[other];
+        int32_t otherQueries = ctx->world->types[otherBody] == (uint8_t)m3_staticBody ||
+                               ctx->world->awake[otherBody] != 0;
+        if (otherQueries)
+        {
+            return true; // the other side owns this emit
+        }
+    }
+    if (!PairAllowed(ctx->world, ctx->self, other))
+    {
+        return true;
+    }
+    if (!PairHot(ctx->world, ctx->self, other))
+    {
+        return true; // cold: rides the frozen buffer (S-3b)
     }
     // The stored leaf bounds can be stale-but-containing (a leaf only
     // moves when its fresh bounds escape), so the tree can return a
@@ -277,7 +319,23 @@ static bool QueryHit(int32_t other, void* context)
     // by luck. The bounds come from the per-step cache (21-2): the
     // first shape of this profile recomputed a hull's 64-vertex box
     // once PER HIT; memoized values are bit-identical by definition.
-    m3Aabb3d fresh = ctx->cache != NULL ? ctx->cache[other] : SphereAabb(ctx->world, other);
+    m3Aabb3d fresh;
+    if (ctx->cache != NULL)
+    {
+        if (ctx->cacheValid[other] == 0)
+        {
+            // A sleeping shape skipped the prefill (S-3a); compute
+            // once on first touch. Same function, same inputs, same
+            // bits as the prefill would have written.
+            ctx->cache[other] = SphereAabb(ctx->world, other);
+            ctx->cacheValid[other] = 1;
+        }
+        fresh = ctx->cache[other];
+    }
+    else
+    {
+        fresh = SphereAabb(ctx->world, other);
+    }
     if (!Overlap(&ctx->selfBounds, &fresh))
     {
         return true;
@@ -290,8 +348,123 @@ static bool QueryHit(int32_t other, void* context)
     return true;
 }
 
+typedef struct m3FreezeCtx
+{
+    m3World* world;
+    m3Aabb3d selfBounds;
+    int32_t self;
+    int32_t overflow;
+} m3FreezeCtx;
+
+static bool FreezeHit(int32_t other, void* context)
+{
+    m3FreezeCtx* ctx = (m3FreezeCtx*)context;
+    if (other == ctx->self || !PairAllowed(ctx->world, ctx->self, other))
+    {
+        return true;
+    }
+    m3Aabb3d fresh = SphereAabb(ctx->world, other);
+    if (!Overlap(&ctx->selfBounds, &fresh))
+    {
+        return true;
+    }
+    m3World* world = ctx->world;
+    if (world->sleepingPairCount == world->pairCapacity)
+    {
+        ctx->overflow = 1;
+        return false;
+    }
+    int32_t i = ctx->self;
+    uint64_t key = i < other ? (((uint64_t)i << 32) | (uint64_t)other)
+                             : (((uint64_t)other << 32) | (uint64_t)i);
+    world->sleepingPairKeys[world->sleepingPairCount++] = key;
+    return true;
+}
+
+// The freeze step can CREATE tight overlaps (the solver pushes two
+// bodies together in the very step their island falls asleep) that
+// were never in any pair list. The sleep pass calls this for every
+// body it just froze so the frozen buffer holds the true overlap
+// set; the harvest dedupes. Without it the replay scrubber's seeks
+// diverged: a restored world's full query saw pairs the linear run
+// had never discovered.
+void m3FreezeDiscoverPairs(m3World* world, int32_t body)
+{
+    for (int32_t sh = world->bodyShapeHead[body]; sh >= 0; sh = world->shapeNext[sh])
+    {
+        if (world->shapePool.alive[sh] == 0)
+        {
+            continue;
+        }
+        if (world->proxyIds[sh] != M3_TREE_NULL)
+        {
+            m3FreezeCtx ctx;
+            ctx.world = world;
+            ctx.self = sh;
+            ctx.selfBounds = SphereAabb(world, sh);
+            ctx.overflow = 0;
+            m3TreeQuery(&world->tree, ctx.selfBounds.lo, ctx.selfBounds.hi, FreezeHit, &ctx);
+        }
+        // Planes live outside the tree and pair unconditionally: a
+        // frozen body keeps its ground pair through the buffer.
+        int32_t maxShape = world->shapePool.maxIndex;
+        for (int32_t p2 = 0; p2 < maxShape; ++p2)
+        {
+            if (world->shapePool.alive[p2] == 0 || world->shapeType[p2] != (uint8_t)m3_planeShape ||
+                !PairAllowed(world, p2, sh))
+            {
+                continue;
+            }
+            if (world->sleepingPairCount == world->pairCapacity)
+            {
+                return;
+            }
+            uint64_t key = p2 < sh ? (((uint64_t)p2 << 32) | (uint64_t)sh)
+                                   : (((uint64_t)sh << 32) | (uint64_t)p2);
+            world->sleepingPairKeys[world->sleepingPairCount++] = key;
+        }
+    }
+    world->frozenDirty = 1;
+}
+
 m3Result m3UpdatePairs(m3World* world)
 {
+    if (world->pairsFullQuery != 0)
+    {
+        // A restore invalidated the buffer: rebuild it as the pure
+        // function it is of the CURRENT sleeping state, by running
+        // the same discovery every freeze runs. Equality with the
+        // linear run is by construction, not by bookkeeping.
+        world->sleepingPairCount = 0;
+        for (int32_t b = 0; b < world->bodyPool.maxIndex; ++b)
+        {
+            if (world->bodyPool.alive[b] != 0 && world->types[b] != (uint8_t)m3_staticBody &&
+                world->awake[b] == 0)
+            {
+                m3FreezeDiscoverPairs(world, b);
+            }
+        }
+        world->pairsFullQuery = 0;
+    }
+    if (world->frozenDirty != 0)
+    {
+        // Discoveries append unsorted and may duplicate (both sides
+        // of a pair can freeze in different events); one canonical
+        // sort plus unique restores the invariant. Rare: only steps
+        // with freeze events pay it.
+        qsort(world->sleepingPairKeys, (size_t)world->sleepingPairCount, sizeof(uint64_t),
+              CompareKeys);
+        int32_t w = 0;
+        for (int32_t k = 0; k < world->sleepingPairCount; ++k)
+        {
+            if (w == 0 || world->sleepingPairKeys[k] != world->sleepingPairKeys[w - 1])
+            {
+                world->sleepingPairKeys[w++] = world->sleepingPairKeys[k];
+            }
+        }
+        world->sleepingPairCount = w;
+        world->frozenDirty = 0;
+    }
     world->pairCount = 0;
     int32_t maxShape = world->shapePool.maxIndex;
 
@@ -303,13 +476,25 @@ m3Result m3UpdatePairs(m3World* world)
     m3Aabb3d* cache =
         (m3Aabb3d*)m3StackAlloc(&world->scratch, maxShape > 0 ? maxShape * (int32_t)sizeof(m3Aabb3d)
                                                               : (int32_t)sizeof(m3Aabb3d));
+    uint8_t* cacheValid = (uint8_t*)m3StackAlloc(&world->scratch, maxShape > 0 ? maxShape : 1);
+    if (cache == NULL || cacheValid == NULL)
+    {
+        cache = NULL; // both or neither: the fallback path stays whole
+        cacheValid = NULL;
+    }
     if (cache != NULL)
     {
+        memset(cacheValid, 0, (size_t)(maxShape > 0 ? maxShape : 1));
         for (int32_t i = 0; i < maxShape; ++i)
         {
-            if (world->shapePool.alive[i] != 0 && world->proxyIds[i] != M3_TREE_NULL)
+            // S-3a: a sleeping body's shape has not moved since its
+            // island froze; skip the prefill (lazy on first hit) and
+            // the whole refresh walk below skips it too.
+            if (world->shapePool.alive[i] != 0 && world->proxyIds[i] != M3_TREE_NULL &&
+                world->awake[world->shapeBody[i]] != 0)
             {
                 cache[i] = SphereAabb(world, i);
+                cacheValid[i] = 1;
             }
         }
     }
@@ -319,8 +504,11 @@ m3Result m3UpdatePairs(m3World* world)
     // everything downstream) is a pure function of the op history.
     for (int32_t i = 0; i < maxShape; ++i)
     {
-        if (world->shapePool.alive[i] == 0 || world->proxyIds[i] == M3_TREE_NULL)
+        if (world->shapePool.alive[i] == 0 || world->proxyIds[i] == M3_TREE_NULL ||
+            world->awake[world->shapeBody[i]] == 0)
         {
+            // A frozen body cannot escape its own fat leaf: the
+            // refresh was a no-op for it every step it slept.
             continue;
         }
         m3Aabb3d tight = cache != NULL ? cache[i] : SphereAabb(world, i);
@@ -364,6 +552,10 @@ m3Result m3UpdatePairs(m3World* world)
             {
                 continue;
             }
+            if (!PairHot(world, p, s))
+            {
+                continue; // cold: rides the frozen buffer (S-3b)
+            }
             if (!EmitPair(world, p, s))
             {
                 return m3_errorCapacity;
@@ -379,10 +571,29 @@ m3Result m3UpdatePairs(m3World* world)
         {
             continue;
         }
-        m3Aabb3d fat = cache != NULL ? cache[i] : SphereAabb(world, i);
+        if (world->types[world->shapeBody[i]] != (uint8_t)m3_staticBody &&
+            world->awake[world->shapeBody[i]] == 0)
+        {
+            continue; // a frozen shape discovers nothing new (S-3b)
+        }
+        m3Aabb3d fat;
+        if (cache != NULL)
+        {
+            if (cacheValid[i] == 0)
+            {
+                cache[i] = SphereAabb(world, i);
+                cacheValid[i] = 1;
+            }
+            fat = cache[i];
+        }
+        else
+        {
+            fat = SphereAabb(world, i);
+        }
         m3QueryCtx ctx;
         ctx.world = world;
         ctx.cache = cache;
+        ctx.cacheValid = cacheValid;
         ctx.selfBounds = fat;
         ctx.self = i;
         ctx.overflow = 0;
@@ -391,6 +602,33 @@ m3Result m3UpdatePairs(m3World* world)
         {
             return m3_errorCapacity;
         }
+    }
+
+    // Merge the frozen buffer (S-3b): only pairs that are STILL
+    // cold and alive emit; the same walk compacts the buffer, so a
+    // wake or a destroy needs no bookkeeping anywhere else. The
+    // fresh passes emit only hot pairs, so the union is
+    // duplicate-free.
+    {
+        int32_t w = 0;
+        for (int32_t k = 0; k < world->sleepingPairCount; ++k)
+        {
+            uint64_t key = world->sleepingPairKeys[k];
+            int32_t i = (int32_t)(key >> 32);
+            int32_t j = (int32_t)(key & 0xFFFFFFFFu);
+            if (world->shapePool.alive[i] == 0 || world->shapePool.alive[j] == 0 ||
+                PairHot(world, i, j))
+            {
+                continue;
+            }
+            world->sleepingPairKeys[w++] = key;
+            if (world->pairCount == world->pairCapacity)
+            {
+                return m3_errorCapacity;
+            }
+            world->pairKeys[world->pairCount++] = key;
+        }
+        world->sleepingPairCount = w;
     }
 
     // One sort restores the canonical ascending order. Keys are

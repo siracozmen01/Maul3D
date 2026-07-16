@@ -717,6 +717,15 @@ typedef struct m3World
     // manifolds (persistent: warm-start impulses live here and ride
     // the snapshot).
     uint64_t* pairKeys;
+    // S-3b: pairs whose every endpoint is cold (no awake dynamic
+    // body) are harvested from the previous step's list and merged
+    // back without re-querying the tree. Derived state: never
+    // snapshotted; a restore raises pairsFullQuery and the next
+    // update rebuilds everything from the tree.
+    uint64_t* sleepingPairKeys;
+    int32_t sleepingPairCount;
+    uint8_t pairsFullQuery;
+    uint8_t frozenDirty;
     m3Manifold* manifolds;
     int32_t pairCount;
     int32_t pairCapacity;
@@ -1190,6 +1199,7 @@ static inline m3real m3WrapPi(m3real a)
 // ascending key order from fat AABBs; the dynamic tree replaces the
 // scan in 2b behind this same contract.
 m3Result m3UpdatePairs(m3World* world);
+void m3FreezeDiscoverPairs(m3World* world, int32_t body);
 
 // The 2a brute-force scan, kept as the referee: on any scene the tree
 // path must produce the identical pair list (a test gate).

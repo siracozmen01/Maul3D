@@ -3610,6 +3610,10 @@ static void IslandSleepPass(m3World* world, int32_t* parent, const m3Pos3* com0,
             world->awake[i] = 0;
             world->linearVelocities[i] = (m3Vec3){0.0f, 0.0f, 0.0f};
             world->angularVelocities[i] = (m3Vec3){0.0f, 0.0f, 0.0f};
+            // S-3b: the freeze step may have pushed this body into
+            // overlaps no pair list ever saw; discover them now so
+            // the frozen buffer equals what a full query would find.
+            m3FreezeDiscoverPairs(world, i);
         }
     }
 }

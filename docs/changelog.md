@@ -19,6 +19,18 @@ tag time.
   only lived-in slots pay now. 5k-body rollback restore: 17.2 to
   6.9 ms, bit-identical output, every pin exact.
 
+## Unreleased
+
+- The sleeping world stops paying rent (scale arc S-3a/b): pair
+  discovery is scoped to awake shapes, and cold pairs (sleeping,
+  static-sleeping, ground-sleeping) live in an event-driven
+  frozen buffer maintained at freeze, wake, and destroy, rebuilt
+  from the tree on restore. A settled 50,000-body world's step
+  fell from 194 ms to 83 ms with broadphase at 3.6 ms; every
+  bench pin, the golden, and the replay scrubber's forty seeks
+  are bit-identical, because the buffer is a pure function of
+  the sleeping state, proven equal to the brute-force referee.
+
 ## v1.21 (2026-07-16)
 
 The hardening arc opens: fuzz-found cures and a field-tested stage.
