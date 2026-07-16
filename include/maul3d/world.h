@@ -51,7 +51,12 @@ extern "C"
         int32_t characterCapacity;    // character controllers (4-4)
         int32_t vehicleCapacity;      // raycast vehicles (5-1)
         int32_t softBodyCapacity;     // XPBD lattices (7-1)
-        int32_t workerCount;          // twin worlds with different counts must hash equal
+        int32_t workerCount;          // HOST HINT ONLY: the engine never
+                                      // reads it (parallelism comes from
+                                      // the task hooks' ranges); kept for
+                                      // ABI and deliberately outside the
+                                      // config hash so twin worlds with
+                                      // different counts hash equal
         m3EnqueueTaskFn* enqueueTask; // both null = serial (the default)
         m3FinishTaskFn* finishTask;
         void* userTaskContext;

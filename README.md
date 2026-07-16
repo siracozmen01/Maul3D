@@ -68,8 +68,9 @@ m3World_Restore(world, buffer, size); // bit-exact resimulation from here
 - **The replay studio**: the M3J1 container seals a snapshot plus
   journal plus final hash into one artifact; the `m3replay` CLI
   records, verifies, seeks, plays and DIFFS two runs to the exact
-  divergence frame; `m3lockstep` demonstrates two processes
-  staying bit-identical over exchanged inputs.
+  divergence frame; `m3lockstep` simulates a two-peer lockstep
+  exchange in one process (predict, rollback, re-simulate) and
+  proves both timelines bit-identical at every checkpoint.
 - **Events and queries**: contact begin/end, sensors, hit events
   with speed thresholds, body move events, joint break events,
   pre-solve vetoes; rays, sphere/capsule/hull/box casts, overlap

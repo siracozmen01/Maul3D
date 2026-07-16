@@ -54,10 +54,10 @@ contract).
 **Promised:** the same build of Maul3D, given the same sequence of
 API calls with the same arguments, produces bit-identical simulation
 state on every supported platform, compiler, architecture, SIMD
-backend, and worker count. This is CI-enforced across six cells
+backend, and worker count. This is CI-enforced across seven cells
 (Linux gcc and clang, Debug and Release, forced-scalar with
-sanitizers, macOS arm64, Windows MSVC) whose printed state hashes
-must be equal on every commit.
+sanitizers, macOS arm64, Windows MSVC, and wasm32 under node)
+whose printed state hashes must be equal on every commit.
 
 **Deliberately not promised:**
 
@@ -1080,7 +1080,10 @@ is refused (use a sphere).
 
 Every pool is fixed at world creation (`bodyCapacity`,
 `shapeCapacity`, `jointCapacity`, `meshCapacity`) and never grows.
-Exhaustion refuses with a null id and the world keeps stepping. Caps
-per shape: hulls up to 24 vertices from up to 64 input points,
-meshes up to 1024 vertices and 2048 triangles, heightfields up to
-32 by 32 per chunk (tile larger terrain as chunks).
+Exhaustion refuses with a null id and the world keeps stepping.
+Per-shape geometry ceilings live in one place: the "Compound
+shapes and the geometry ceilings" chapter above (hulls 64
+vertices from up to 256 input points, meshes 65,535 vertices and
+65,535 triangles per chunk, heightfields up to 255 by 255 per
+shape). Those numbers are pinned by an asserted test; if a header
+constant moves, the suite fails before the documentation lies.

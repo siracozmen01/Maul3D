@@ -143,13 +143,14 @@ extern "C"
     /// A convex hull built from a point cloud (QuickHull, coplanar
     /// faces merged, mass integrated). Between 4 and 64 finite points;
     /// degenerate clouds (coplanar, collinear) and hulls that exceed
-    /// the 24-vertex budget return the null id, loudly.
+    /// the 64-vertex budget (input clouds up to 256 points) return
+    /// the null id, loudly.
     M3_API m3ShapeId m3CreateHullShape(m3BodyId bodyId, const m3ShapeDef* def, const m3Vec3* points,
                                        int32_t count);
 
     /// A static triangle mesh (level geometry, voxel chunk surfaces).
-    /// Static bodies only; up to 1024 vertices and 2048 triangles per
-    /// mesh (three indices each, counter-clockwise seen from outside:
+    /// Static bodies only; up to 65,535 vertices and 65,535 triangles
+    /// per mesh (three indices each, counter-clockwise from outside:
     /// contacts cull the back side). Ghost collisions on shared edges
     /// are filtered by feature welding. Refused loudly on a dynamic
     /// body, out-of-cap counts, or out-of-range indices.

@@ -490,8 +490,25 @@ static void TestHullSnapshotShrink(void)
     m3DestroyWorld(boxed);
 }
 
+// The documentation ceiling pin (R5-1, integration audit C3): the
+// manual's Capacities chapter cites these exact numbers and points
+// at this test. If a constant moves, this fails before the
+// documentation lies. Moving a ceiling is allowed; updating the
+// manual in the same commit is the price.
+static void TestGeometryCeilingConstants(void)
+{
+    CHECK(M3_HULL_MAX_VERTS == 64, "hull vertex ceiling is the documented 64");
+    CHECK(M3_MESH_MAX_VERTS == 65535, "mesh vertex ceiling is the documented 65535");
+    CHECK(M3_MESH_MAX_TRIS == 65535, "mesh triangle ceiling is the documented 65535");
+    CHECK(M3_HEIGHTFIELD_MAX_DIM == 255, "heightfield dimension ceiling is the documented 255");
+    CHECK(M3_VEHICLE_MAX_WHEELS == 8, "wheel ceiling is the documented 8");
+    CHECK(M3_SOFTBODY_MAX_PARTICLES == 512, "soft particle ceiling is the documented 512");
+    CHECK(M3_SOFTBODY_MAX_TETS == 1024, "soft tet ceiling is the documented 1024");
+}
+
 int main(void)
 {
+    TestGeometryCeilingConstants();
     TestWorldLifecycle();
     TestBodies();
     TestTwoWorldsIsolation();
